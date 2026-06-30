@@ -4,7 +4,9 @@ Monitors Swiss local energy communities (CEL) using provider XML files (Validate
 
 ## Overview
 
-**Daily delivery**: 109 XML files (103 E66 individual meters + 6 E31 community aggregates)
+**Daily delivery**: Multiple XML files (E66 individual meters + 6 E31 community aggregates)
+- File count varies based on number of members and whether they have production
+- Example: 21 members (9 with solar) = 109 files daily (103 E66 + 6 E31)
 
 **What this system tracks:**
 - ✅ Individual meter consumption and production (total and breakdown)
@@ -284,7 +286,7 @@ find /volume1/docker/cel-parser/archive -name "*.xml" -mtime +180 -delete
 |------|----------|
 | 🎓 **Understand the system** | [PARSING_GUIDE.md](PARSING_GUIDE.md) - Complete technical reference |
 | 🚀 **Deploy to Synology** | [QUICK_START_SYNOLOGY.md](QUICK_START_SYNOLOGY.md) - Deployment guide |
-| 📊 **Understand daily files** | [FILE_BREAKDOWN_ANALYSIS.md](FILE_BREAKDOWN_ANALYSIS.md) - Why 109 files? |
+| 📊 **Understand daily files** | [FILE_BREAKDOWN_ANALYSIS.md](FILE_BREAKDOWN_ANALYSIS.md) - Daily file breakdown |
 | 📈 **Query community data** | [E31_INTEGRATION.md](E31_INTEGRATION.md) - E31 Grafana queries |
 | ❓ **Talk to provider** | [PROVIDER_QUESTIONS.md](PROVIDER_QUESTIONS.md) - Questions to validate |
 | ✅ **Deploy updates** | [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) - Deployment steps |
@@ -302,7 +304,7 @@ find /volume1/docker/cel-parser/archive -name "*.xml" -mtime +180 -delete
 
 ### Reference Documents
 
-- **[FILE_BREAKDOWN_ANALYSIS.md](FILE_BREAKDOWN_ANALYSIS.md)** - 109-file daily delivery breakdown
+- **[FILE_BREAKDOWN_ANALYSIS.md](FILE_BREAKDOWN_ANALYSIS.md)** - Daily file delivery breakdown by member type
 - **[E31_INTEGRATION.md](E31_INTEGRATION.md)** - E31 community aggregates and Grafana queries
 - **[PROVIDER_QUESTIONS.md](PROVIDER_QUESTIONS.md)** - Questions for energy provider
 

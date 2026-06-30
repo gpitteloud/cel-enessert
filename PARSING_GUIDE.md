@@ -22,14 +22,15 @@
 
 ## Overview
 
-The CEL (Community Energy Local) community receives **109 XML files daily** from the Swiss energy provider. These files contain detailed energy consumption and production data for all community members at 15-minute intervals.
+The CEL (Community Energy Local) community receives **multiple XML files daily** from the Swiss energy provider. These files contain detailed energy consumption and production data for all community members at 15-minute intervals.
 
 **Key Facts:**
-- **Community size**: 9 members with production (solar panels), 12+ members without
+- **Community size**: Example - 9 members with production (solar panels), 12 members without
+- **File count**: Dynamic based on membership (example: 21 members = 109 files)
 - **Delivery frequency**: Daily, between 09:45-09:50 CET
 - **Data resolution**: 15-minute intervals (96 observations per day)
 - **Data coverage**: 5-day rolling window (overlapping)
-- **File formats**: E66 (individual meters) + E31 (community aggregates)
+- **File formats**: E66 (individual meters) + E31 (community aggregates, always 6 files)
 
 ---
 
@@ -37,7 +38,7 @@ The CEL (Community Energy Local) community receives **109 XML files daily** from
 
 ### File Delivery Pattern
 
-**Daily Delivery**: 109 files arrive within a 5-minute window
+**Daily Delivery**: All files arrive within a 5-minute window
 
 ```
 20260527_094557_..._E66_...xml  ← E66: Individual meter
@@ -46,9 +47,9 @@ The CEL (Community Energy Local) community receives **109 XML files daily** from
 20260527_094741_..._E31_...xml  ← E31: Community aggregate
 ```
 
-**File Types Breakdown:**
-- **103 E66 files**: Individual meter data (ValidatedMeteredData_1.6 format)
-- **6 E31 files**: Community aggregated data (AggregatedMeteredData_1.3 format)
+**File Types Breakdown (example for 21 members):**
+- **103 E66 files**: Individual meter data (ValidatedMeteredData_1.6 format) - varies by membership
+- **6 E31 files**: Community aggregated data (AggregatedMeteredData_1.3 format) - always constant
 
 **Overlapping Data:**
 - Each file covers 5 consecutive days
@@ -680,7 +681,10 @@ Physical Meter 0217130Y:
 
 **File Delivery & Processing**:
 
-1. **File count stability**: The 109 files/day (103 E66 + 6 E31) - will this remain constant when members join/leave, or should we expect dynamic counts?
+1. **File count changes**: We understand E66 file count varies by membership. Questions:
+   - Will E31 count always be 6 files (observed as stable)?
+   - Do files simply appear/disappear when members join/leave?
+   - Is advance notification provided for membership changes?
 
 2. **Import strategy**: With 5-day overlapping files, should we:
    - Process all files (current approach - VictoriaMetrics overwrites duplicates)
@@ -690,7 +694,7 @@ Physical Meter 0217130Y:
 
 3. **Data corrections**: Do you ever update/correct data from previous days in newer deliveries, or are overlapping days always identical?
 
-4. **Delivery completion signal**: Is there a marker file or signal that indicates all 109 files have been delivered? This would help us process files as a complete batch.
+4. **Delivery completion signal**: Is there a marker file or signal that indicates all files have been delivered? This would help us process files as a complete batch.
 
 **Meter Mappings**:
 
@@ -728,7 +732,7 @@ Physical Meter 0217130Y:
 
 12. **E31 vs E66 consistency**: Should E31 community aggregates match the sum of E66 individual meters? Currently we see small differences.
 
-13. **Missing files**: If a file is missing from a delivery (e.g., only 108 out of 109 files):
+13. **Missing files**: If a file is missing from expected delivery:
     - Will it be delivered later?
     - Should we wait before processing?
     - Or process whatever arrives?

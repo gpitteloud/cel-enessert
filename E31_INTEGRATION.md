@@ -184,7 +184,7 @@ curl 'http://victoriametrics:8428/api/v1/series?match[]=energy_community_aggrega
 1. **Community-level visibility**: See total community consumption/production
 2. **Validation**: Compare community aggregates vs sum of individual meters
 3. **Self-sufficiency metrics**: Track CEL local vs grid energy
-4. **Completeness**: Process all 109 daily files (103 E66 + 6 E31)
+4. **Completeness**: Process all daily files (E66 individual meters + 6 E31 community aggregates)
 
 ## Notes
 

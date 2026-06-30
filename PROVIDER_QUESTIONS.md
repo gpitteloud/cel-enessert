@@ -6,7 +6,7 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 
 ### What We've Confirmed ✓
 
-- **File structure**: 109 files daily (103 E66 + 6 E31)
+- **File structure**: Dynamic file count based on membership (example: 109 files = 103 E66 + 6 E31 for 21 members)
 - **File types**: E66 (individual meters) vs E31 (community aggregates)
 - **Delivery pattern**: Daily at 09:45-09:50, 5-day coverage with 4-day overlap
 - **Data stability**: Overlapping days are identical (0% change observed)
@@ -15,6 +15,7 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - **Flow characteristics**: E17 (consumption) and E18 (production) in E31 files
 - **Community ID**: 101110-002726, Type CT01
 - **Physical-virtual mappings**: 9 discovered pairs by matching production totals
+- **E31 stability**: Always 6 E31 files regardless of member count
 
 ### What We Need From You ❓
 
@@ -32,7 +33,7 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - Files delivered daily with incrementing date ranges
 - Example: File delivered 2026-05-27 covers 2026-05-21 to 2026-05-26
 - This creates 4-day overlap between consecutive deliveries
-- **Exactly 109 files per day**: 103 E66 (ValidatedMeteredData) + 6 E31 (AggregatedMeteredData)
+- **File count varies by membership**: For current community (21 members, 9 with solar): 109 files = 103 E66 + 6 E31 (always)
 
 **Questions:**
 1. **Why 5 days per file?** Is this to provide data stability/corrections, or for technical reasons?
@@ -46,15 +47,16 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
    - **Our finding**: Compared same meter/date across May 27 and May 28 deliveries - 0/96 values differed (100% stable)
    - **Question**: Is this guaranteed to always be the case, or could corrections occur in the future?
 
-4. **File delivery pattern:** We observe exactly 109 files delivered daily between 09:45-09:50 (filename timestamp = creation time). Is this the expected pattern? Should we:
+4. **File delivery pattern:** We observe files delivered daily between 09:45-09:50 (filename timestamp = creation time). Is this the expected pattern? Should we:
    - Wait for all files to arrive before processing (batch processing)?
    - Process files as they arrive (streaming processing)?
    - Is there a "delivery complete" marker file or signal?
 
-5. **File type stability:** Will the 103 E66 + 6 E31 breakdown remain constant, or can this change when:
-   - New community members join/leave?
-   - Additional meter types are added?
-   - New data products are introduced?
+5. **File count changes:** We understand E66 file count varies by membership (consumer-only: 3 files, producer: 7 files). Questions:
+   - Will E31 count always be 6 files (confirmed stable)?
+   - Do E66 files simply appear/disappear when members join/leave?
+   - Is advance notification provided for membership changes?
+   - Can additional meter types or data products change file structure?
 
 ---
 
@@ -274,22 +276,24 @@ For your reference, our parser:
 - Time-series database handles duplicate timestamps via overwrite
 - Tracks processed files to prevent re-processing
 
-**Confirmed File Breakdown (109 files daily):**
+**Confirmed File Breakdown (example: community with 21 members):**
 ```
-E66 (ValidatedMeteredData_1.6): 103 files
+E66 (ValidatedMeteredData_1.6): 103 files (varies by membership)
   Physical meters with production:     9 × 4 files = 36
   Physical meters without production: 12 × 3 files = 36
   Virtual meters (production):         9 × 3 files = 27
   Special virtual meter (0134575W):    1 × 4 files =  4
                                                Total: 103
 
-E31 (AggregatedMeteredData_1.3): 6 files
+E31 (AggregatedMeteredData_1.3): 6 files (always constant)
   Consumption (E17): Total + CEL + Grid = 3
   Production (E18): Total + CEL + Grid  = 3
                                                Total: 6
 
-                                    GRAND TOTAL: 109
+                              TOTAL FOR THIS COMMUNITY: 109
 ```
+
+**Note:** E66 file count will change when members join/leave or solar installations change.
 
 This implementation works well, but answers to the above questions will help us optimize and prepare for future changes.
 

@@ -2,14 +2,20 @@
 
 ## Summary
 
-**Exactly 109 files delivered daily** between 09:45-09:50
+**Daily delivery:** Multiple XML files delivered between 09:45-09:50
 
-- **103 E66 files** (ValidatedMeteredData_1.6 format)
-  - 31 unique meters (21 physical + 10 virtual)
-  - Each meter has 3-4 files depending on whether they have production
-- **6 E31 files** (AggregatedMeteredData_1.3 format)
-  - Community-level aggregated data
-  - Flow characteristics: E17 (consumption), E18 (production)
+**File count varies based on community size:**
+- E66 files (ValidatedMeteredData_1.6 format) - varies by member count
+- E31 files (AggregatedMeteredData_1.3 format) - always 6 files (community aggregates)
+
+**File count formula:**
+- Consumer-only member: 3 E66 files (consumption: total + CEL + Grid)
+- Producer member: 4 E66 files (+ production total)
+- Virtual meter (per producer): 3 E66 files (production breakdown)
+- Community aggregates: 6 E31 files (fixed)
+
+**Example: Community with 21 members (9 with solar, 12 without):**
+- 109 files daily = 103 E66 + 6 E31
 
 **For technical details on file structure, product codes, and data quality**, see **[PARSING_GUIDE.md](PARSING_GUIDE.md)**.
 
@@ -83,6 +89,10 @@ This virtual meter has no matching physical meter and has 4 files:
 
 ## File Count Calculation
 
+**Example: Community with 21 members**
+- 9 members with solar panels (producers)
+- 12 members without solar panels (consumers only)
+
 **E66 files** (ValidatedMeteredData_1.6):
 - Physical with production: 9 × 4 = 36 files
 - Physical without production: 12 × 3 = 36 files
@@ -91,17 +101,22 @@ This virtual meter has no matching physical meter and has 4 files:
 - **Subtotal: 36 + 36 + 27 + 4 = 103 files**
 
 **E31 files** (AggregatedMeteredData_1.3):
-- Community aggregated data: 6 files
+- Community aggregated data: **Always 6 files** (regardless of member count)
 
-**TOTAL: 103 + 6 = 109 files**
+**TOTAL for this example: 103 + 6 = 109 files**
 
-**Observed** (all delivery dates):
+**Observed for this community** (May 2026):
 - 2026-05-27: 109 files (103 E66 + 6 E31)
 - 2026-05-28: 109 files (103 E66 + 6 E31)
 - 2026-05-29: 109 files (103 E66 + 6 E31)
 - 2026-05-30: 109 files (103 E66 + 6 E31)
 
-✅ **Pattern confirmed: Exactly 109 files every day**
+✅ **Pattern: Consistent file count based on stable membership**
+
+**Note:** File count will change when:
+- New members join the community
+- Members install/remove solar panels
+- Members leave the community
 
 ## File Naming Pattern
 
@@ -131,20 +146,21 @@ Example (E66 - ValidatedMeteredData):
 - **Start**: ~09:45
 - **End**: ~09:50
 - **Duration**: 2-5 minutes
-- **Frequency**: All 109 files within this window
+- **Frequency**: All files delivered within this window
 
 ## Processing Implications
 
 **Current approach** (streaming): Process each file as it arrives
-- 109 files in 5 minutes = ~22 files/minute = ~1 file every 3 seconds
+- Example: 109 files in 5 minutes = ~22 files/minute = ~1 file every 3 seconds
 - Risk: Backlog if processing takes longer than arrival rate
 
-**Recommended approach** (batch): Wait for complete delivery
+**Implemented approach** (batch): Wait for complete delivery
 - Detect first file with new delivery date
-- Wait 10-15 minutes for all files
+- Wait 10 minutes after last file arrival
 - Process entire batch
 - Benefits:
   - Can handle missing files gracefully
-  - Can prioritize processing order
+  - Can handle variable file counts (different member counts)
+  - Auto-discovery runs before processing
   - Avoid race conditions
-  - Better logging (one summary instead of 109 messages)
+  - Better logging (one summary per batch)
