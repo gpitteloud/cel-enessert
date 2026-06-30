@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: cel-victoriametrics
+    restart: unless-stopped
+    ports:
+      - "8428:8428"
+    volumes:
+      - /volume1/docker/cel-parser/victoria-data:/victoria-metrics-data
+    command:
+      - "--storageDataPath=/victoria-metrics-data"
+      - "--httpListenAddr=:8428"
+      - "--retentionPeriod=24"
+    networks:
+      - cel-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: cel-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - /volume1/docker/cel-parser/grafana-data:/var/lib/grafana
+      - /volume1/docker/cel-parser/grafana-provisioning:/etc/grafana/provisioning
+      - /volume1/docker/cel-parser/grafana-dashboards:/var/lib/grafana/dashboards
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_community_overview.json
+    depends_on:
+      - victoriametrics
+    networks:
+      - cel-network
+
+  cel-parser:
+    image: python:3.11-slim
+    container_name: cel-parser
+    restart: unless-stopped
+    volumes:
+      - /volume1/ftproot:/data/incoming
+      - /volume1/docker/cel-parser/scripts:/app/scripts
+      - /volume1/docker/cel-parser/config:/app/config
+      - /volume1/docker/cel-parser/logs:/app/logs
+      - /volume1/docker/cel-parser/archive:/data/archive
+    working_dir: /app
+    command: >
+      sh -c "
+        pip install --no-cache-dir requests pyyaml watchdog &&
+        python scripts/watch_ftproot.py
+      "
+    environment:
+      - VICTORIA_METRICS_URL=http://victoriametrics:8428
+    depends_on:
+      - victoriametrics
+    networks:
+      - cel-network
+
+networks:
+  cel-network:
+    driver: bridge

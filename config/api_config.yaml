@@ -1,0 +1,38 @@
+# Configuration for CEL Community
+
+# VictoriaMetrics connection
+victoriametrics:
+  url: "http://victoriametrics:8428"
+
+# Project configuration
+project:
+  name: "cel"
+  community_name: "Coopérative Enessert"
+
+  # Metric prefix (all metrics will start with this)
+  metric_prefix: "cel_energy"
+
+  # Note: Meter mappings are auto-discovered from files
+  # No manual meter configuration needed
+
+# Data processing
+processing:
+  # Validate data before sending
+  validate: true
+
+  # Skip invalid data points instead of failing
+  skip_invalid: true
+
+  # Batch size for VictoriaMetrics requests
+  batch_size: 1000
+
+  # Archive processed files
+  archive_processed: true
+  archive_path: "data/archive"
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/parser.log"
+  max_size_mb: 10
+  backup_count: 5

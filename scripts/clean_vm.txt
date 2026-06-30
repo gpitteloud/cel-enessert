@@ -1,0 +1,10 @@
+python3 -c "
+import requests
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=cel_energy_consumed_kwh')
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=cel_energy_produced_kwh')
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=cel_energy_grid_import_kwh')
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=cel_energy_grid_export_kwh')
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=cel_energy_local_import_kwh')
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=cel_energy_local_export_kwh')
+requests.post('http://victoriametrics:8428/api/v1/admin/tsdb/delete_series?match[]=energy_community_aggregate_kwh')
+"

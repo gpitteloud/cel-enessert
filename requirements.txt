@@ -1,0 +1,11 @@
+# CEL Community - Python Dependencies
+# Simplified version (direct to VictoriaMetrics, no API server)
+
+# HTTP requests to VictoriaMetrics
+requests==2.31.0
+
+# YAML configuration parsing
+pyyaml==6.0.1
+
+# Optional: Directory watching for automation
+watchdog==4.0.0
