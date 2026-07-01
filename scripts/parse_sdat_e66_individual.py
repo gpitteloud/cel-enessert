@@ -12,43 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from enum import Enum
 import xml.etree.ElementTree as ET
-import yaml
-from zoneinfo import ZoneInfo
 
-# Import VictoriaMetrics sender
-from send_to_victoriametrics import send_batch
-
-# Configuration
-SCRIPT_DIR = Path(__file__).parent
-PROJECT_DIR = SCRIPT_DIR.parent
-CONFIG_DIR = PROJECT_DIR / "config"
-LOG_DIR = PROJECT_DIR / "logs"
-
-# Ensure directories exist
-LOG_DIR.mkdir(exist_ok=True)
-
-# Custom formatter for CET/CEST timezone
-class CETFormatter(logging.Formatter):
-    """Format log timestamps in CET/CEST timezone with automatic daylight saving"""
-    def formatTime(self, record, datefmt=None):
-        dt = datetime.fromtimestamp(record.created, tz=ZoneInfo('Europe/Zurich'))
-        if datefmt:
-            return dt.strftime(datefmt)
-        return dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-
-# Setup logging with CET timezone
-cet_formatter = CETFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-file_handler = logging.FileHandler(LOG_DIR / "parser.log")
-file_handler.setFormatter(cet_formatter)
-
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(cet_formatter)
-
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[file_handler, console_handler]
-)
 logger = logging.getLogger(__name__)
 
 
@@ -80,35 +44,6 @@ CODE_TO_METRIC: Dict[str, MetricType] = {}
 for metric, codes in PRODUCT_CODES.items():
     for code in codes:
         CODE_TO_METRIC[code] = metric
-
-
-def load_config():
-    """Load configuration files"""
-    with open(CONFIG_DIR / "api_config.yaml", 'r', encoding='utf-8') as f:
-        api_config = yaml.safe_load(f)
-    return api_config
-
-
-def load_meter_mappings():
-    """Load physical-to-virtual meter mappings"""
-    mappings_file = PROJECT_DIR / "meter_mappings.yaml"
-    if not mappings_file.exists():
-        logger.warning(f"Meter mappings file not found: {mappings_file}")
-        return {}
-
-    with open(mappings_file, 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f)
-
-    # Create reverse mapping: virtual_meter -> physical_meter
-    reverse_map = {}
-    if data and 'meter_mappings' in data:
-        for physical, info in data['meter_mappings'].items():
-            virtual = info['virtual_meter']
-            reverse_map[virtual] = physical
-            logger.debug(f"Mapping: {physical} (physical) <-> {virtual} (virtual)")
-
-    logger.info(f"Loaded {len(reverse_map)} meter mappings")
-    return reverse_map
 
 
 def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:

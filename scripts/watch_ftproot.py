@@ -45,10 +45,19 @@ logger = logging.getLogger(__name__)
 
 # Import parsers
 sys.path.insert(0, '/app/scripts')
-from parse_sdat_e66_individual import parse_sdat_xml, transform_to_datapoints, load_config
+from parse_sdat_e66_individual import parse_sdat_xml, transform_to_datapoints
 from parse_sdat_e31_aggregated import parse_e31_xml, transform_e31_to_datapoints
 from send_to_victoriametrics import send_batch
 from discover_meter_mappings import load_or_discover_mappings
+import yaml
+
+
+def load_config():
+    """Load configuration files"""
+    config_dir = Path('/app/config')
+    with open(config_dir / "api_config.yaml", 'r', encoding='utf-8') as f:
+        api_config = yaml.safe_load(f)
+    return api_config
 
 
 class SDATFileHandler(FileSystemEventHandler):
