@@ -93,8 +93,8 @@ Grafana (displays dashboards)
 ```
 /volume1/docker/cel-parser/
 ├── scripts/
-│   ├── parse_sdat_v16.py              # E66 parser (individual meters)
-│   ├── parse_e31_aggregated.py        # E31 parser (community aggregates)
+│   ├── parse_sdat_e66_individual.py              # E66 parser (individual meters)
+│   ├── parse_sdat_e31_aggregated.py        # E31 parser (community aggregates)
 │   ├── discover_meter_mappings.py     # Auto-discover physical-virtual mappings
 │   ├── send_to_victoriametrics.py     # Sends data to VM
 │   └── watch_ftproot.py               # Batch processor (auto-runs)

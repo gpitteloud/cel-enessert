@@ -250,35 +250,3 @@ def load_or_discover_mappings(data_dir: Path, cache_file: Path) -> Dict[str, str
     reverse_map = {virt: phys for phys, virt in mappings.items()}
     logger.info(f"Using {len(reverse_map)} meter mappings")
     return reverse_map
-
-
-if __name__ == '__main__':
-    import sys
-
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    if len(sys.argv) < 2:
-        print("Usage: discover_meter_mappings.py <data_directory> [output_file]")
-        print("Example: discover_meter_mappings.py /data/incoming /app/config/meter_mappings.yaml")
-        sys.exit(1)
-
-    data_dir = Path(sys.argv[1])
-    output_file = Path(sys.argv[2]) if len(sys.argv) > 2 else Path('meter_mappings.yaml')
-
-    if not data_dir.exists():
-        print(f"Error: Directory not found: {data_dir}")
-        sys.exit(1)
-
-    mappings = discover_mappings(data_dir)
-
-    if mappings:
-        save_mappings(mappings, output_file)
-        print(f"\n✓ Discovered {len(mappings)} mappings")
-        print(f"✓ Saved to: {output_file}")
-    else:
-        print("✗ No mappings discovered")
-        sys.exit(1)

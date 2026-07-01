@@ -45,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 # Import parsers
 sys.path.insert(0, '/app/scripts')
-from parse_sdat_v16 import parse_sdat_xml, transform_to_datapoints, load_config
-from parse_e31_aggregated import parse_e31_xml, transform_e31_to_datapoints
+from parse_sdat_e66_individual import parse_sdat_xml, transform_to_datapoints, load_config
+from parse_sdat_e31_aggregated import parse_e31_xml, transform_e31_to_datapoints
 from send_to_victoriametrics import send_batch
 from discover_meter_mappings import load_or_discover_mappings
 

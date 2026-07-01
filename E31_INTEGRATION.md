@@ -12,7 +12,7 @@ This document provides E31-specific Grafana queries and integration details. For
 
 ## What Changed
 
-### New Parser: `parse_e31_aggregated.py`
+### New Parser: `parse_sdat_e31_aggregated.py`
 
 **Purpose**: Parse E31 XML files containing community aggregates
 
@@ -153,13 +153,13 @@ sum(energy_kwh{
 ## Deployment
 
 ### Files to Deploy:
-1. `/app/scripts/parse_e31_aggregated.py` (new)
+1. `/app/scripts/parse_sdat_e31_aggregated.py` (new)
 2. `/app/scripts/watch_ftproot.py` (updated)
 
 ### Steps:
 ```bash
 # On development machine
-scp cel-community/scripts/parse_e31_aggregated.py synology:/volume1/docker/cel-parser/scripts/
+scp cel-community/scripts/parse_sdat_e31_aggregated.py synology:/volume1/docker/cel-parser/scripts/
 scp cel-community/scripts/watch_ftproot.py synology:/volume1/docker/cel-parser/scripts/
 
 # On Synology
@@ -172,7 +172,7 @@ docker logs -f cel-parser
 ### Testing:
 ```bash
 # Test E31 parser standalone
-docker exec cel-parser python3 /app/scripts/parse_e31_aggregated.py \
+docker exec cel-parser python3 /app/scripts/parse_sdat_e31_aggregated.py \
   /data/incoming/20260528_094741_12X-0000001536-1_E31_12X-00000020FW-5_813bf77c-5a69-11f1-b257-00000084413a.xml
 
 # Check VictoriaMetrics for E31 data

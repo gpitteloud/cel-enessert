@@ -109,25 +109,3 @@ def send_batch(data_points: List[Dict], vm_url: str = "http://localhost:8428", b
 
     logger.info(f"Sent {success_count} data points successfully, {error_count} errors")
     return success_count, error_count
-
-
-if __name__ == '__main__':
-    # Setup logging for standalone testing
-    cet_formatter = CETFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    handler = logging.StreamHandler()
-    handler.setFormatter(cet_formatter)
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
-
-    # Test with sample data
-    test_data = [{
-        "metric": {
-            "__name__": "cel_energy_consumed_kwh",
-            "project": "cel",
-            "meter_id": "CH101110123450000000000000217130Y"
-        },
-        "values": [1.234],
-        "timestamps": [int(datetime.now().timestamp() * 1000)]
-    }]
-
-    result = send_to_victoriametrics(test_data)
-    print(f"Test result: {'Success' if result else 'Failed'}")

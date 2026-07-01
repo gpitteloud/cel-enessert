@@ -61,8 +61,8 @@ echo ""
 # Check if files exist locally
 echo "Checking local files..."
 REQUIRED_FILES=(
-    "scripts/parse_sdat_v16.py"
-    "scripts/parse_e31_aggregated.py"
+    "scripts/parse_sdat_e66_individual.py"
+    "scripts/parse_sdat_e31_aggregated.py"
     "scripts/discover_meter_mappings.py"
     "scripts/send_to_victoriametrics.py"
     "scripts/watch_ftproot.py"
@@ -82,8 +82,8 @@ echo ""
 
 # Read all local files and encode
 echo "Reading local files..."
-PARSE_SDAT_V16=$(cat scripts/parse_sdat_v16.py | base64 -w 0)
-PARSE_E31=$(cat scripts/parse_e31_aggregated.py | base64 -w 0)
+PARSE_SDAT_E66=$(cat scripts/parse_sdat_e66_individual.py | base64 -w 0)
+PARSE_E31=$(cat scripts/parse_sdat_e31_aggregated.py | base64 -w 0)
 DISCOVER_MAPPINGS=$(cat scripts/discover_meter_mappings.py | base64 -w 0)
 SEND_VM=$(cat scripts/send_to_victoriametrics.py | base64 -w 0)
 WATCH_FTP=$(cat scripts/watch_ftproot.py | base64 -w 0)
@@ -110,8 +110,8 @@ sudo mkdir -p $TARGET_DIR/grafana-provisioning/dashboards
 sudo mkdir -p $TARGET_DIR/grafana-dashboards
 
 echo "Deploying scripts (5 files)..."
-echo "$PARSE_SDAT_V16_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/parse_sdat_v16.py > /dev/null
-echo "$PARSE_E31_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/parse_e31_aggregated.py > /dev/null
+echo "$PARSE_SDAT_E66_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/parse_sdat_e66_individual.py > /dev/null
+echo "$PARSE_E31_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/parse_sdat_e31_aggregated.py > /dev/null
 echo "$DISCOVER_MAPPINGS_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/discover_meter_mappings.py > /dev/null
 echo "$SEND_VM_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/send_to_victoriametrics.py > /dev/null
 echo "$WATCH_FTP_DATA" | base64 -d | sudo tee $TARGET_DIR/scripts/watch_ftproot.py > /dev/null
@@ -175,7 +175,7 @@ echo ""
 
 # Execute with environment variables and TTY
 ssh -t "$SYNOLOGY_USER_HOST" \
-    "export PARSE_SDAT_V16_DATA='$PARSE_SDAT_V16' && \
+    "export PARSE_SDAT_E66_DATA='$PARSE_SDAT_E66' && \
      export PARSE_E31_DATA='$PARSE_E31' && \
      export DISCOVER_MAPPINGS_DATA='$DISCOVER_MAPPINGS' && \
      export SEND_VM_DATA='$SEND_VM' && \

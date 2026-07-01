@@ -352,6 +352,12 @@ Production (E18):
 - ✅ **VSE breakdown**: CEL Local vs Grid split for production
 - ❌ **NOT real measurements**: These are estimated/calculated values
 
+**RCP meters** (Regroupement pour la Consommation Propre):
+- ✅ **Grid connection point**: Measures net exchange for multiple units
+- ✅ **Both consumption & production**: Functions like physical meter
+- ✅ **Gets breakdown data**: Participates in CEL trading
+- Example: Apartment building with shared solar, only net grid exchange metered
+
 ### The Mapping Challenge
 
 **Problem**: Provider delivers files with both physical and virtual meters, but doesn't tell us which virtual meter corresponds to which physical meter.
@@ -365,9 +371,10 @@ Production (E18):
 **Steps**:
 
 1. **Scan files** for production totals (ebIX code `8716867000030`)
-2. **Identify meter type**:
-   - Physical: Suffix doesn't start with `085`
-   - Virtual: Suffix starts with `085`
+2. **Identify meter type** by behavior:
+   - Physical: Has both consumption and production files
+   - Virtual: Has production files only (provides breakdown)
+   - **Note**: Virtual meters typically have suffixes starting with `085`, but this is not absolute
 3. **Match by total**:
    ```python
    if abs(physical_total - virtual_total) <= 0.1 kWh:
@@ -494,8 +501,8 @@ meter_mappings:
 ┌─────────────────────────────────────────────────────────────┐
 │  Parser Container (cel-parser)                              │
 │  ├─ Meter mapping discovery                                 │
-│  ├─ E66 parser (parse_sdat_v16.py)                          │
-│  ├─ E31 parser (parse_e31_aggregated.py)                    │
+│  ├─ E66 parser (parse_sdat_e66_individual.py)                          │
+│  ├─ E31 parser (parse_sdat_e31_aggregated.py)                    │
 │  └─ Batch processor (watch_ftproot.py)                      │
 └────────────────┬────────────────────────────────────────────┘
                  │ VictoriaMetrics NDJSON format

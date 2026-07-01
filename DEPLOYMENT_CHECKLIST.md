@@ -9,8 +9,8 @@
 
 ### 1. **NEW: E31 Parser**
 ```
-Source: cel-community/scripts/parse_e31_aggregated.py
-Target: synology:/volume1/docker/cel-parser/scripts/parse_e31_aggregated.py
+Source: cel-community/scripts/parse_sdat_e31_aggregated.py
+Target: synology:/volume1/docker/cel-parser/scripts/parse_sdat_e31_aggregated.py
 ```
 
 **What it does**: Parses E31 AggregatedMeteredData_1.3 files (community-level data)
@@ -32,7 +32,7 @@ Target: synology:/volume1/docker/cel-parser/scripts/watch_ftproot.py
 # From your development machine, in /home/copadev/projects/cel/
 
 # Copy E31 parser (NEW)
-scp cel-community/scripts/parse_e31_aggregated.py \
+scp cel-community/scripts/parse_sdat_e31_aggregated.py \
     synology:/volume1/docker/cel-parser/scripts/
 
 # Copy updated watcher (UPDATED)
@@ -137,7 +137,7 @@ cp /volume1/docker/cel-parser/scripts/watch_ftproot.py.backup \
    /volume1/docker/cel-parser/scripts/watch_ftproot.py
 
 # Remove E31 parser
-rm /volume1/docker/cel-parser/scripts/parse_e31_aggregated.py
+rm /volume1/docker/cel-parser/scripts/parse_sdat_e31_aggregated.py
 
 # Restart
 docker start cel-parser
@@ -167,14 +167,14 @@ After deployment, verify:
 ### Problem: E31 files not processing
 **Check**: 
 ```bash
-docker exec cel-parser ls -la /app/scripts/parse_e31_aggregated.py
+docker exec cel-parser ls -la /app/scripts/parse_sdat_e31_aggregated.py
 ```
 Should show the file exists
 
 ### Problem: Import errors in logs
 **Check**: 
 ```bash
-docker exec cel-parser python3 -c "from parse_e31_aggregated import parse_e31_xml; print('OK')"
+docker exec cel-parser python3 -c "from parse_sdat_e31_aggregated import parse_e31_xml; print('OK')"
 ```
 Should print "OK"
 
@@ -188,8 +188,8 @@ Should print "OK"
 **Check**: 
 ```bash
 # Verify both parsers are importable
-docker exec cel-parser python3 -c "from parse_sdat_v16 import parse_sdat_xml; print('E66 OK')"
-docker exec cel-parser python3 -c "from parse_e31_aggregated import parse_e31_xml; print('E31 OK')"
+docker exec cel-parser python3 -c "from parse_sdat_e66_individual import parse_sdat_xml; print('E66 OK')"
+docker exec cel-parser python3 -c "from parse_sdat_e31_aggregated import parse_e31_xml; print('E31 OK')"
 ```
 
 ---
