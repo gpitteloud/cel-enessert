@@ -481,7 +481,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "(sum(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}) / sum(cel_energy_consumed_kwh{meter_id=~\".*${meter_id}\"})) * 100",
+          "expr": "(sum(increase(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_grid_import_kwh{meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -551,7 +551,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "(sum(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"}) / sum(cel_energy_produced_kwh{meter_id=~\".*${meter_id}\"})) * 100",
+          "expr": "(sum(increase(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_grid_export_kwh{meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -648,7 +648,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_produced_kwh{meter_id=~\".*${meter_id}\"} - cel_energy_consumed_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "(sum(cel_energy_grid_export_kwh{meter_id=~\".*${meter_id}\"}) + sum(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"})) - (sum(cel_energy_grid_import_kwh{meter_id=~\".*${meter_id}\"}) + sum(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}))",
           "legendFormat": "Net Energy (positive = producing more)",
           "range": true,
           "refId": "A"

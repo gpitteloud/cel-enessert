@@ -8,7 +8,7 @@ services:
     ports:
       - "8428:8428"
     volumes:
-      - /volume1/docker/cel-parser/victoria-data:/victoria-metrics-data
+      - /volume1/docker/cel/victoria-data:/victoria-metrics-data
     command:
       - "--storageDataPath=/victoria-metrics-data"
       - "--httpListenAddr=:8428"
@@ -23,9 +23,9 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - /volume1/docker/cel-parser/grafana-data:/var/lib/grafana
-      - /volume1/docker/cel-parser/grafana-provisioning:/etc/grafana/provisioning
-      - /volume1/docker/cel-parser/grafana-dashboards:/var/lib/grafana/dashboards
+      - /volume1/docker/cel/grafana-data:/var/lib/grafana
+      - /volume1/docker/cel/grafana-provisioning:/etc/grafana/provisioning
+      - /volume1/docker/cel/grafana-dashboards:/var/lib/grafana/dashboards
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
@@ -42,10 +42,10 @@ services:
     restart: unless-stopped
     volumes:
       - /volume1/ftproot:/data/incoming
-      - /volume1/docker/cel-parser/scripts:/app/scripts
-      - /volume1/docker/cel-parser/config:/app/config
-      - /volume1/docker/cel-parser/logs:/app/logs
-      - /volume1/docker/cel-parser/archive:/data/archive
+      - /volume1/docker/cel/scripts:/app/scripts
+      - /volume1/docker/cel/config:/app/config
+      - /volume1/docker/cel/logs:/app/logs
+      - /volume1/docker/cel/archive:/data/archive
     working_dir: /app
     command: >
       sh -c "

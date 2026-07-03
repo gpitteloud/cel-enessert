@@ -401,6 +401,25 @@ def main():
     # Clean up any pre-existing duplicates in ftproot
     cleanup_duplicates(watch_dir, event_handler.processed_files)
 
+    # Process any existing files in the directory on startup
+    logger.info("Scanning for existing files in watch directory...")
+    existing_files = list(watch_dir.glob("*.xml"))
+    if existing_files:
+        logger.info(f"Found {len(existing_files)} existing XML files to process")
+        for xml_file in existing_files:
+            if xml_file.name not in event_handler.processed_files:
+                logger.info(f"Queuing existing file: {xml_file.name}")
+                # Simulate a file creation event for existing files
+                class FakeEvent:
+                    def __init__(self, path):
+                        self.src_path = str(path)
+                        self.is_directory = False
+                event_handler.on_created(FakeEvent(xml_file))
+            else:
+                logger.info(f"Skipping already-processed file: {xml_file.name}")
+    else:
+        logger.info("No existing files found in watch directory")
+
     # Create observer
     observer = Observer()
     observer.schedule(event_handler, str(watch_dir), recursive=False)

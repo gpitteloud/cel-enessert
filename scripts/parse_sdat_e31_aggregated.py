@@ -199,6 +199,7 @@ def transform_e31_to_datapoints(parsed_data: Dict) -> List[Dict]:
 
         # Build labels
         labels = {
+            'project': 'cel',
             'community_id': community_id,
             'community_type': community_type,
             'product_code': product_code,

@@ -10,21 +10,8 @@ import requests
 import logging
 import json
 from typing import List, Dict
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
-# Custom formatter for CET/CEST timezone
-class CETFormatter(logging.Formatter):
-    """Format log timestamps in CET/CEST timezone with automatic daylight saving"""
-    def formatTime(self, record, datefmt=None):
-        dt = datetime.fromtimestamp(record.created, tz=ZoneInfo('Europe/Zurich'))
-        if datefmt:
-            return dt.strftime(datefmt)
-        return dt.strftime('%Y-%m-%d %H:%M:%S %Z')
-
-# Setup logger with CET timezone
 logger = logging.getLogger(__name__)
-logger.propagate = True  # Use parent's handlers
 
 
 def send_to_victoriametrics(data_points: List[Dict], vm_url: str = "http://localhost:8428"):

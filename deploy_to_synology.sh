@@ -11,7 +11,7 @@ if [ -z "$1" ]; then
 fi
 
 SYNOLOGY_USER_HOST="$1"
-TARGET_DIR="/volume1/docker/cel-parser"
+TARGET_DIR="/volume1/docker/cel"
 
 echo "======================================"
 echo "CEL System - Synology Deployment v2.0"
@@ -97,7 +97,7 @@ ssh "$SYNOLOGY_USER_HOST" "cat > /tmp/cel_deploy.sh" << 'ENDSCRIPT'
 #!/bin/bash
 set -e
 
-TARGET_DIR="/volume1/docker/cel-parser"
+TARGET_DIR="/volume1/docker/cel"
 
 echo "Creating directory structure..."
 sudo mkdir -p $TARGET_DIR/scripts

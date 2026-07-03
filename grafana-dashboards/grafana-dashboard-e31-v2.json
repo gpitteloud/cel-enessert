@@ -23,10 +23,7 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -38,10 +35,7 @@
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -85,11 +79,11 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\"})",
+          "datasource": "VictoriaMetrics",
+          "editorMode": "code",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "Total Consumption",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -97,10 +91,7 @@
       "type": "stat"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -144,22 +135,19 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\"})",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "Total Production",
+          "range": true
         }
       ],
       "title": "Total Production",
       "type": "stat"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -211,22 +199,19 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "100 * sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\"}) / sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\"})",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "100 * (sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])) / sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])))",
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "Total Consumption",
+          "range": true
         }
       ],
       "title": "Self-Sufficiency Rate (CEL Local %)",
       "type": "gauge"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -278,22 +263,19 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "100 * sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\"}) / sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\"})",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "100 * (sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])) / sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])))",
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "Total Consumption",
+          "range": true
         }
       ],
       "title": "Grid Dependency (Grid %)",
       "type": "gauge"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -305,10 +287,7 @@
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -338,7 +317,7 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -401,6 +380,21 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total Consumption"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              }
+            ]
           }
         ]
       },
@@ -429,41 +423,35 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\"}",
-          "legendFormat": "Total",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "Total Consumption",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\"}",
-          "legendFormat": "CEL Local",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "From CEL",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\"}",
-          "legendFormat": "Grid",
-          "refId": "C"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "From Grid",
+          "refId": "C",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Community Consumption Over Time",
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -519,32 +507,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\"})",
-          "legendFormat": "CEL Local",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "From CEL",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\"})",
-          "legendFormat": "Grid",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "From Grid",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Consumption Source Distribution",
       "type": "piechart"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -556,10 +539,7 @@
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -589,7 +569,7 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -652,6 +632,21 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total Production"
+            },
+            "properties": [
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              }
+            ]
           }
         ]
       },
@@ -680,41 +675,35 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\"}",
-          "legendFormat": "Total",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "legendFormat": "Total Production",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E18\"}",
-          "legendFormat": "Used in CEL",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "legendFormat": "To CEL",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E18\"}",
-          "legendFormat": "Exported to Grid",
-          "refId": "C"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "legendFormat": "To Grid",
+          "refId": "C",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Community Production Over Time",
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -770,32 +759,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E18\"})",
-          "legendFormat": "Used in CEL",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "legendFormat": "To CEL",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E18\"})",
-          "legendFormat": "Exported to Grid",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "legendFormat": "To Grid",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Production Usage Distribution",
       "type": "piechart"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -807,10 +791,7 @@
       "type": "row"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -931,32 +912,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\"}",
-          "legendFormat": "E31 Aggregate",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "legendFormat": "E31 Total",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_kwh{product_code=\"8716867000030\", data_type=\"consumption\"})",
-          "legendFormat": "E66 Sum",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "sum(cel_energy_grid_import_kwh{project=\"cel\"}) + sum(cel_energy_local_import_kwh{project=\"cel\"})",
+          "legendFormat": "Sum(E66)",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Consumption Validation: E31 vs Sum of E66",
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1077,32 +1053,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\"}",
-          "legendFormat": "E31 Aggregate",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "legendFormat": "E31 Total",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "sum(energy_kwh{product_code=\"8716867000030\", data_type=\"production\"})",
-          "legendFormat": "E66 Sum",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "sum(cel_energy_grid_export_kwh{project=\"cel\"}) + sum(cel_energy_local_export_kwh{project=\"cel\"})",
+          "legendFormat": "Sum(E66)",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Production Validation: E31 vs Sum of E66",
       "type": "timeseries"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_VICTORIAMETRICS}"
-      },
+      "datasource": "VictoriaMetrics",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1178,22 +1149,20 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\"} - sum(energy_kwh{product_code=\"8716867000030\", data_type=\"consumption\"})",
-          "legendFormat": "Consumption Difference",
-          "refId": "A"
+          "datasource": "VictoriaMetrics",
+          "expr": "sum by() (energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}) - sum by() (cel_energy_grid_import_kwh{project=\"cel\"}) + sum by() (cel_energy_local_import_kwh{project=\"cel\"})",
+          "legendFormat": "Consumption: E31 - Sum(E66)",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_VICTORIAMETRICS}"
-          },
-          "expr": "energy_community_aggregate_kwh{community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\"} - sum(energy_kwh{product_code=\"8716867000030\", data_type=\"production\"})",
-          "legendFormat": "Production Difference",
-          "refId": "B"
+          "datasource": "VictoriaMetrics",
+          "expr": "sum by() (energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}) - sum by() (cel_energy_grid_export_kwh{project=\"cel\"}) + sum by() (cel_energy_local_export_kwh{project=\"cel\"})",
+          "legendFormat": "Production: E31 - Sum(E66)",
+          "refId": "B",
+          "editorMode": "code",
+          "range": true
         }
       ],
       "title": "Validation Difference (E31 - E66) - Should be close to zero",
@@ -1213,13 +1182,13 @@
     "list": []
   },
   "time": {
-    "from": "now-7d",
+    "from": "now-90d",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "Europe/Zurich",
-  "title": "CEL Community Aggregates (E31)",
-  "uid": "cel-community-e31",
+  "title": "CEL Community Aggregates E31 v2",
+  "uid": "cel-community-e31-v2",
   "version": 1,
   "weekStart": "monday"
 }
