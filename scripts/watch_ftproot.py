@@ -16,6 +16,7 @@ import shutil
 import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import zipfile
 
 # Custom formatter for CET/CEST timezone (Europe/Zurich)
 class CETFormatter(logging.Formatter):
@@ -100,10 +101,10 @@ class SDATFileHandler(FileSystemEventHandler):
         self._load_processed_files()
 
     def _load_processed_files(self):
-        """Load list of already-processed files from archive directory"""
+        """Load list of already-processed files from archive directory (including zip files)"""
         try:
             if self.archive_dir.exists():
-                # Get base filenames (without timestamp suffixes)
+                # Get base filenames from standalone XML files
                 for archive_file in self.archive_dir.glob("*.xml"):
                     # Remove timestamp suffix if present: filename_20260606_211530.xml -> filename.xml
                     name = archive_file.name
@@ -118,6 +119,16 @@ class SDATFileHandler(FileSystemEventHandler):
                                 name = '_'.join(parts[:-2]) + '.xml'
 
                     self.processed_files.add(name)
+
+                # Also check inside zip files
+                for zip_file in self.archive_dir.glob("*.zip"):
+                    try:
+                        with zipfile.ZipFile(zip_file, 'r') as zipf:
+                            for filename in zipf.namelist():
+                                if filename.endswith('.xml'):
+                                    self.processed_files.add(filename)
+                    except Exception as e:
+                        logger.warning(f"Could not read zip file {zip_file.name}: {e}")
 
                 logger.info(f"Loaded {len(self.processed_files)} previously processed files from archive")
         except Exception as e:
@@ -198,6 +209,7 @@ class SDATFileHandler(FileSystemEventHandler):
         # Process all files in batch
         success_count = 0
         error_count = 0
+        successfully_processed_files = []
 
         for file_path in self.pending_files:
             # Check if file still exists (might have been manually deleted)
@@ -223,12 +235,17 @@ class SDATFileHandler(FileSystemEventHandler):
 
             try:
                 self.process_file(file_path)
+                successfully_processed_files.append(file_path)
                 success_count += 1
             except Exception as e:
                 logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
                 error_count += 1
                 # Release lock on error
                 self.processing.discard(str(file_path))
+
+        # Archive successfully processed files as a zip
+        if successfully_processed_files and self.current_delivery_date:
+            self.archive_batch_as_zip(successfully_processed_files, self.current_delivery_date)
 
         # Clear batch
         self.pending_files = []
@@ -327,8 +344,46 @@ class SDATFileHandler(FileSystemEventHandler):
             # Always release lock, even if we returned early
             self.processing.discard(str(file_path))
 
+    def archive_batch_as_zip(self, file_paths: list, date_str: str):
+        """Archive a batch of files as a single zip file named by date (YYYYMMDD.zip)"""
+        try:
+            zip_filename = f"{date_str}.zip"
+            zip_path = self.archive_dir / zip_filename
+
+            # If zip already exists, add timestamp to make unique
+            if zip_path.exists():
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                zip_filename = f"{date_str}_{timestamp}.zip"
+                zip_path = self.archive_dir / zip_filename
+                logger.info(f"Zip file exists, using: {zip_filename}")
+
+            logger.info(f"Creating archive: {zip_filename} with {len(file_paths)} files")
+
+            # Create zip file
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for file_path in file_paths:
+                    if file_path.exists():
+                        zipf.write(file_path, arcname=file_path.name)
+                        logger.debug(f"Added {file_path.name} to zip")
+
+            logger.info(f"Created archive: {zip_filename}")
+
+            # Remove original files after successful zipping
+            for file_path in file_paths:
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.debug(f"Removed original file: {file_path.name}")
+                    # Mark file as processed
+                    self.processed_files.add(file_path.name)
+
+            logger.info(f"Archived {len(file_paths)} files to {zip_filename}")
+
+        except Exception as e:
+            logger.error(f"Failed to create zip archive {date_str}.zip: {e}", exc_info=True)
+            logger.warning("Files not deleted due to archiving error")
+
     def archive_file(self, file_path: Path):
-        """Move processed file to archive"""
+        """Move processed file to archive (used for single file processing)"""
         try:
             archive_path = self.archive_dir / file_path.name
 

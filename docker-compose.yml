@@ -31,6 +31,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_INSTALL_PLUGINS=
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_community_overview.json
+      - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
+      - GF_SERVER_DOMAIN=grafana.oche22.ch
     depends_on:
       - victoriametrics
     networks:
@@ -58,6 +60,21 @@ services:
       - victoriametrics
     networks:
       - cel-network
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    user: root
+    command: tunnel --config /etc/cloudflared/config.yml run grafana
+    volumes:
+      - /volume1/docker/cel/cloudflared:/etc/cloudflared:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - cel-network
+    depends_on:
+      - grafana
 
 networks:
   cel-network:
