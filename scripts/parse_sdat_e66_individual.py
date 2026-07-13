@@ -5,6 +5,8 @@ SDAT ValidatedMeteredData_1.6 XML Parser for Swiss CEL
 Parses Swiss energy provider XML files following ValidatedMeteredData_1.6 schema.
 Schema location: http://www.strom.ch ValidatedMeteredData_1p6.xsd
 """
+# TG: pour plus de robustesse, je proposerais de ne pas splitter en 2 scripts lancés en fonction du nom de fichier, 
+# mais plutôt de vérifier la valeur de rsm:ValidatedMeteredData_HeaderInformation/rsm:InstanceDocument/rsm:DocumentType au moment de la lecture du fichier 
 
 import logging
 from datetime import datetime, timedelta
@@ -29,14 +31,21 @@ class MetricType(str, Enum):
 # Product code mapping (ebIXCode)
 PRODUCT_CODES = {
     # Consumption codes
+    # TG: Comment sont déterminés ces mapping ? d'après les guidelines de l'AES, Core Components, Annexe 3, les codes correspondent à ce qui suit:
     MetricType.CONSUMPTION_TOTAL: ['8716867000016', '735_001'],
+    # TG -> Puissance active
     MetricType.CONSUMPTION_GRID: ['8716867000023', '735_002'],
+    # TG -> Puissance réactive
     MetricType.CONSUMPTION_LOCAL: ['8716867000030', '735_003'],
+    # TG -> Énergie active
 
     # Production codes
     MetricType.PRODUCTION_TOTAL: ['8716867000047', '736_001'],
+    # TG -> Énergie réactive
     MetricType.PRODUCTION_GRID: ['8716867000054', '736_002'],
+    # TG -> ? non mentionné
     MetricType.PRODUCTION_LOCAL: ['8716867000061', '736_003'],
+    # TG -> ? non mentionné
 }
 
 # Reverse mapping: product code -> MetricType
@@ -111,6 +120,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
             logger.info(f"Meter ID: {meter_id}")
         else:
             # Aggregated data (no meter ID)
+            # TG ce cas de figure n'est pas possible pour des données individuelles, il faut lancer une erreur si on tombe dessus.  
             result['meter_id'] = None
             result['metering_point_type'] = 'aggregated'
             logger.info("Aggregated metering data (no meter ID)")
@@ -127,6 +137,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
         # Extract resolution
         resolution_elem = metering_data.find('.//rsm:Resolution/rsm:Resolution', ns)
         unit_elem = metering_data.find('.//rsm:Resolution/rsm:Unit', ns)
+        # TG: je ne mettrais pas de valeur par défaut ici - il faut renvoyer une erreur si la résolution n'est pas fournie
         resolution_minutes = 15  # Default
         if resolution_elem is not None and unit_elem is not None:
             if unit_elem.text == 'MIN':
@@ -152,6 +163,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
             metric_type = CODE_TO_METRIC.get(product_code)
 
             # Special handling for VSE codes (Swiss national codes)
+            # TG: On n'a pas besoin de vérifier le code_type: les codes de type 2404050010123/2404050010124 sont nécessairement VSENAtionalCode
             if code_type == 'VSENationalCode':
                 metering_type = result.get('metering_point_type')
 
@@ -217,6 +229,8 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
 
         # Extract observations
         observations = []
+        # TG faire ceci séquenciellement n'est-il pas très long? Potentiellement plus efficace de paralelliser les traitements (utiliser pandas? 
+        # https://pandas.pydata.org/docs/reference/api/pandas.read_xml.html )
         for obs in metering_data.findall('.//rsm:Observation', ns):
             seq_elem = obs.find('.//rsm:Position/rsm:Sequence', ns)
             vol_elem = obs.find('.//rsm:Volume', ns)
@@ -274,6 +288,7 @@ def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> Lis
     METRIC_NAMES = {
         MetricType.CONSUMPTION_GRID: 'cel_energy_grid_import_kwh',
         MetricType.PRODUCTION_GRID: 'cel_energy_grid_export_kwh',
+        # TG: c'est quoi cel_energy_local_import_kwh et cel_energy_local_export_kwh ?
         MetricType.CONSUMPTION_LOCAL: 'cel_energy_local_import_kwh',
         MetricType.PRODUCTION_LOCAL: 'cel_energy_local_export_kwh',
         MetricType.CONSUMPTION_TOTAL: 'cel_energy_consumed_kwh',
@@ -298,6 +313,7 @@ def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> Lis
         return []
 
     # If this is community meter with production VSE codes, use user's meter ID
+    # TG: What is meant with "community meter" ? Why fall back to using the meter of the user ? the xml provides a community ID
     if is_community_breakdown and user_meter_id:
         meter_id = user_meter_id
         logger.info(f"Community production breakdown attributed to user meter: {user_meter_id}")
@@ -319,6 +335,8 @@ def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> Lis
         if meter_id:
             labels['meter_id'] = meter_id
 
+        #TG: Isn't this unnecesarily clutering the database with duplicate labels? 
+        # Would it be possible for each datapoint to refer to a separate labels table, which would include the document name?
         data_point = {
             'metric': labels,
             'values': [obs['value']],
