@@ -79,7 +79,8 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
     - end_time: datetime
     - resolution_minutes: int
     - observations: List[{sequence: int, value: float, timestamp: datetime}]
-    - is_community_production_breakdown: bool (if this is community meter with production VSE codes)
+    - is_production_breakdown: bool (production file carrying VSE CEL/Grid
+      breakdown codes, attributed to a physical meter - mapped or self-contained)
     """
     logger.info(f"Parsing XML file: {xml_file}")
 
@@ -217,7 +218,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
                     logger.error(f"Unknown virtual meter {meter_suffix} - no mapping found in auto-discovery. Skipping file.")
                     return None
 
-            result['is_community_production_breakdown'] = is_virtual_production
+            result['is_production_breakdown'] = is_virtual_production
             result['attributed_physical_meter'] = attributed_physical_meter
 
             result['product_code'] = product_code
@@ -276,7 +277,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
         raise
 
 
-def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> List[Dict]:
+def transform_to_datapoints(parsed_data: Dict, attributed_meter_id: str = None) -> List[Dict]:
     """
     Transform parsed data into VictoriaMetrics data points
 
@@ -287,8 +288,12 @@ def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> Lis
         "timestamps": [timestamp_ms]
     }
 
-    Special handling:
-    - If this is community meter production VSE codes, attribute to user meter
+    Args:
+        parsed_data: output of parse_sdat_xml()
+        attributed_meter_id: for a production breakdown file, the full ID of the
+            physical meter the breakdown belongs to (from mapping or self-
+            contained detection). Overrides the meter_id label so the breakdown
+            is stored against the physical meter rather than the virtual one.
     """
     if not parsed_data or not parsed_data.get('observations'):
         return []
@@ -309,7 +314,7 @@ def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> Lis
     metric_type: Optional[MetricType] = parsed_data.get('metric_type')
     product_code = parsed_data.get('product_code', 'unknown')
     code_type = parsed_data.get('code_type', 'unknown')
-    is_community_breakdown = parsed_data.get('is_community_production_breakdown', False)
+    is_production_breakdown = parsed_data.get('is_production_breakdown', False)
 
     if not metric_type:
         logger.warning("No metric type found, skipping")
@@ -321,11 +326,12 @@ def transform_to_datapoints(parsed_data: Dict, user_meter_id: str = None) -> Lis
         logger.warning(f"Unknown metric type: {metric_type}")
         return []
 
-    # If this is community meter with production VSE codes, use user's meter ID
-    # TG: What is meant with "community meter" ? Why fall back to using the meter of the user ? the xml provides a community ID
-    if is_community_breakdown and user_meter_id:
-        meter_id = user_meter_id
-        logger.info(f"Community production breakdown attributed to user meter: {user_meter_id}")
+    # For a production breakdown file, store it against the attributed physical
+    # meter (from mapping or self-contained detection) rather than the virtual
+    # meter ID that appears in the file itself.
+    if is_production_breakdown and attributed_meter_id:
+        meter_id = attributed_meter_id
+        logger.info(f"Production breakdown attributed to physical meter: {attributed_meter_id}")
 
     # Convert each observation to VictoriaMetrics format
     for obs in parsed_data['observations']:

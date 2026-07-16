@@ -321,9 +321,9 @@ class SDATFileHandler(FileSystemEventHandler):
                     logger.warning(f"No data found in E66 file {file_path.name}")
                     return False
 
-                # Get full meter ID for virtual meter breakdown attribution
-                user_full_meter_id = None
-                if parsed_data.get('is_community_production_breakdown'):
+                # Get full meter ID for production breakdown attribution
+                attributed_meter_id = None
+                if parsed_data.get('is_production_breakdown'):
                     # Use attributed physical meter from auto-discovery
                     attributed_meter = parsed_data.get('attributed_physical_meter')
 
@@ -334,11 +334,11 @@ class SDATFileHandler(FileSystemEventHandler):
                         logger.error(f"This indicates a new member was added. Run discovery manually or wait for next batch.")
                         return False
 
-                    user_full_meter_id = f"CH101110123450000000000000{attributed_meter}"
-                    logger.info(f"Attributing virtual meter data to physical meter: {attributed_meter}")
+                    attributed_meter_id = f"CH101110123450000000000000{attributed_meter}"
+                    logger.info(f"Attributing production breakdown to physical meter: {attributed_meter}")
 
                 # Transform to data points
-                data_points = transform_to_datapoints(parsed_data, user_meter_id=user_full_meter_id)
+                data_points = transform_to_datapoints(parsed_data, attributed_meter_id=attributed_meter_id)
 
             else:
                 logger.warning(f"Unknown file type (neither E31 nor E66): {file_path.name}")
