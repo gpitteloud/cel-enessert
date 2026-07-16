@@ -3,6 +3,9 @@ input/
 data/
 logs/
 
+# repair tools used locally, not be included in the image
+toolbox/
+
 # Auto-generated files (contains real meter IDs)
 config/meter_mappings.yaml
 
