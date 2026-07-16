@@ -55,7 +55,7 @@ for metric, codes in PRODUCT_CODES.items():
         CODE_TO_METRIC[code] = metric
 
 
-def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
+def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_production_meters: set = None) -> Dict:
     """
     Parse ValidatedMeteredData_1.6 XML file
 
@@ -67,6 +67,9 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
     Args:
         xml_file: Path to XML file
         meter_mappings: Dict mapping virtual_meter_id -> physical_meter_id (optional)
+        physical_production_meters: Set of meter suffixes that report an ebIX
+            production total. Used to detect self-contained meters that carry
+            both the total and the VSE breakdown on the same meter ID (optional)
 
     Returns dict with:
     - meter_id: str
@@ -199,10 +202,16 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None) -> Dict:
                 meter_suffix = meter_id[-8:] if meter_id and len(meter_id) >= 8 else None
 
                 if meter_mappings and meter_suffix in meter_mappings:
-                    # Using mappings: check if this is a known virtual meter
+                    # Using mappings: this is a separate virtual meter mapped to a physical one
                     is_virtual_production = True
                     attributed_physical_meter = meter_mappings[meter_suffix]
                     logger.info(f"Virtual meter {meter_suffix} -> attributing to physical meter {attributed_physical_meter}")
+                elif meter_suffix and physical_production_meters and meter_suffix in physical_production_meters:
+                    # Self-contained meter: the production breakdown is on the same meter ID
+                    # that also reports the ebIX production total. Attribute to itself.
+                    is_virtual_production = True
+                    attributed_physical_meter = meter_suffix
+                    logger.info(f"Self-contained meter {meter_suffix} -> attributing production breakdown to itself")
                 else:
                     # No mapping found - skip this virtual meter
                     logger.error(f"Unknown virtual meter {meter_suffix} - no mapping found in auto-discovery. Skipping file.")

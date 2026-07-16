@@ -14,6 +14,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Dict, Tuple
 import logging
+import zipfile
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,82 @@ def get_virtual_meters_from_files(data_dir: Path, sample_size: int = 50) -> set:
             continue
 
     return virtual_meters
+
+
+def _physical_meter_suffix_from_root(root) -> str:
+    """Return the meter suffix if this XML is a production file reporting an
+    ebIX production total (8716867000030), else None."""
+    meter_elem = root.find('.//{http://www.strom.ch}VSENationalID')
+    if meter_elem is None or meter_elem.text is None:
+        return None
+
+    # Must be a production metering point
+    if root.find('.//{http://www.strom.ch}ProductionMeteringPoint') is None:
+        return None
+
+    # Must have ebIX production total code
+    product = root.find('.//{http://www.strom.ch}Product')
+    if product is None:
+        return None
+    ebix_elem = product.find('.//{http://www.strom.ch}ID/{http://www.strom.ch}ebIXCode')
+    if ebix_elem is None or ebix_elem.text != '8716867000030':
+        return None
+
+    return meter_elem.text[-8:] if len(meter_elem.text) >= 8 else meter_elem.text
+
+
+def get_physical_production_meters(data_dir: Path, archive_dir: Path = None) -> set:
+    """
+    Find all meter suffixes that report an ebIX production total (8716867000030).
+
+    These are "physical" production meters. A meter that also carries VSE
+    breakdown codes on the SAME suffix is self-contained (its breakdown is
+    attributed to itself, not to a separate virtual meter).
+
+    Scans loose XML files in data_dir/archive_dir AND inside archive zip files
+    (once files are zipped, the ebIX total lives only inside the zip - this is
+    essential when replaying extracted breakdown files whose totals are zipped).
+
+    Returns: set of meter suffixes
+    """
+    physical_meters = set()
+
+    # 1. Loose XML files in incoming
+    xml_files = sorted(data_dir.glob('*.xml'))
+
+    # If incoming has few files, also check loose XMLs in archive
+    if len(xml_files) < 100 and archive_dir and archive_dir.exists():
+        xml_files.extend(sorted(archive_dir.glob('*.xml')))
+
+    for xml_file in xml_files:
+        try:
+            root = ET.parse(xml_file).getroot()
+            suffix = _physical_meter_suffix_from_root(root)
+            if suffix:
+                physical_meters.add(suffix)
+        except Exception:
+            continue
+
+    # 2. XML files inside archive zips
+    if archive_dir and archive_dir.exists():
+        for zip_path in sorted(archive_dir.glob('*.zip')):
+            try:
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    for name in zf.namelist():
+                        if not name.endswith('.xml') or '_E66_' not in name:
+                            continue
+                        try:
+                            root = ET.fromstring(zf.read(name))
+                            suffix = _physical_meter_suffix_from_root(root)
+                            if suffix:
+                                physical_meters.add(suffix)
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.warning(f"Could not read zip {zip_path.name}: {e}")
+
+    logger.info(f"Found {len(physical_meters)} physical production meters (ebIX total)")
+    return physical_meters
 
 
 def load_or_discover_mappings(data_dir: Path, cache_file: Path) -> Dict[str, str]:

@@ -146,6 +146,32 @@ Virtual Meter: CH10111012345000000000000008574078
 
 **Key Insight**: Virtual meter's production total matches physical meter's production total. This is how we discover the pairing!
 
+#### Self-Contained Meters (newer pattern)
+
+Some members (e.g. meter suffix `0134575W`, joined ~July 2026) report their
+production breakdown **on the same meter ID** as the production total, instead
+of via a separate `085`-prefixed virtual meter.
+
+```
+Meter: CH101110123450000000000000134575W
+├─ Production Total:     851.234 kWh (ebIX 8716867000030)
+├─ Production CEL Local: 124.148 kWh (VSE 2404050010123, estimated)
+└─ Production Grid:      727.086 kWh (VSE 2404050010124, estimated)
+                         (124.148 + 727.086 = 851.234 ✓)
+```
+
+**Key differences from the virtual-meter pattern**:
+- No separate `085xxxxx` meter — total and breakdown share one meter ID
+- No production-total matching needed — the breakdown is attributed to the
+  meter **itself**
+- The suffix does **not** start with `085`
+
+**How it's handled**: During discovery we collect the set of all meter suffixes
+that report an ebIX production total (the "physical production meters"). When a
+production file carries VSE breakdown codes and its own suffix is in that set,
+the parser attributes the breakdown to itself rather than looking for a virtual
+→ physical mapping. See [Meter Mapping Discovery](#meter-mapping-discovery).
+
 ---
 
 ## Energy Codes Explained
@@ -399,6 +425,28 @@ Virtual meter 08552310: production total = 189.234 kWh
 Discovered 9 meter mappings
 ```
 
+### Two Kinds of Production Breakdown
+
+When the parser encounters a production file carrying VSE breakdown codes
+(`2404050010123` / `2404050010124`), it decides where to attribute the
+breakdown in this order:
+
+1. **Separate virtual meter** — the suffix is a known `085xxxxx` virtual meter
+   present in the discovered mappings → attribute to its paired physical meter.
+2. **Self-contained meter** — the suffix is itself a physical production meter
+   (it reports an ebIX production total) → attribute the breakdown to itself.
+3. **Unknown** — neither of the above → the file is skipped and logged as an
+   error (indicates a genuinely new, unrecognized meter).
+
+To support case 2, discovery also builds the set of all suffixes that report an
+ebIX production total (`get_physical_production_meters()`), passed to the parser
+alongside the virtual→physical mappings.
+
+> **History**: Before July 2026 all members used the separate-virtual-meter
+> pattern (case 1). Meter `0134575W` introduced the self-contained pattern
+> (case 2); before the parser handled it, its 2 daily production-breakdown files
+> were skipped with `Unknown virtual meter 0134575W`.
+
 ### Discovered Mappings
 
 Current community mappings (as of June 2026):
@@ -415,7 +463,10 @@ Current community mappings (as of June 2026):
 | `0208254A` | `0857405E` | ✓ Confirmed |
 | `0803097E` | `0855225S` | ✓ Confirmed |
 
-**Special case**: Virtual meter `0134575W` has no matching physical meter (appears to have both consumption and production files).
+**Self-contained meter**: `0134575W` (joined ~July 2026) is **not** a virtual
+meter and has no mapping entry. It reports its production total *and* its VSE
+production breakdown on the same meter ID, so its breakdown is attributed to
+itself. See [Self-Contained Meters](#self-contained-meters-newer-pattern).
 
 ---
 
@@ -432,6 +483,7 @@ Current community mappings (as of June 2026):
 - Checks for new virtual meters in incoming files
 - Re-discovers if new meters detected
 - Updates cache with new mappings
+- Rebuilds the physical-production-meter set (for self-contained meters)
 
 **3. Automatic cache refresh**:
 - Cache is valid indefinitely
