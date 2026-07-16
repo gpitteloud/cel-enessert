@@ -49,7 +49,7 @@ sys.path.insert(0, '/app/scripts')
 from parse_sdat_e66_individual import parse_sdat_xml, transform_to_datapoints
 from parse_sdat_e31_aggregated import parse_e31_xml, transform_e31_to_datapoints
 from send_to_victoriametrics import send_batch
-from discover_meter_mappings import load_or_discover_mappings
+from discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
 import yaml
 
 
@@ -96,6 +96,13 @@ class SDATFileHandler(FileSystemEventHandler):
             logger.info(f"Loaded {len(self.meter_mappings)} meter mappings for community members")
         else:
             logger.warning("No meter mappings found - will use backward compatibility mode")
+
+        # Discover self-contained meters (those that carry both ebIX production
+        # total and VSE breakdown on the same meter ID - no separate virtual meter)
+        self.physical_production_meters = get_physical_production_meters(
+            self.incoming_dir, self.archive_dir
+        )
+        logger.info(f"Found {len(self.physical_production_meters)} physical production meters")
 
         # Load previously processed files from archive
         self._load_processed_files()
@@ -206,6 +213,12 @@ class SDATFileHandler(FileSystemEventHandler):
             self.meter_mappings = new_mappings
             logger.info(f"Using {len(self.meter_mappings)} meter mappings for this batch")
 
+        # Refresh self-contained physical production meters for this batch
+        self.physical_production_meters = get_physical_production_meters(
+            self.incoming_dir, self.archive_dir
+        )
+        logger.info(f"Using {len(self.physical_production_meters)} physical production meters for this batch")
+
         # Process all files in batch
         success_count = 0
         error_count = 0
@@ -234,16 +247,21 @@ class SDATFileHandler(FileSystemEventHandler):
             self.processing.add(str(file_path))
 
             try:
-                self.process_file(file_path)
-                successfully_processed_files.append(file_path)
-                success_count += 1
+                if self.process_file(file_path):
+                    # Only archive files that were fully processed
+                    successfully_processed_files.append(file_path)
+                    success_count += 1
+                else:
+                    # Skipped/errored - leave file in source folder for retry
+                    logger.warning(f"File not processed, keeping in source folder: {file_path.name}")
+                    error_count += 1
             except Exception as e:
                 logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
                 error_count += 1
                 # Release lock on error
                 self.processing.discard(str(file_path))
 
-        # Archive successfully processed files as a zip
+        # Archive successfully processed files as a zip (skipped/errored files stay in source)
         if successfully_processed_files and self.current_delivery_date:
             self.archive_batch_as_zip(successfully_processed_files, self.current_delivery_date)
 
@@ -262,9 +280,15 @@ class SDATFileHandler(FileSystemEventHandler):
         # This prevents duplicate processing when FTP triggers both created and modified events
         pass
 
-    def process_file(self, file_path: Path):
+    def process_file(self, file_path: Path) -> bool:
         """Process a single XML file (E66 or E31)
+
         Note: Lock should already be acquired by the caller (event handler)
+
+        Returns:
+            True if the file was fully processed and sent to VictoriaMetrics.
+            False if it was skipped or errored (file should remain in source
+            folder and NOT be archived).
         """
         try:
             logger.info(f"Processing {file_path.name}")
@@ -279,7 +303,7 @@ class SDATFileHandler(FileSystemEventHandler):
 
                 if not parsed_data or not parsed_data.get('observations'):
                     logger.warning(f"No data found in E31 file {file_path.name}")
-                    return
+                    return False
 
                 # Transform to data points
                 data_points = transform_e31_to_datapoints(parsed_data)
@@ -289,12 +313,13 @@ class SDATFileHandler(FileSystemEventHandler):
                 # Parse XML with meter mappings
                 parsed_data = parse_sdat_xml(
                     file_path,
-                    meter_mappings=self.meter_mappings
+                    meter_mappings=self.meter_mappings,
+                    physical_production_meters=self.physical_production_meters
                 )
 
                 if not parsed_data or not parsed_data.get('observations'):
                     logger.warning(f"No data found in E66 file {file_path.name}")
-                    return
+                    return False
 
                 # Get full meter ID for virtual meter breakdown attribution
                 user_full_meter_id = None
@@ -307,7 +332,7 @@ class SDATFileHandler(FileSystemEventHandler):
                         virtual_meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else None
                         logger.error(f"Unknown virtual meter {virtual_meter_suffix} - no mapping found in auto-discovery. Skipping file.")
                         logger.error(f"This indicates a new member was added. Run discovery manually or wait for next batch.")
-                        return
+                        return False
 
                     user_full_meter_id = f"CH101110123450000000000000{attributed_meter}"
                     logger.info(f"Attributing virtual meter data to physical meter: {attributed_meter}")
@@ -317,11 +342,11 @@ class SDATFileHandler(FileSystemEventHandler):
 
             else:
                 logger.warning(f"Unknown file type (neither E31 nor E66): {file_path.name}")
-                return
+                return False
 
             if not data_points:
                 logger.warning(f"No data points generated from {file_path.name}")
-                return
+                return False
 
             # Send to VictoriaMetrics
             vm_url = self.api_config['victoriametrics']['url']
@@ -331,55 +356,71 @@ class SDATFileHandler(FileSystemEventHandler):
 
             if error_count == 0:
                 logger.info(f"Successfully processed {file_path.name} ({success_count} data points)")
-
-                # Archive the file
-                self.archive_file(file_path)
+                return True
             else:
                 logger.error(f"Failed to process {file_path.name} ({error_count} errors)")
+                return False
 
         except Exception as e:
             logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
+            return False
 
         finally:
             # Always release lock, even if we returned early
             self.processing.discard(str(file_path))
 
     def archive_batch_as_zip(self, file_paths: list, date_str: str):
-        """Archive a batch of files as a single zip file named by date (YYYYMMDD.zip)"""
+        """Archive a batch of files into a single zip file named by date (YYYYMMDD.zip)
+
+        If a zip for this date already exists, new files are appended to it
+        rather than creating a separate timestamped archive. Files already
+        present in the zip are skipped to avoid duplicates.
+        """
         try:
             zip_filename = f"{date_str}.zip"
             zip_path = self.archive_dir / zip_filename
 
-            # If zip already exists, add timestamp to make unique
+            # Open in append mode if zip exists, otherwise create new
             if zip_path.exists():
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                zip_filename = f"{date_str}_{timestamp}.zip"
-                zip_path = self.archive_dir / zip_filename
-                logger.info(f"Zip file exists, using: {zip_filename}")
+                mode = 'a'
+                # Get names already in the archive to skip duplicates
+                with zipfile.ZipFile(zip_path, 'r') as existing:
+                    existing_names = set(existing.namelist())
+                logger.info(f"Appending to existing archive: {zip_filename} ({len(existing_names)} files already present)")
+            else:
+                mode = 'w'
+                existing_names = set()
+                logger.info(f"Creating archive: {zip_filename} with {len(file_paths)} files")
 
-            logger.info(f"Creating archive: {zip_filename} with {len(file_paths)} files")
+            # Track which files actually get added (so we only delete those)
+            added_files = []
 
-            # Create zip file
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            with zipfile.ZipFile(zip_path, mode, zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in file_paths:
-                    if file_path.exists():
-                        zipf.write(file_path, arcname=file_path.name)
-                        logger.debug(f"Added {file_path.name} to zip")
+                    if not file_path.exists():
+                        continue
+                    if file_path.name in existing_names:
+                        logger.debug(f"Already in archive, skipping: {file_path.name}")
+                        added_files.append(file_path)  # still safe to remove source
+                        continue
+                    zipf.write(file_path, arcname=file_path.name)
+                    added_files.append(file_path)
+                    logger.debug(f"Added {file_path.name} to zip")
 
-            logger.info(f"Created archive: {zip_filename}")
+            logger.info(f"Archive updated: {zip_filename}")
 
             # Remove original files after successful zipping
-            for file_path in file_paths:
+            for file_path in added_files:
                 if file_path.exists():
                     file_path.unlink()
                     logger.debug(f"Removed original file: {file_path.name}")
                     # Mark file as processed
                     self.processed_files.add(file_path.name)
 
-            logger.info(f"Archived {len(file_paths)} files to {zip_filename}")
+            logger.info(f"Archived {len(added_files)} files to {zip_filename}")
 
         except Exception as e:
-            logger.error(f"Failed to create zip archive {date_str}.zip: {e}", exc_info=True)
+            logger.error(f"Failed to create/update zip archive {date_str}.zip: {e}", exc_info=True)
             logger.warning("Files not deleted due to archiving error")
 
     def archive_file(self, file_path: Path):
