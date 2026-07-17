@@ -17,27 +17,21 @@ from models import Observation, MeteredData
 logger = logging.getLogger(__name__)
 
 
-def parse_e31_xml(xml_file: Path) -> Optional[MeteredData]:
+def parse_e31(root) -> Optional[MeteredData]:
     """
-    Parse E31 AggregatedMeteredData_1.3 XML file
+    Decode an E31 AggregatedMeteredData_1.3 document.
+
+    Takes an already-parsed XML root element (dispatched from parse_sdat, which
+    owns ET.parse and the E66/E31 document-type decision).
 
     Args:
-        xml_file: Path to E31 XML file
+        root: parsed XML root Element of an E31 document
 
     Returns:
-        MeteredData with document_type='E31' populated, or None if the file is
-        not a valid E31 document (wrong type, no MeteringData, or parse error).
+        MeteredData with document_type='E31' populated, or None if the document
+        has no MeteringData section.
     """
     try:
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
-
-        # Verify this is E31
-        doc_type = root.find('.//{http://www.strom.ch}DocumentType/{http://www.strom.ch}ebIXCode')
-        if doc_type is None or doc_type.text != 'E31':
-            logger.warning(f"{xml_file.name}: Not an E31 file (DocumentType={doc_type.text if doc_type is not None else 'None'})")
-            return None
-
         result = MeteredData(document_type='E31')
 
         # Extract metadata from header
@@ -48,7 +42,7 @@ def parse_e31_xml(xml_file: Path) -> Optional[MeteredData]:
         # Find MeteringData section
         metering_data = root.find('.//{http://www.strom.ch}MeteringData')
         if metering_data is None:
-            logger.warning(f"{xml_file.name}: No MeteringData section found")
+            logger.warning("E31: No MeteringData section found")
             return None
 
         # Extract interval (data period)
@@ -118,12 +112,12 @@ def parse_e31_xml(xml_file: Path) -> Optional[MeteredData]:
         observations = metering_data.findall('{http://www.strom.ch}Observation')
 
         if not observations:
-            logger.warning(f"{xml_file.name}: No observations found")
+            logger.warning("E31: No observations found")
             return result
 
         # Base timestamp from interval start
         if result.start is None:
-            logger.error(f"{xml_file.name}: No start datetime found")
+            logger.error("E31: No start datetime found")
             return result
 
         base_time = datetime.fromisoformat(result.start.replace('Z', '+00:00'))
@@ -158,11 +152,11 @@ def parse_e31_xml(xml_file: Path) -> Optional[MeteredData]:
                 condition=condition_code,
             ))
 
-        logger.info(f"{xml_file.name}: Parsed {len(result.observations)} community aggregate observations")
+        logger.info(f"E31: Parsed {len(result.observations)} community aggregate observations")
         return result
 
     except Exception as e:
-        logger.error(f"Error parsing {xml_file}: {e}", exc_info=True)
+        logger.error(f"Error decoding E31 document: {e}", exc_info=True)
         return None
 
 
@@ -171,7 +165,7 @@ def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict
     Transform parsed E31 data to VictoriaMetrics data points
 
     Args:
-        parsed_data: MeteredData from parse_e31_xml()
+        parsed_data: MeteredData from parse_e31()
 
     Returns:
         List of data points in VictoriaMetrics NDJSON format

@@ -46,8 +46,9 @@ logger = logging.getLogger(__name__)
 
 # Import parsers
 sys.path.insert(0, '/app/scripts')
-from parse_sdat_e66_individual import parse_sdat_xml, transform_to_datapoints
-from parse_sdat_e31_aggregated import parse_e31_xml, transform_e31_to_datapoints
+from parse_sdat import parse_sdat
+from parse_sdat_e66_individual import transform_to_datapoints
+from parse_sdat_e31_aggregated import transform_e31_to_datapoints
 from send_to_victoriametrics import send_batch
 from discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
 import yaml
@@ -293,38 +294,29 @@ class SDATFileHandler(FileSystemEventHandler):
         try:
             logger.info(f"Processing {file_path.name}")
 
-            # Detect file type by checking for E31 or E66 in filename
-            is_e31 = '_E31_' in file_path.name
-            is_e66 = '_E66_' in file_path.name
+            # Parse and dispatch by document content (E66 vs E31), not filename
+            parsed_data = parse_sdat(
+                file_path,
+                meter_mappings=self.meter_mappings,
+                physical_production_meters=self.physical_production_meters,
+            )
 
-            if is_e31:
-                # Process E31 (AggregatedMeteredData) file
-                parsed_data = parse_e31_xml(file_path)
+            if parsed_data is None:
+                logger.warning(f"Could not parse (unknown type or invalid): {file_path.name}")
+                return False
 
-                if not parsed_data or not parsed_data.observations:
-                    logger.warning(f"No data found in E31 file {file_path.name}")
-                    return False
+            if not parsed_data.observations:
+                logger.warning(f"No data found in {parsed_data.document_type} file {file_path.name}")
+                return False
 
-                # Transform to data points
+            if parsed_data.document_type == 'E31':
+                # Community aggregate
                 data_points = transform_e31_to_datapoints(parsed_data)
 
-            elif is_e66:
-                # Process E66 (ValidatedMeteredData) file
-                # Parse XML with meter mappings
-                parsed_data = parse_sdat_xml(
-                    file_path,
-                    meter_mappings=self.meter_mappings,
-                    physical_production_meters=self.physical_production_meters
-                )
-
-                if not parsed_data or not parsed_data.observations:
-                    logger.warning(f"No data found in E66 file {file_path.name}")
-                    return False
-
-                # Get full meter ID for production breakdown attribution
+            elif parsed_data.document_type == 'E66':
+                # Individual meter. Resolve production breakdown attribution.
                 attributed_meter_id = None
                 if parsed_data.is_production_breakdown:
-                    # Use attributed physical meter from auto-discovery
                     attributed_meter = parsed_data.attributed_physical_meter
 
                     if attributed_meter is None:
@@ -337,11 +329,10 @@ class SDATFileHandler(FileSystemEventHandler):
                     attributed_meter_id = f"CH101110123450000000000000{attributed_meter}"
                     logger.info(f"Attributing production breakdown to physical meter: {attributed_meter}")
 
-                # Transform to data points
                 data_points = transform_to_datapoints(parsed_data, attributed_meter_id=attributed_meter_id)
 
             else:
-                logger.warning(f"Unknown file type (neither E31 nor E66): {file_path.name}")
+                logger.warning(f"Unsupported document type {parsed_data.document_type}: {file_path.name}")
                 return False
 
             if not data_points:

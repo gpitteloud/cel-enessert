@@ -19,9 +19,12 @@ from models import MetricType, Observation, MeteredData
 logger = logging.getLogger(__name__)
 
 
-def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_production_meters: set = None) -> Optional[MeteredData]:
+def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set = None) -> Optional[MeteredData]:
     """
-    Parse ValidatedMeteredData_1.6 XML file
+    Decode a ValidatedMeteredData_1.6 (E66) document.
+
+    Takes an already-parsed XML root element (dispatched from parse_sdat, which
+    owns ET.parse and the E66/E31 document-type decision).
 
     Special handling for CEL data structure:
     - Member's consumption: Has all breakdowns (CEL, Grid, Total)
@@ -29,28 +32,19 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
     - Virtual meter production VSE codes: Contains member's production breakdown
 
     Args:
-        xml_file: Path to XML file
+        root: parsed XML root Element of an E66 document
         meter_mappings: Dict mapping virtual_meter_id -> physical_meter_id (optional)
         physical_production_meters: Set of meter suffixes that report an ebIX
             production total. Used to detect self-contained meters that carry
             both the total and the VSE breakdown on the same meter ID (optional)
 
     Returns:
-        MeteredData with document_type='E66' populated, or None if the file
-        cannot be parsed (missing MeteringData, meter_id, or resolution).
+        MeteredData with document_type='E66' populated, or None if the document
+        lacks required content (missing MeteringData, meter_id, or resolution).
     """
-    logger.info(f"Parsing XML file: {xml_file}")
-
     try:
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
-
         # Namespace
         ns = {'rsm': 'http://www.strom.ch'}
-
-        # Check root element
-        root_tag = root.tag.split('}')[-1] if '}' in root.tag else root.tag
-        logger.info(f"Root element: {root_tag}")
 
         # Find MeteringData element
         metering_data = root.find('.//rsm:MeteringData', ns)
@@ -197,12 +191,9 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
 
         return result
 
-    except ET.ParseError as e:
-        logger.error(f"XML parsing error: {e}")
-        raise
     except Exception as e:
-        logger.error(f"Error parsing XML: {e}")
-        raise
+        logger.error(f"Error decoding E66 document: {e}", exc_info=True)
+        return None
 
 
 def determine_metric_type(product_code: str, result: MeteredData) -> Optional[MetricType]:
@@ -248,7 +239,7 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
     }
 
     Args:
-        parsed_data: MeteredData from parse_sdat_xml()
+        parsed_data: MeteredData from parse_e66()
         attributed_meter_id: for a production breakdown file, the full ID of the
             physical meter the breakdown belongs to (from mapping or self-
             contained detection). Overrides the meter_id label so the breakdown
@@ -309,8 +300,12 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
         if meter_id:
             labels['meter_id'] = meter_id
 
-        #TG: Isn't this unnecesarily clutering the database with duplicate labels?
+        #TG: Isn't this unnecessarily cluttering the database with duplicate labels?
+        #  GP: NO, labels are not duplicated when stored in VM, it's the other way around:
+        #      1 labels set used to identify the series, then N samples appended to it.
         # Would it be possible for each datapoint to refer to a separate labels table, which would include the document name?
+        #  GP: including document name in the labels would fragment each meter time series extraction by delivery
+        #      -> querying over a month would complexify and slow down queries.
         data_point = {
             'metric': labels,
             'values': [obs.value],

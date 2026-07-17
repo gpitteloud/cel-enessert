@@ -63,8 +63,22 @@ def _observations(values, start_seq=1):
     return "".join(parts)
 
 
+def _e66_header(doc_type):
+    """ValidatedMeteredData header carrying the DocumentType (used for dispatch)."""
+    if doc_type is None:
+        return ""
+    return (
+        '<rsm:ValidatedMeteredData_HeaderInformation>'
+        '<rsm:InstanceDocument>'
+        f'<rsm:DocumentType><rsm:ebIXCode>{doc_type}</rsm:ebIXCode></rsm:DocumentType>'
+        '</rsm:InstanceDocument>'
+        '</rsm:ValidatedMeteredData_HeaderInformation>'
+    )
+
+
 def make_e66_xml(
     *,
+    doc_type="E66",                # DocumentType/ebIXCode used for dispatch
     meter_id="CH101110123450000000000000020576V",
     point="consumption",          # "consumption" | "production" | None (aggregated)
     product_code="2404050010123",
@@ -80,8 +94,9 @@ def make_e66_xml(
     include_metering_data=True,
 ):
     """Build a ValidatedMeteredData_1.6 (E66) XML document string."""
+    header = _e66_header(doc_type)
     if not include_metering_data:
-        return RSM_OPEN_E66 + "</rsm:ValidatedMeteredData_16>"
+        return RSM_OPEN_E66 + header + "</rsm:ValidatedMeteredData_16>"
 
     if point == "consumption":
         mp = (f'<rsm:ConsumptionMeteringPoint>'
@@ -117,6 +132,7 @@ def make_e66_xml(
 
     return (
         RSM_OPEN_E66
+        + header
         + "<rsm:MeteringData>"
         + interval + res + mp + product + community
         + _observations(list(values))
@@ -141,6 +157,10 @@ def make_e31_xml(
     include_start=True,
 ):
     """Build an AggregatedMeteredData_1.3 (E31) XML document string."""
+    doc_type_elem = (
+        f'<rsm:DocumentType><rsm:ebIXCode>{doc_type}</rsm:ebIXCode></rsm:DocumentType>'
+        if doc_type is not None else ''
+    )
     header = (
         '<rsm:AggregatedMeteredData_HeaderInformation>'
         '<rsm:BusinessScopeProcess>'
@@ -149,7 +169,7 @@ def make_e31_xml(
         '</rsm:BusinessReasonType>'
         '</rsm:BusinessScopeProcess>'
         '<rsm:InstanceDocument>'
-        f'<rsm:DocumentType><rsm:ebIXCode>{doc_type}</rsm:ebIXCode></rsm:DocumentType>'
+        f'{doc_type_elem}'
         '</rsm:InstanceDocument>'
         '</rsm:AggregatedMeteredData_HeaderInformation>'
     )

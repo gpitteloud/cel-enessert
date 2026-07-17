@@ -1,8 +1,8 @@
 """Tests for parse_sdat_e66_individual (ValidatedMeteredData_1.6)."""
 import pytest
 
+from parse_sdat import parse_sdat
 from parse_sdat_e66_individual import (
-    parse_sdat_xml,
     transform_to_datapoints,
     MetricType,
 )
@@ -15,14 +15,14 @@ from conftest import (
 
 
 # --------------------------------------------------------------------------
-# parse_sdat_xml - metering point + metric type classification
+# parse_e66 - metering point + metric type classification
 # --------------------------------------------------------------------------
 
 def test_consumption_local_vse(write_xml):
     f = write_xml(make_e66_xml(point="consumption",
                                product_code="2404050010123",
                                code_type="VSENationalCode"))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     assert r.document_type == "E66"
     assert r.metering_point_type == "consumption"
     assert r.metric_type == MetricType.CONSUMPTION_LOCAL
@@ -33,7 +33,7 @@ def test_consumption_local_vse(write_xml):
 
 def test_consumption_grid_vse(write_xml):
     f = write_xml(make_e66_xml(point="consumption", product_code="2404050010124"))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     assert r.metric_type == MetricType.CONSUMPTION_GRID
 
 
@@ -41,7 +41,7 @@ def test_consumption_total_ebix(write_xml):
     f = write_xml(make_e66_xml(point="consumption",
                                product_code="8716867000030",
                                code_type="ebIXCode"))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     assert r.metric_type == MetricType.CONSUMPTION_TOTAL
     assert r.code_type == "ebIXCode"
 
@@ -50,7 +50,7 @@ def test_production_total_ebix(write_xml):
     f = write_xml(make_e66_xml(point="production",
                                product_code="8716867000030",
                                code_type="ebIXCode"))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     assert r.metering_point_type == "production"
     assert r.metric_type == MetricType.PRODUCTION_TOTAL
     # ebIX production total is NOT a breakdown, must not be flagged
@@ -65,7 +65,7 @@ def test_observations_parsed_with_timestamps(write_xml):
     f = write_xml(make_e66_xml(values=(1.5, 2.5, 3.5),
                                start="2026-05-21T22:00:00Z",
                                resolution=15))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     obs = r.observations
     assert len(obs) == 3
     assert obs[0].sequence == 1
@@ -78,14 +78,14 @@ def test_observations_parsed_with_timestamps(write_xml):
 
 def test_resolution_extracted(write_xml):
     f = write_xml(make_e66_xml(resolution=30))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     assert r.resolution_minutes == 30
 
 
 def test_missing_resolution_returns_none(write_xml):
     # Parser now rejects files without a resolution (returns None)
     f = write_xml(make_e66_xml(include_resolution=False))
-    assert parse_sdat_xml(f) is None
+    assert parse_sdat(f) is None
 
 
 # --------------------------------------------------------------------------
@@ -97,7 +97,7 @@ def test_virtual_meter_mapped_to_physical(write_xml):
     virt = "CH1011101234500000000000000855229G"
     f = write_xml(make_e66_xml(point="production", meter_id=virt,
                                product_code="2404050010123"))
-    r = parse_sdat_xml(f, meter_mappings={"0855229G": "0020576V"})
+    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
     assert r.is_production_breakdown is True
     assert r.attributed_physical_meter == "0020576V"
     assert r.metric_type == MetricType.PRODUCTION_LOCAL
@@ -108,7 +108,7 @@ def test_self_contained_meter_attributed_to_itself(write_xml):
     mid = "CH101110123450000000000000134575W"
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
-    r = parse_sdat_xml(f, meter_mappings={},
+    r = parse_sdat(f, meter_mappings={},
                        physical_production_meters={"0134575W"})
     assert r.is_production_breakdown is True
     assert r.attributed_physical_meter == "0134575W"
@@ -119,7 +119,7 @@ def test_unknown_virtual_meter_returns_none(write_xml):
     mid = "CH101110123450000000000000999999X"
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
-    r = parse_sdat_xml(f, meter_mappings={}, physical_production_meters=set())
+    r = parse_sdat(f, meter_mappings={}, physical_production_meters=set())
     assert r is None
 
 
@@ -128,7 +128,7 @@ def test_mapping_takes_precedence_over_self_contained(write_xml):
     mid = "CH1011101234500000000000000855229G"
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
-    r = parse_sdat_xml(f, meter_mappings={"0855229G": "0020576V"},
+    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"},
                        physical_production_meters={"0855229G"})
     assert r.attributed_physical_meter == "0020576V"
 
@@ -139,18 +139,18 @@ def test_mapping_takes_precedence_over_self_contained(write_xml):
 
 def test_no_metering_data_returns_none(write_xml):
     f = write_xml(make_e66_xml(include_metering_data=False))
-    assert parse_sdat_xml(f) is None
+    assert parse_sdat(f) is None
 
 
-def test_malformed_xml_raises(write_xml):
+def test_malformed_xml_returns_none(write_xml):
+    # parse_sdat catches XML parse errors and returns None (clean skip)
     f = write_xml("<rsm:ValidatedMeteredData_16><broken>", name="bad.xml")
-    with pytest.raises(Exception):
-        parse_sdat_xml(f)
+    assert parse_sdat(f) is None
 
 
 def test_no_product_code_still_parses_observations(write_xml):
     f = write_xml(make_e66_xml(product_code=None))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     # no product -> no metric_type, but observations still extracted
     assert r.metric_type is None
     assert len(r.observations) == 3
@@ -164,7 +164,7 @@ def test_transform_builds_vm_datapoints(write_xml):
     f = write_xml(make_e66_xml(point="consumption",
                                product_code="2404050010123",
                                values=(1.0, 2.0)))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     dps = transform_to_datapoints(r)
     assert len(dps) == 2
     m = dps[0]["metric"]
@@ -181,7 +181,7 @@ def test_transform_production_data_type(write_xml):
     f = write_xml(make_e66_xml(point="production",
                                product_code="8716867000030",
                                code_type="ebIXCode"))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     dps = transform_to_datapoints(r)
     assert dps[0]["metric"]["__name__"] == "cel_energy_produced_kwh"
     assert dps[0]["metric"]["data_type"] == "production"
@@ -191,7 +191,7 @@ def test_transform_breakdown_uses_attributed_meter_id(write_xml):
     virt = "CH1011101234500000000000000855229G"
     f = write_xml(make_e66_xml(point="production", meter_id=virt,
                                product_code="2404050010123"))
-    r = parse_sdat_xml(f, meter_mappings={"0855229G": "0020576V"})
+    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
     physical_meter = "CH101110123450000000000000020576V"
     dps = transform_to_datapoints(r, attributed_meter_id=physical_meter)
     assert all(dp["metric"]["meter_id"] == physical_meter for dp in dps)
@@ -203,7 +203,7 @@ def test_transform_empty_when_no_observations():
 
 def test_transform_empty_when_no_metric_type(write_xml):
     f = write_xml(make_e66_xml(product_code=None))
-    r = parse_sdat_xml(f)
+    r = parse_sdat(f)
     assert transform_to_datapoints(r) == []
 
 
@@ -221,7 +221,7 @@ def test_real_e66_files_all_parse():
     """Every real E66 file must parse to a MeteredData (no crashes, no None)."""
     parsed = 0
     for f in _E66_SAMPLES:
-        r = parse_sdat_xml(f, meter_mappings=SAMPLE_MAPPINGS,
+        r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                            physical_production_meters=SAMPLE_PHYSICAL_METERS)
         assert r is not None, f"failed to parse real file: {f.name}"
         assert r.document_type == "E66"
@@ -241,7 +241,7 @@ def test_real_e66_product_codes_are_known():
     known = {"8716867000030", "2404050010123", "2404050010124"}
     seen = set()
     for f in _E66_SAMPLES:
-        r = parse_sdat_xml(f, meter_mappings=SAMPLE_MAPPINGS,
+        r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                            physical_production_meters=SAMPLE_PHYSICAL_METERS)
         if r and r.product_code:
             seen.add(r.product_code)
@@ -254,7 +254,7 @@ def test_real_e66_product_codes_are_known():
 def test_real_e66_transforms_to_datapoints():
     """A real file must produce one VM datapoint per observation with expected labels."""
     f = _E66_SAMPLES[0]
-    r = parse_sdat_xml(f, meter_mappings=SAMPLE_MAPPINGS,
+    r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                        physical_production_meters=SAMPLE_PHYSICAL_METERS)
     dps = transform_to_datapoints(r)
     assert len(dps) == len(r.observations)

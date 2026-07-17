@@ -1,20 +1,20 @@
 """Tests for parse_sdat_e31_aggregated (AggregatedMeteredData_1.3)."""
 import pytest
 
+from parse_sdat import parse_sdat
 from parse_sdat_e31_aggregated import (
-    parse_e31_xml,
     transform_e31_to_datapoints,
 )
 from conftest import make_e31_xml, real_files
 
 
 # --------------------------------------------------------------------------
-# parse_e31_xml - metadata extraction
+# parse_e31 - metadata extraction
 # --------------------------------------------------------------------------
 
 def test_parse_basic_metadata(write_xml):
     f = write_xml(make_e31_xml(flow="E17", product_code="2404050010123"))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     assert r.document_type == "E31"
     assert r.community_id == "101110-002726"
     assert r.community_type == "CT01"
@@ -28,13 +28,13 @@ def test_parse_basic_metadata(write_xml):
 
 def test_flow_e18_production(write_xml):
     f = write_xml(make_e31_xml(flow="E18"))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     assert r.flow_characteristic == "E18"
 
 
 def test_ebix_product_code(write_xml):
     f = write_xml(make_e31_xml(product_code="8716867000030", code_type="ebIXCode"))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     assert r.product_code == "8716867000030"
     assert r.product_code_type == "ebIX"
 
@@ -47,7 +47,7 @@ def test_observations_with_timestamps(write_xml):
     f = write_xml(make_e31_xml(values=(10.0, 20.0, 30.0),
                                start="2026-06-10T22:00:00Z",
                                resolution=15))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     obs = r.observations
     assert len(obs) == 3
     assert obs[0].sequence == 1
@@ -60,7 +60,7 @@ def test_observations_with_timestamps(write_xml):
 
 def test_observation_count(write_xml):
     f = write_xml(make_e31_xml(values=tuple(float(i) for i in range(96))))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     assert len(r.observations) == 96
 
 
@@ -68,28 +68,34 @@ def test_observation_count(write_xml):
 # Rejection / edge cases
 # --------------------------------------------------------------------------
 
-def test_non_e31_document_returns_none(write_xml):
-    # An E66 doc type must be rejected by the E31 parser
-    f = write_xml(make_e31_xml(doc_type="E66"))
-    assert parse_e31_xml(f) is None
+def test_unknown_document_type_returns_none(write_xml):
+    # DocumentType that is neither E66 nor E31 -> parse_sdat refuses to dispatch
+    f = write_xml(make_e31_xml(doc_type="E99"))
+    assert parse_sdat(f) is None
+
+
+def test_missing_document_type_returns_none(write_xml):
+    # No DocumentType at all -> cannot dispatch
+    f = write_xml(make_e31_xml(doc_type=None))
+    assert parse_sdat(f) is None
 
 
 def test_no_metering_data_returns_none(write_xml):
     f = write_xml(make_e31_xml(include_metering_data=False))
-    assert parse_e31_xml(f) is None
+    assert parse_sdat(f) is None
 
 
 def test_missing_start_datetime_returns_no_observations(write_xml):
     # Without StartDateTime the parser cannot compute timestamps
     f = write_xml(make_e31_xml(include_start=False))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     assert r.observations == []
 
 
 def test_malformed_xml_returns_none(write_xml):
     f = write_xml("<rsm:AggregatedMeteredData_13><broken>", name="bad.xml")
     # parser catches exceptions and returns None
-    assert parse_e31_xml(f) is None
+    assert parse_sdat(f) is None
 
 
 # --------------------------------------------------------------------------
@@ -99,7 +105,7 @@ def test_malformed_xml_returns_none(write_xml):
 def test_transform_builds_vm_datapoints(write_xml):
     f = write_xml(make_e31_xml(flow="E17", product_code="2404050010123",
                                values=(5.0, 6.0)))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     dps = transform_e31_to_datapoints(r)
     assert len(dps) == 2
     m = dps[0]["metric"]
@@ -115,7 +121,7 @@ def test_transform_builds_vm_datapoints(write_xml):
 
 def test_transform_includes_condition_label(write_xml):
     f = write_xml(make_e31_xml(values=(1.0,)))
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     dps = transform_e31_to_datapoints(r)
     assert dps[0]["metric"]["condition"] == "21"
 
@@ -127,7 +133,7 @@ def test_transform_empty_input():
 def test_transform_project_label_present(write_xml):
     # Regression: E31 data must carry project=cel to match E66 label scheme
     f = write_xml(make_e31_xml())
-    r = parse_e31_xml(f)
+    r = parse_sdat(f)
     dps = transform_e31_to_datapoints(r)
     assert all(dp["metric"]["project"] == "cel" for dp in dps)
 
@@ -144,7 +150,7 @@ _E31_SAMPLES = real_files("*_E31_*.xml")
 def test_real_e31_files_all_parse():
     """Every real E31 file must parse to a MeteredData with expected shape."""
     for f in _E31_SAMPLES:
-        r = parse_e31_xml(f)
+        r = parse_sdat(f)
         assert r is not None, f"failed to parse real file: {f.name}"
         assert r.document_type == "E31"
         assert r.community_id
@@ -163,7 +169,7 @@ def test_real_e31_flows_and_codes():
     flows = set()
     codes = set()
     for f in _E31_SAMPLES:
-        r = parse_e31_xml(f)
+        r = parse_sdat(f)
         if r:
             flows.add(r.flow_characteristic)
             codes.add(r.product_code)
@@ -173,7 +179,7 @@ def test_real_e31_flows_and_codes():
 
 @pytest.mark.skipif(not _E31_SAMPLES, reason="no real E31 sample files present")
 def test_real_e31_transforms_to_datapoints():
-    r = parse_e31_xml(_E31_SAMPLES[0])
+    r = parse_sdat(_E31_SAMPLES[0])
     dps = transform_e31_to_datapoints(r)
     assert len(dps) == len(r.observations)
     m = dps[0]["metric"]
