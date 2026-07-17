@@ -301,7 +301,7 @@ class SDATFileHandler(FileSystemEventHandler):
                 # Process E31 (AggregatedMeteredData) file
                 parsed_data = parse_e31_xml(file_path)
 
-                if not parsed_data or not parsed_data.get('observations'):
+                if not parsed_data or not parsed_data.observations:
                     logger.warning(f"No data found in E31 file {file_path.name}")
                     return False
 
@@ -317,18 +317,18 @@ class SDATFileHandler(FileSystemEventHandler):
                     physical_production_meters=self.physical_production_meters
                 )
 
-                if not parsed_data or not parsed_data.get('observations'):
+                if not parsed_data or not parsed_data.observations:
                     logger.warning(f"No data found in E66 file {file_path.name}")
                     return False
 
                 # Get full meter ID for production breakdown attribution
                 attributed_meter_id = None
-                if parsed_data.get('is_production_breakdown'):
+                if parsed_data.is_production_breakdown:
                     # Use attributed physical meter from auto-discovery
-                    attributed_meter = parsed_data.get('attributed_physical_meter')
+                    attributed_meter = parsed_data.attributed_physical_meter
 
                     if attributed_meter is None:
-                        meter_id = parsed_data.get('meter_id', '')
+                        meter_id = parsed_data.meter_id or ''
                         virtual_meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else None
                         logger.error(f"Unknown virtual meter {virtual_meter_suffix} - no mapping found in auto-discovery. Skipping file.")
                         logger.error(f"This indicates a new member was added. Run discovery manually or wait for next batch.")

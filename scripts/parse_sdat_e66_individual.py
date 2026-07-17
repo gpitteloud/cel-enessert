@@ -12,20 +12,11 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
-from enum import Enum
 import xml.etree.ElementTree as ET
 
+from models import MetricType, Observation, MeteredData
+
 logger = logging.getLogger(__name__)
-
-
-class MetricType(str, Enum):
-    """Energy metric types"""
-    CONSUMPTION_TOTAL = 'consumption_total'
-    CONSUMPTION_GRID = 'consumption_grid'
-    CONSUMPTION_LOCAL = 'consumption_local'
-    PRODUCTION_TOTAL = 'production_total'
-    PRODUCTION_GRID = 'production_grid'
-    PRODUCTION_LOCAL = 'production_local'
 
 
 # Product code mapping (ebIXCode)
@@ -55,7 +46,7 @@ for metric, codes in PRODUCT_CODES.items():
         CODE_TO_METRIC[code] = metric
 
 
-def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_production_meters: set = None) -> Dict:
+def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_production_meters: set = None) -> Optional[MeteredData]:
     """
     Parse ValidatedMeteredData_1.6 XML file
 
@@ -71,16 +62,9 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
             production total. Used to detect self-contained meters that carry
             both the total and the VSE breakdown on the same meter ID (optional)
 
-    Returns dict with:
-    - meter_id: str
-    - community_id: str
-    - metric_type: str (consumption_local, production_grid, etc)
-    - start_time: datetime
-    - end_time: datetime
-    - resolution_minutes: int
-    - observations: List[{sequence: int, value: float, timestamp: datetime}]
-    - is_production_breakdown: bool (production file carrying VSE CEL/Grid
-      breakdown codes, attributed to a physical meter - mapped or self-contained)
+    Returns:
+        MeteredData with document_type='E66' populated, or None if the file
+        cannot be parsed (missing MeteringData, meter_id, or resolution).
     """
     logger.info(f"Parsing XML file: {xml_file}")
 
@@ -101,7 +85,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
             logger.error("No MeteringData element found")
             return None
 
-        result = {}
+        result = MeteredData(document_type='E66')
 
         # Extract meter ID
         meter_id = None
@@ -110,24 +94,21 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
         consumption_point = metering_data.find('.//rsm:ConsumptionMeteringPoint/rsm:VSENationalID', ns)
         if consumption_point is not None:
             meter_id = consumption_point.text
-            result['metering_point_type'] = 'consumption'
+            result.metering_point_type = 'consumption'
 
         # Try ProductionMeteringPoint
         if meter_id is None:
             production_point = metering_data.find('.//rsm:ProductionMeteringPoint/rsm:VSENationalID', ns)
             if production_point is not None:
                 meter_id = production_point.text
-                result['metering_point_type'] = 'production'
+                result.metering_point_type = 'production'
 
         if meter_id:
-            result['meter_id'] = meter_id
+            result.meter_id = meter_id
             logger.info(f"Meter ID: {meter_id}")
         else:
-            # Aggregated data (no meter ID)
-            # TG ce cas de figure n'est pas possible pour des données individuelles, il faut lancer une erreur si on tombe dessus.  
-            result['meter_id'] = None
-            result['metering_point_type'] = 'aggregated'
-            logger.info("Aggregated metering data (no meter ID)")
+            logger.error("meter_id not found in consumption and production")
+            return None
 
         # Extract time interval
         interval = metering_data.find('.//rsm:Interval', ns)
@@ -135,18 +116,20 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
             start_elem = interval.find('rsm:StartDateTime', ns)
             end_elem = interval.find('rsm:EndDateTime', ns)
             if start_elem is not None and end_elem is not None:
-                result['start_time'] = start_elem.text
-                result['end_time'] = end_elem.text
+                result.start = start_elem.text
+                result.end = end_elem.text
 
         # Extract resolution
         resolution_elem = metering_data.find('.//rsm:Resolution/rsm:Resolution', ns)
         unit_elem = metering_data.find('.//rsm:Resolution/rsm:Unit', ns)
-        # TG: je ne mettrais pas de valeur par défaut ici - il faut renvoyer une erreur si la résolution n'est pas fournie
-        resolution_minutes = 15  # Default
+        resolution_minutes = None
         if resolution_elem is not None and unit_elem is not None:
             if unit_elem.text == 'MIN':
                 resolution_minutes = int(resolution_elem.text)
-        result['resolution_minutes'] = resolution_minutes
+        if resolution_minutes is None:
+            logger.error("Resolution not found")
+            return None
+        result.resolution_minutes = resolution_minutes
 
         # Extract product code - try both formats
         ebix_elem = metering_data.find('.//rsm:Product/rsm:ID/rsm:ebIXCode', ns)
@@ -169,7 +152,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
             # Special handling for VSE codes (Swiss national codes)
             # TG: On n'a pas besoin de vérifier le code_type: les codes de type 2404050010123/2404050010124 sont nécessairement VSENAtionalCode
             if code_type == 'VSENationalCode':
-                metering_type = result.get('metering_point_type')
+                metering_type = result.metering_point_type
 
                 if product_code == '2404050010123':
                     # CEL local exchange
@@ -187,30 +170,30 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
 
             # Handle ebIXCode for total
             elif product_code == '8716867000030':
-                metering_type = result.get('metering_point_type')
+                metering_type = result.metering_point_type
                 if metering_type == 'consumption':
                     metric_type = MetricType.CONSUMPTION_TOTAL
                 elif metering_type == 'production':
                     metric_type = MetricType.PRODUCTION_TOTAL
 
-            # Mark if this is virtual meter with production VSE codes
-            # (contains member's production breakdown)
-            # Check using mappings if provided, otherwise fall back to old logic
-            is_virtual_production = False
+            # Mark if this is a production breakdown file (VSE CEL/Grid codes on
+            # a production point). Attribute it to a physical meter, either a
+            # mapped separate virtual meter or a self-contained meter (itself).
+            is_production_breakdown = False
             attributed_physical_meter = None
 
-            if result.get('metering_point_type') == 'production' and code_type == 'VSENationalCode':
+            if result.metering_point_type == 'production' and code_type == 'VSENationalCode':
                 meter_suffix = meter_id[-8:] if meter_id and len(meter_id) >= 8 else None
 
                 if meter_mappings and meter_suffix in meter_mappings:
                     # Using mappings: this is a separate virtual meter mapped to a physical one
-                    is_virtual_production = True
+                    is_production_breakdown = True
                     attributed_physical_meter = meter_mappings[meter_suffix]
                     logger.info(f"Virtual meter {meter_suffix} -> attributing to physical meter {attributed_physical_meter}")
                 elif meter_suffix and physical_production_meters and meter_suffix in physical_production_meters:
                     # Self-contained meter: the production breakdown is on the same meter ID
                     # that also reports the ebIX production total. Attribute to itself.
-                    is_virtual_production = True
+                    is_production_breakdown = True
                     attributed_physical_meter = meter_suffix
                     logger.info(f"Self-contained meter {meter_suffix} -> attributing production breakdown to itself")
                 else:
@@ -218,28 +201,28 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
                     logger.error(f"Unknown virtual meter {meter_suffix} - no mapping found in auto-discovery. Skipping file.")
                     return None
 
-            result['is_production_breakdown'] = is_virtual_production
-            result['attributed_physical_meter'] = attributed_physical_meter
+            result.is_production_breakdown = is_production_breakdown
+            result.attributed_physical_meter = attributed_physical_meter
 
-            result['product_code'] = product_code
-            result['code_type'] = code_type
-            result['metric_type'] = metric_type
+            result.product_code = product_code
+            result.code_type = code_type
+            result.metric_type = metric_type
 
-            if is_virtual_production:
-                logger.info(f"Product code ({code_type}): {product_code}, Community production breakdown -> {metric_type}")
+            if is_production_breakdown:
+                logger.info(f"Product code ({code_type}): {product_code}, production breakdown -> {metric_type}")
             else:
-                logger.info(f"Product code ({code_type}): {product_code}, Metering point: {result.get('metering_point_type')} -> {metric_type}")
+                logger.info(f"Product code ({code_type}): {product_code}, Metering point: {result.metering_point_type} -> {metric_type}")
         else:
             logger.warning("No product code found")
 
         # Extract community info
         community_elem = metering_data.find('.//rsm:Community/rsm:CommunityID', ns)
         if community_elem is not None:
-            result['community_id'] = community_elem.text
+            result.community_id = community_elem.text
 
         # Extract observations
         observations = []
-        # TG faire ceci séquenciellement n'est-il pas très long? Potentiellement plus efficace de paralelliser les traitements (utiliser pandas? 
+        # TG faire ceci séquenciellement n'est-il pas très long? Potentiellement plus efficace de paralelliser les traitements (utiliser pandas?
         # https://pandas.pydata.org/docs/reference/api/pandas.read_xml.html )
         for obs in metering_data.findall('.//rsm:Observation', ns):
             seq_elem = obs.find('.//rsm:Position/rsm:Sequence', ns)
@@ -251,20 +234,20 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
                     volume = float(vol_elem.text)
 
                     # Calculate timestamp from start time and sequence
-                    if 'start_time' in result:
-                        base_dt = datetime.fromisoformat(result['start_time'].replace('Z', '+00:00'))
+                    if result.start:
+                        base_dt = datetime.fromisoformat(result.start.replace('Z', '+00:00'))
                         obs_dt = base_dt + timedelta(minutes=(sequence - 1) * resolution_minutes)
 
-                        observations.append({
-                            'sequence': sequence,
-                            'value': volume,
-                            'timestamp': obs_dt.isoformat()
-                        })
+                        observations.append(Observation(
+                            sequence=sequence,
+                            value=volume,
+                            timestamp=obs_dt.isoformat(),
+                        ))
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Error parsing observation: {e}")
                     continue
 
-        result['observations'] = observations
+        result.observations = observations
         logger.info(f"Parsed {len(observations)} observations")
 
         return result
@@ -277,7 +260,7 @@ def parse_sdat_xml(xml_file: Path, meter_mappings: dict = None, physical_product
         raise
 
 
-def transform_to_datapoints(parsed_data: Dict, attributed_meter_id: str = None) -> List[Dict]:
+def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter_id: str = None) -> List[Dict]:
     """
     Transform parsed data into VictoriaMetrics data points
 
@@ -289,13 +272,13 @@ def transform_to_datapoints(parsed_data: Dict, attributed_meter_id: str = None) 
     }
 
     Args:
-        parsed_data: output of parse_sdat_xml()
+        parsed_data: MeteredData from parse_sdat_xml()
         attributed_meter_id: for a production breakdown file, the full ID of the
             physical meter the breakdown belongs to (from mapping or self-
             contained detection). Overrides the meter_id label so the breakdown
             is stored against the physical meter rather than the virtual one.
     """
-    if not parsed_data or not parsed_data.get('observations'):
+    if not parsed_data or not parsed_data.observations:
         return []
 
     # Metric type to metric name mapping
@@ -310,11 +293,11 @@ def transform_to_datapoints(parsed_data: Dict, attributed_meter_id: str = None) 
     }
 
     data_points = []
-    meter_id = parsed_data.get('meter_id')
-    metric_type: Optional[MetricType] = parsed_data.get('metric_type')
-    product_code = parsed_data.get('product_code', 'unknown')
-    code_type = parsed_data.get('code_type', 'unknown')
-    is_production_breakdown = parsed_data.get('is_production_breakdown', False)
+    meter_id = parsed_data.meter_id
+    metric_type = parsed_data.metric_type
+    product_code = parsed_data.product_code or 'unknown'
+    code_type = parsed_data.code_type or 'unknown'
+    is_production_breakdown = parsed_data.is_production_breakdown
 
     if not metric_type:
         logger.warning("No metric type found, skipping")
@@ -334,8 +317,8 @@ def transform_to_datapoints(parsed_data: Dict, attributed_meter_id: str = None) 
         logger.info(f"Production breakdown attributed to physical meter: {attributed_meter_id}")
 
     # Convert each observation to VictoriaMetrics format
-    for obs in parsed_data['observations']:
-        timestamp_dt = datetime.fromisoformat(obs['timestamp'].replace('Z', '+00:00'))
+    for obs in parsed_data.observations:
+        timestamp_dt = datetime.fromisoformat(obs.timestamp.replace('Z', '+00:00'))
         timestamp_ms = int(timestamp_dt.timestamp() * 1000)
 
         # Build labels
@@ -350,11 +333,11 @@ def transform_to_datapoints(parsed_data: Dict, attributed_meter_id: str = None) 
         if meter_id:
             labels['meter_id'] = meter_id
 
-        #TG: Isn't this unnecesarily clutering the database with duplicate labels? 
+        #TG: Isn't this unnecesarily clutering the database with duplicate labels?
         # Would it be possible for each datapoint to refer to a separate labels table, which would include the document name?
         data_point = {
             'metric': labels,
-            'values': [obs['value']],
+            'values': [obs.value],
             'timestamps': [timestamp_ms]
         }
 
