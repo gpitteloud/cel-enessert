@@ -6,7 +6,12 @@ from parse_sdat_e66_individual import (
     transform_to_datapoints,
     MetricType,
 )
-from conftest import make_e66_xml
+from conftest import (
+    make_e66_xml,
+    real_files,
+    SAMPLE_MAPPINGS,
+    SAMPLE_PHYSICAL_METERS,
+)
 
 
 # --------------------------------------------------------------------------
@@ -200,3 +205,60 @@ def test_transform_empty_when_no_metric_type(write_xml):
     f = write_xml(make_e66_xml(product_code=None))
     r = parse_sdat_xml(f)
     assert transform_to_datapoints(r) == []
+
+
+# --------------------------------------------------------------------------
+# Golden-file tests against real sample data.
+# These skip automatically when input/all/ is absent (gitignored), so they
+# run on machines/CI that have the real deliveries but never break elsewhere.
+# --------------------------------------------------------------------------
+
+_E66_SAMPLES = real_files("*_E66_*.xml")
+
+
+@pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
+def test_real_e66_files_all_parse():
+    """Every real E66 file must parse to a MeteredData (no crashes, no None)."""
+    parsed = 0
+    for f in _E66_SAMPLES:
+        r = parse_sdat_xml(f, meter_mappings=SAMPLE_MAPPINGS,
+                           physical_production_meters=SAMPLE_PHYSICAL_METERS)
+        assert r is not None, f"failed to parse real file: {f.name}"
+        assert r.document_type == "E66"
+        assert r.resolution_minutes == 15
+        # 15-min resolution over whole days => observation count is a multiple
+        # of 96 (real deliveries seen: 480 = 5 days, 2976 = 31 days)
+        assert r.observations, f"no observations in {f.name}"
+        assert len(r.observations) % 96 == 0, f"{f.name}: {len(r.observations)} obs"
+        assert r.community_id  # present
+        parsed += 1
+    assert parsed == len(_E66_SAMPLES)
+
+
+@pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
+def test_real_e66_product_codes_are_known():
+    """Real files only carry the three product codes the parser handles."""
+    known = {"8716867000030", "2404050010123", "2404050010124"}
+    seen = set()
+    for f in _E66_SAMPLES:
+        r = parse_sdat_xml(f, meter_mappings=SAMPLE_MAPPINGS,
+                           physical_production_meters=SAMPLE_PHYSICAL_METERS)
+        if r and r.product_code:
+            seen.add(r.product_code)
+    assert seen, "no product codes seen"
+    unexpected = seen - known
+    assert not unexpected, f"unexpected product codes in real data: {unexpected}"
+
+
+@pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
+def test_real_e66_transforms_to_datapoints():
+    """A real file must produce one VM datapoint per observation with expected labels."""
+    f = _E66_SAMPLES[0]
+    r = parse_sdat_xml(f, meter_mappings=SAMPLE_MAPPINGS,
+                       physical_production_meters=SAMPLE_PHYSICAL_METERS)
+    dps = transform_to_datapoints(r)
+    assert len(dps) == len(r.observations)
+    m = dps[0]["metric"]
+    assert m["project"] == "cel"
+    assert m["__name__"].startswith("cel_energy_")
+    assert m["data_type"] in ("consumption", "production")

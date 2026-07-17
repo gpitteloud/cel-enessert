@@ -5,7 +5,7 @@ from parse_sdat_e31_aggregated import (
     parse_e31_xml,
     transform_e31_to_datapoints,
 )
-from conftest import make_e31_xml
+from conftest import make_e31_xml, real_files
 
 
 # --------------------------------------------------------------------------
@@ -130,3 +130,53 @@ def test_transform_project_label_present(write_xml):
     r = parse_e31_xml(f)
     dps = transform_e31_to_datapoints(r)
     assert all(dp["metric"]["project"] == "cel" for dp in dps)
+
+
+# --------------------------------------------------------------------------
+# Golden-file tests against real sample data.
+# Skip automatically when input/all/ is absent (gitignored).
+# --------------------------------------------------------------------------
+
+_E31_SAMPLES = real_files("*_E31_*.xml")
+
+
+@pytest.mark.skipif(not _E31_SAMPLES, reason="no real E31 sample files present")
+def test_real_e31_files_all_parse():
+    """Every real E31 file must parse to a MeteredData with expected shape."""
+    for f in _E31_SAMPLES:
+        r = parse_e31_xml(f)
+        assert r is not None, f"failed to parse real file: {f.name}"
+        assert r.document_type == "E31"
+        assert r.community_id
+        assert r.flow_characteristic in ("E17", "E18")
+        assert r.resolution_minutes == 15
+        # 15-min resolution over whole days => multiple of 96
+        # (real deliveries seen: 480 = 5 days, 2976 = 31 days)
+        assert r.observations, f"no observations in {f.name}"
+        assert len(r.observations) % 96 == 0, f"{f.name}: {len(r.observations)} obs"
+
+
+@pytest.mark.skipif(not _E31_SAMPLES, reason="no real E31 sample files present")
+def test_real_e31_flows_and_codes():
+    """Real E31 data carries both flows and only known product codes."""
+    known = {"8716867000030", "2404050010123", "2404050010124"}
+    flows = set()
+    codes = set()
+    for f in _E31_SAMPLES:
+        r = parse_e31_xml(f)
+        if r:
+            flows.add(r.flow_characteristic)
+            codes.add(r.product_code)
+    assert flows == {"E17", "E18"}, f"expected both flows, got {flows}"
+    assert not (codes - known), f"unexpected product codes: {codes - known}"
+
+
+@pytest.mark.skipif(not _E31_SAMPLES, reason="no real E31 sample files present")
+def test_real_e31_transforms_to_datapoints():
+    r = parse_e31_xml(_E31_SAMPLES[0])
+    dps = transform_e31_to_datapoints(r)
+    assert len(dps) == len(r.observations)
+    m = dps[0]["metric"]
+    assert m["__name__"] == "energy_community_aggregate_kwh"
+    assert m["project"] == "cel"
+    assert m["data_source"] == "E31_AggregatedMeteredData"

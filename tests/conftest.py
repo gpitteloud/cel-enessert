@@ -9,8 +9,33 @@ from pathlib import Path
 import pytest
 
 # Make scripts/ importable
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+
+# Directory of real (gitignored) sample files, used by golden-file tests that
+# skip when the data is not present (e.g. clean checkout / CI without data).
+SAMPLE_DIR = REPO_ROOT / "input" / "all"
+
+
+def real_files(pattern):
+    """Return sorted non-empty real sample files matching pattern, or [] if
+    none/absent. Empty (0-byte) files are truncated-delivery errors and are
+    excluded - the parser rejects them at runtime; they are not test subjects.
+    """
+    if not SAMPLE_DIR.is_dir():
+        return []
+    return sorted(f for f in SAMPLE_DIR.glob(pattern) if f.stat().st_size > 0)
+
+
+# Real discovered meter mappings for a representative day (virtual -> physical).
+# Only needed so production-breakdown E66 files parse instead of returning None.
+SAMPLE_MAPPINGS = {
+    '0855229G': '0020576V', '08574078': '0217130Y', '08552310': '0046782G',
+    '0855227M': '00846565', '0855223Y': '01192538', '08552213': '0125445D',
+    '0855219K': '01650626', '0857405E': '0208254A', '0855225S': '0803097E',
+}
+SAMPLE_PHYSICAL_METERS = {'0134575W'}
 
 
 RSM_OPEN_E66 = (
