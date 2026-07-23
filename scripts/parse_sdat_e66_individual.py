@@ -9,12 +9,11 @@ Schema location: http://www.strom.ch ValidatedMeteredData_1p6.xsd
 # mais plutôt de vérifier la valeur de rsm:ValidatedMeteredData_HeaderInformation/rsm:InstanceDocument/rsm:DocumentType au moment de la lecture du fichier 
 
 import logging
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 from typing import Dict, List, Optional
-import xml.etree.ElementTree as ET
 
-from models import MetricType, Observation, MeteredData, classify_metric_type
+from models import MetricType, MeteredData, classify_metric_type
+from sdat_xml import extract_product_code, extract_resolution_minutes, parse_observations
 
 logger = logging.getLogger(__name__)
 
@@ -77,40 +76,22 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
             logger.error("meter_id not found in consumption and production")
             return None
 
-        # Extract time interval
+        # Extract interval start (base timestamp for observations)
         interval = metering_data.find('.//rsm:Interval', ns)
         if interval is not None:
             start_elem = interval.find('rsm:StartDateTime', ns)
-            end_elem = interval.find('rsm:EndDateTime', ns)
-            if start_elem is not None and end_elem is not None:
+            if start_elem is not None:
                 result.start = start_elem.text
-                result.end = end_elem.text
 
-        # Extract resolution
-        resolution_elem = metering_data.find('.//rsm:Resolution/rsm:Resolution', ns)
-        unit_elem = metering_data.find('.//rsm:Resolution/rsm:Unit', ns)
-        resolution_minutes = None
-        if resolution_elem is not None and unit_elem is not None:
-            if unit_elem.text == 'MIN':
-                resolution_minutes = int(resolution_elem.text)
+        # Extract resolution (missing resolution is fatal)
+        resolution_minutes = extract_resolution_minutes(metering_data, ns)
         if resolution_minutes is None:
             logger.error("Resolution not found")
             return None
         result.resolution_minutes = resolution_minutes
 
         # Extract product code - try both formats
-        ebix_elem = metering_data.find('.//rsm:Product/rsm:ID/rsm:ebIXCode', ns)
-        vse_elem = metering_data.find('.//rsm:Product/rsm:ID/rsm:VSENationalCode', ns)
-
-        product_code = None
-        code_type = None
-
-        if ebix_elem is not None:
-            product_code = ebix_elem.text
-            code_type = 'ebIXCode'
-        elif vse_elem is not None:
-            product_code = vse_elem.text
-            code_type = 'VSENationalCode'
+        product_code, code_type = extract_product_code(metering_data, ns)
 
         if product_code:
             metric_type = determine_metric_type(product_code, result)
@@ -159,35 +140,16 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
         if community_elem is not None:
             result.community_id = community_elem.text
 
-        # Extract observations
-        observations = []
+        # Extract observations (need the interval start to time-stamp them)
+        if result.start is None:
+            logger.error("No start datetime found")
+            return None
+
         # ~480 observations/file, ~103 files/day, parsed in <1s total.
         # Sequential is fast enough; no need for pandas/parallelism.
-        for obs in metering_data.findall('.//rsm:Observation', ns):
-            seq_elem = obs.find('.//rsm:Position/rsm:Sequence', ns)
-            vol_elem = obs.find('.//rsm:Volume', ns)
-
-            if seq_elem is not None and vol_elem is not None:
-                try:
-                    sequence = int(seq_elem.text)
-                    volume = float(vol_elem.text)
-
-                    # Calculate timestamp from start time and sequence
-                    if result.start:
-                        base_dt = datetime.fromisoformat(result.start.replace('Z', '+00:00'))
-                        obs_dt = base_dt + timedelta(minutes=(sequence - 1) * resolution_minutes)
-
-                        observations.append(Observation(
-                            sequence=sequence,
-                            value=volume,
-                            timestamp=obs_dt.isoformat(),
-                        ))
-                except (ValueError, TypeError) as e:
-                    logger.warning(f"Error parsing observation: {e}")
-                    continue
-
-        result.observations = observations
-        logger.info(f"Parsed {len(observations)} observations")
+        result.observations = parse_observations(
+            metering_data, ns, result.start, resolution_minutes)
+        logger.info(f"Parsed {len(result.observations)} observations")
 
         return result
 
@@ -238,6 +200,7 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
     metric_type = parsed_data.metric_type
     product_code = parsed_data.product_code or 'unknown'
     code_type = parsed_data.code_type or 'unknown'
+    community_id = parsed_data.community_id or 'unknown'
     is_production_breakdown = parsed_data.is_production_breakdown
 
     if not metric_type:
@@ -260,6 +223,7 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
         labels = {
             '__name__': METRIC_NAME,
             'project': 'cel',
+            'community_id': community_id,
             'product_code': product_code,
             'code_type': code_type,
             'direction': metric_type.direction,   # consumption | production
@@ -268,6 +232,10 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
 
         if meter_id:
             labels['meter_id'] = meter_id
+
+        # Estimated vs measured readings split into separate series (e.g. "21").
+        if obs.condition:
+            labels['condition'] = obs.condition
 
         #TG: Isn't this unnecessarily cluttering the database with duplicate labels?
         #  GP: NO, labels are not duplicated when stored in VM, it's the other way around:

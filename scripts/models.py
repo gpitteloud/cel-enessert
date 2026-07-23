@@ -97,10 +97,7 @@ class MeteredData:
     product_code: Optional[str] = None
     community_id: Optional[str] = None
     start: Optional[str] = None              # interval start (ISO-8601)
-    end: Optional[str] = None                # interval end (ISO-8601)
     resolution_minutes: Optional[int] = None
-
-    # --- common ---
     # Classified from (direction, product_code); populated for both E66 and E31.
     metric_type: Optional[MetricType] = None
     # Which product-code element carried product_code: 'ebIXCode' | 'VSENationalCode'
@@ -118,6 +115,3 @@ class MeteredData:
     flow_characteristic: Optional[str] = None    # 'E17' consumption | 'E18' production
     grid_area: Optional[str] = None
     community_type: Optional[str] = None
-    business_reason: Optional[str] = None
-    settlement_method: Optional[str] = None
-    measure_unit: Optional[str] = None

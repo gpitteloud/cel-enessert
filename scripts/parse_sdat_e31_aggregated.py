@@ -6,13 +6,12 @@ Parses E31 XML files containing community-level aggregated energy data
 and converts to VictoriaMetrics format.
 """
 
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional
 import logging
 
-from models import Observation, MeteredData, classify_metric_type, flow_to_direction
+from models import MeteredData, classify_metric_type, flow_to_direction
+from sdat_xml import extract_product_code, extract_resolution_minutes, parse_observations
 
 logger = logging.getLogger(__name__)
 
@@ -32,79 +31,54 @@ def parse_e31(root) -> Optional[MeteredData]:
         has no MeteringData section.
     """
     try:
+        # Namespace
+        ns = {'rsm': 'http://www.strom.ch'}
+
         result = MeteredData(document_type='E31')
 
-        # Extract metadata from header
-        biz_reason = root.find('.//{http://www.strom.ch}BusinessReasonType/{http://www.strom.ch}VSENationalCode')
-        if biz_reason is not None:
-            result.business_reason = biz_reason.text
-
         # Find MeteringData section
-        metering_data = root.find('.//{http://www.strom.ch}MeteringData')
+        metering_data = root.find('.//rsm:MeteringData', ns)
         if metering_data is None:
             logger.warning("E31: No MeteringData section found")
             return None
 
-        # Extract interval (data period)
-        interval = metering_data.find('{http://www.strom.ch}Interval')
+        # Extract interval start (base timestamp for observations)
+        interval = metering_data.find('rsm:Interval', ns)
         if interval is not None:
-            start_dt = interval.find('{http://www.strom.ch}StartDateTime')
-            end_dt = interval.find('{http://www.strom.ch}EndDateTime')
-            if start_dt is not None and end_dt is not None:
+            start_dt = interval.find('rsm:StartDateTime', ns)
+            if start_dt is not None:
                 result.start = start_dt.text
-                result.end = end_dt.text
 
-        # Extract resolution
-        resolution_elem = metering_data.find('{http://www.strom.ch}Resolution')
-        if resolution_elem is not None:
-            res_value = resolution_elem.find('{http://www.strom.ch}Resolution')
-            res_unit = resolution_elem.find('{http://www.strom.ch}Unit')
-            if res_value is not None and res_unit is not None and res_unit.text == 'MIN':
-                result.resolution_minutes = int(res_value.text)
+        # Extract resolution (missing resolution is fatal)
+        resolution_minutes = extract_resolution_minutes(metering_data, ns)
+        if resolution_minutes is None:
+            logger.error("E31: Resolution not found")
+            return None
+        result.resolution_minutes = resolution_minutes
 
         # Extract grid area
-        grid_area = metering_data.find('{http://www.strom.ch}MeteringGridArea/{http://www.strom.ch}EICID')
+        grid_area = metering_data.find('rsm:MeteringGridArea/rsm:EICID', ns)
         if grid_area is not None:
             result.grid_area = grid_area.text
 
         # Extract product code (can be ebIX or VSE)
-        product = metering_data.find('{http://www.strom.ch}Product')
-        if product is not None:
-            # Try ebIX code first
-            product_id = product.find('{http://www.strom.ch}ID/{http://www.strom.ch}ebIXCode')
-            if product_id is not None:
-                result.product_code = product_id.text
-                result.code_type = 'ebIXCode'
-            else:
-                # Try VSE code
-                product_id = product.find('{http://www.strom.ch}ID/{http://www.strom.ch}VSENationalCode')
-                if product_id is not None:
-                    result.product_code = product_id.text
-                    result.code_type = 'VSENationalCode'
-
-            measure_unit = product.find('{http://www.strom.ch}MeasureUnit')
-            if measure_unit is not None:
-                result.measure_unit = measure_unit.text
+        result.product_code, result.code_type = extract_product_code(metering_data, ns)
 
         # Extract aggregation criteria
-        agg_criteria = metering_data.find('{http://www.strom.ch}AggregationCriteria')
+        agg_criteria = metering_data.find('rsm:AggregationCriteria', ns)
         if agg_criteria is not None:
-            flow = agg_criteria.find('{http://www.strom.ch}FlowCharacteristic')
+            flow = agg_criteria.find('rsm:FlowCharacteristic', ns)
             if flow is not None:
                 result.flow_characteristic = flow.text
 
-            settlement = agg_criteria.find('{http://www.strom.ch}SettlementMethodCharacteristic')
-            if settlement is not None:
-                result.settlement_method = settlement.text
-
         # Extract community info
-        community = metering_data.find('{http://www.strom.ch}Community')
+        community = metering_data.find('rsm:Community', ns)
         if community is not None:
-            comm_id = community.find('{http://www.strom.ch}CommunityID')
+            comm_id = community.find('rsm:CommunityID', ns)
             if comm_id is not None:
                 result.community_id = comm_id.text
 
-            comm_type = community.find('{http://www.strom.ch}CommunityType/{http://www.strom.ch}VSENationalCode')
+            comm_type = community.find('rsm:CommunityType/rsm:VSENationalCode', ns)
             if comm_type is not None:
                 result.community_type = comm_type.text
 
@@ -114,50 +88,13 @@ def parse_e31(root) -> Optional[MeteredData]:
         direction = flow_to_direction(result.flow_characteristic)
         result.metric_type = classify_metric_type(direction, result.product_code)
 
-        # Parse observations
-        observations = metering_data.findall('{http://www.strom.ch}Observation')
-
-        if not observations:
-            logger.warning("E31: No observations found")
-            return result
-
-        # Base timestamp from interval start
+        # Parse observations (need the interval start to time-stamp them)
         if result.start is None:
             logger.error("E31: No start datetime found")
-            return result
+            return None
 
-        base_time = datetime.fromisoformat(result.start.replace('Z', '+00:00'))
-        resolution_minutes = result.resolution_minutes or 15
-
-        for obs in observations:
-            position = obs.find('{http://www.strom.ch}Position')
-            if position is None:
-                continue
-
-            sequence = position.find('{http://www.strom.ch}Sequence')
-            if sequence is None:
-                continue
-
-            seq_num = int(sequence.text)
-
-            volume = obs.find('{http://www.strom.ch}Volume')
-            if volume is None:
-                continue
-
-            # Calculate timestamp for this observation
-            timestamp = base_time + timedelta(minutes=(seq_num - 1) * resolution_minutes)
-
-            # Get condition flag if present
-            condition = obs.find('{http://www.strom.ch}Condition')
-            condition_code = condition.text if condition is not None else None
-
-            result.observations.append(Observation(
-                sequence=seq_num,
-                timestamp=timestamp.isoformat(),
-                value=float(volume.text),
-                condition=condition_code,
-            ))
-
+        result.observations = parse_observations(
+            metering_data, ns, result.start, resolution_minutes)
         logger.info(f"E31: Parsed {len(result.observations)} community aggregate observations")
         return result
 
@@ -186,7 +123,6 @@ def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict
     community_type = parsed_data.community_type or 'unknown'
     product_code = parsed_data.product_code or 'unknown'
     code_type = parsed_data.code_type or 'unknown'
-    flow = parsed_data.flow_characteristic or 'unknown'
     grid_area = parsed_data.grid_area or 'unknown'
     metric_type = parsed_data.metric_type
 
@@ -208,9 +144,7 @@ def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict
             'community_type': community_type,
             'product_code': product_code,
             'code_type': code_type,
-            'flow_characteristic': flow,
             'grid_area': grid_area,
-            'data_source': 'E31_AggregatedMeteredData',
         }
 
         # Shared direction/segment labels (only when the metric type classified;

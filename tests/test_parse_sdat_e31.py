@@ -23,7 +23,6 @@ def test_parse_basic_metadata(write_xml):
     assert r.code_type == "VSENationalCode"
     assert r.flow_characteristic == "E17"
     assert r.grid_area == "12Y-0000000719-J"
-    assert r.business_reason == "C40"
     assert r.resolution_minutes == 15
 
 
@@ -137,11 +136,11 @@ def test_no_metering_data_returns_none(write_xml):
     assert parse_sdat(f) is None
 
 
-def test_missing_start_datetime_returns_no_observations(write_xml):
-    # Without StartDateTime the parser cannot compute timestamps
+def test_missing_start_datetime_returns_none(write_xml):
+    # Without StartDateTime the parser cannot compute timestamps -> reject the
+    # document (same policy as E66) rather than emit an untimestamped result.
     f = write_xml(make_e31_xml(include_start=False))
-    r = parse_sdat(f)
-    assert r.observations == []
+    assert parse_sdat(f) is None
 
 
 def test_malformed_xml_returns_none(write_xml):
@@ -166,11 +165,12 @@ def test_transform_builds_vm_datapoints(write_xml):
     assert m["community_id"] == "101110-002726"
     assert m["product_code"] == "2404050010123"
     assert m["code_type"] == "VSENationalCode"
-    assert m["flow_characteristic"] == "E17"
-    assert m["data_source"] == "E31_AggregatedMeteredData"
     # shared direction/segment labels, same scheme as E66
     assert m["direction"] == "consumption"
     assert m["segment"] == "cel"
+    # flow_characteristic is redundant with direction; data_source with __name__
+    assert "flow_characteristic" not in m
+    assert "data_source" not in m
     assert dps[0]["values"] == [5.0]
     assert isinstance(dps[0]["timestamps"][0], int)
 
@@ -241,6 +241,6 @@ def test_real_e31_transforms_to_datapoints():
     m = dps[0]["metric"]
     assert m["__name__"] == "cel_community_energy_kwh"
     assert m["project"] == "cel"
-    assert m["data_source"] == "E31_AggregatedMeteredData"
+    assert m["community_id"]
     assert m["direction"] in ("consumption", "production")
     assert m["segment"] in ("cel", "grid", "total")

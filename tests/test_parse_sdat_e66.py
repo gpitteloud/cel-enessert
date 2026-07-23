@@ -173,6 +173,10 @@ def test_transform_builds_vm_datapoints(write_xml):
     assert m["direction"] == "consumption"
     assert m["segment"] == "cel"
     assert m["meter_id"] == "CH101110123450000000000000020576V"
+    # community_id emitted for E66 too (shared with E31)
+    assert m["community_id"] == "101110-002726"
+    # condition split into its own series, same as E31
+    assert m["condition"] == "21"
     assert dps[0]["values"] == [1.0]
     # timestamp converted to epoch millis (int)
     assert isinstance(dps[0]["timestamps"][0], int)
