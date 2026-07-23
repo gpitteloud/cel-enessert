@@ -13,12 +13,12 @@ In a closed energy community, over any day the electricity CONSUMED FROM CEL
 Checks (for the CEL-local VSE code 2404050010123):
 
   E66 (individual meters):
-      sum cel_energy_local_import_kwh{data_type="consumption"}
-        == sum cel_energy_local_export_kwh{data_type="production"}
+      sum cel_energy_kwh{segment="cel",direction="consumption"}
+        == sum cel_energy_kwh{segment="cel",direction="production"}
 
   E31 (community aggregate):
-      sum energy_community_aggregate_kwh{flow_characteristic="E17"}   (consumption)
-        == sum energy_community_aggregate_kwh{flow_characteristic="E18"}   (production)
+      sum cel_community_energy_kwh{segment="cel",direction="consumption"}
+        == sum cel_community_energy_kwh{segment="cel",direction="production"}
 
   Cross-check: E66 consumption sum == E31 consumption aggregate.
 
@@ -108,24 +108,24 @@ def validate(date_str: str, vm_url: str):
     print()
 
     try:
-        # E66 individual meters
+        # E66 individual meters (segment=cel = local CEL exchange)
         e66_cons, cs, cser = vm_export_sum(
             vm_url,
-            f'cel_energy_local_import_kwh{{data_type="consumption",product_code="{CEL_LOCAL}"}}',
+            f'cel_energy_kwh{{segment="cel",direction="consumption",product_code="{CEL_LOCAL}"}}',
             start, end)
         e66_prod, ps, pser = vm_export_sum(
             vm_url,
-            f'cel_energy_local_export_kwh{{data_type="production",product_code="{CEL_LOCAL}"}}',
+            f'cel_energy_kwh{{segment="cel",direction="production",product_code="{CEL_LOCAL}"}}',
             start, end)
 
         # E31 community aggregate
         e31_cons, ecs, ecser = vm_export_sum(
             vm_url,
-            f'energy_community_aggregate_kwh{{product_code="{CEL_LOCAL}",flow_characteristic="E17"}}',
+            f'cel_community_energy_kwh{{segment="cel",direction="consumption",product_code="{CEL_LOCAL}"}}',
             start, end)
         e31_prod, eps, epser = vm_export_sum(
             vm_url,
-            f'energy_community_aggregate_kwh{{product_code="{CEL_LOCAL}",flow_characteristic="E18"}}',
+            f'cel_community_energy_kwh{{segment="cel",direction="production",product_code="{CEL_LOCAL}"}}',
             start, end)
     except Exception as e:
         print(f"  ERROR querying VictoriaMetrics: {e}")

@@ -168,9 +168,10 @@ def test_transform_builds_vm_datapoints(write_xml):
     dps = transform_to_datapoints(r)
     assert len(dps) == 2
     m = dps[0]["metric"]
-    assert m["__name__"] == "cel_energy_local_import_kwh"
+    assert m["__name__"] == "cel_energy_kwh"
     assert m["project"] == "cel"
-    assert m["data_type"] == "consumption"
+    assert m["direction"] == "consumption"
+    assert m["segment"] == "cel"
     assert m["meter_id"] == "CH101110123450000000000000020576V"
     assert dps[0]["values"] == [1.0]
     # timestamp converted to epoch millis (int)
@@ -183,8 +184,9 @@ def test_transform_production_data_type(write_xml):
                                code_type="ebIXCode"))
     r = parse_sdat(f)
     dps = transform_to_datapoints(r)
-    assert dps[0]["metric"]["__name__"] == "cel_energy_produced_kwh"
-    assert dps[0]["metric"]["data_type"] == "production"
+    assert dps[0]["metric"]["__name__"] == "cel_energy_kwh"
+    assert dps[0]["metric"]["direction"] == "production"
+    assert dps[0]["metric"]["segment"] == "total"
 
 
 def test_transform_breakdown_uses_attributed_meter_id(write_xml):
@@ -260,5 +262,6 @@ def test_real_e66_transforms_to_datapoints():
     assert len(dps) == len(r.observations)
     m = dps[0]["metric"]
     assert m["project"] == "cel"
-    assert m["__name__"].startswith("cel_energy_")
-    assert m["data_type"] in ("consumption", "production")
+    assert m["__name__"] == "cel_energy_kwh"
+    assert m["direction"] in ("consumption", "production")
+    assert m["segment"] in ("cel", "grid", "total")

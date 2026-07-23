@@ -11,13 +11,33 @@ from typing import List, Optional
 
 
 class MetricType(str, Enum):
-    """Energy metric types, shared by E66 and E31."""
+    """Energy metric types, shared by E66 and E31.
+
+    Each value is a ``direction`` x ``segment`` pair. Both are exposed as
+    VictoriaMetrics labels (see :attr:`direction` / :attr:`segment`) so E66 and
+    E31 series can be queried with one label scheme instead of six metric names.
+    """
     CONSUMPTION_TOTAL = 'consumption_total'
     CONSUMPTION_GRID = 'consumption_grid'
     CONSUMPTION_LOCAL = 'consumption_local'
     PRODUCTION_TOTAL = 'production_total'
     PRODUCTION_GRID = 'production_grid'
     PRODUCTION_LOCAL = 'production_local'
+
+    @property
+    def direction(self) -> str:
+        """'consumption' | 'production' -> the VM `direction` label."""
+        return self.value.split('_', 1)[0]
+
+    @property
+    def segment(self) -> str:
+        """'cel' | 'grid' | 'total' -> the VM `segment` label.
+
+        The enum uses 'local' internally (VSE terminology); the label uses 'cel'
+        to match how the community refers to its local exchange.
+        """
+        part = self.value.split('_', 1)[1]
+        return 'cel' if part == 'local' else part
 
 
 # Product codes shared across document types.
@@ -83,11 +103,14 @@ class MeteredData:
     # --- common ---
     # Classified from (direction, product_code); populated for both E66 and E31.
     metric_type: Optional[MetricType] = None
+    # Which product-code element carried product_code: 'ebIXCode' | 'VSENationalCode'
+    # (the raw XML element name; E31 previously called this product_code_type
+    # with shortened 'ebIX'/'VSE' values -- merged here to one shape).
+    code_type: Optional[str] = None
 
     # --- E66 only ---
     meter_id: Optional[str] = None
     metering_point_type: Optional[str] = None    # 'consumption' | 'production'
-    code_type: Optional[str] = None              # 'ebIXCode' | 'VSENationalCode'
     is_production_breakdown: bool = False
     attributed_physical_meter: Optional[str] = None
 
@@ -95,7 +118,6 @@ class MeteredData:
     flow_characteristic: Optional[str] = None    # 'E17' consumption | 'E18' production
     grid_area: Optional[str] = None
     community_type: Optional[str] = None
-    product_code_type: Optional[str] = None      # 'ebIX' | 'VSE'
     business_reason: Optional[str] = None
     settlement_method: Optional[str] = None
     measure_unit: Optional[str] = None

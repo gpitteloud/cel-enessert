@@ -227,16 +227,11 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
     if not parsed_data or not parsed_data.observations:
         return []
 
-    # Metric type to metric name mapping
-    METRIC_NAMES = {
-        MetricType.CONSUMPTION_GRID: 'cel_energy_grid_import_kwh',
-        MetricType.PRODUCTION_GRID: 'cel_energy_grid_export_kwh',
-        # TG: c'est quoi cel_energy_local_import_kwh et cel_energy_local_export_kwh ?
-        MetricType.CONSUMPTION_LOCAL: 'cel_energy_local_import_kwh',
-        MetricType.PRODUCTION_LOCAL: 'cel_energy_local_export_kwh',
-        MetricType.CONSUMPTION_TOTAL: 'cel_energy_consumed_kwh',
-        MetricType.PRODUCTION_TOTAL: 'cel_energy_produced_kwh',
-    }
+    # Single metric name for all per-meter (E66) energy. The two orthogonal
+    # dimensions are exposed as labels instead of baked into the metric name:
+    #   direction = consumption | production
+    #   segment   = cel | grid | total   (total = cel + grid)
+    METRIC_NAME = 'cel_energy_kwh'
 
     data_points = []
     meter_id = parsed_data.meter_id
@@ -247,12 +242,6 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
 
     if not metric_type:
         logger.warning("No metric type found, skipping")
-        return []
-
-    # Get metric name
-    metric_name = METRIC_NAMES.get(metric_type)
-    if not metric_name:
-        logger.warning(f"Unknown metric type: {metric_type}")
         return []
 
     # For a production breakdown file, store it against the attributed physical
@@ -269,11 +258,12 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
 
         # Build labels
         labels = {
-            '__name__': metric_name,
+            '__name__': METRIC_NAME,
             'project': 'cel',
             'product_code': product_code,
             'code_type': code_type,
-            'data_type': 'consumption' if 'consumption' in metric_type.value else 'production',
+            'direction': metric_type.direction,   # consumption | production
+            'segment': metric_type.segment,       # cel | grid | total
         }
 
         if meter_id:

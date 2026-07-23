@@ -20,7 +20,7 @@ def test_parse_basic_metadata(write_xml):
     assert r.community_id == "101110-002726"
     assert r.community_type == "CT01"
     assert r.product_code == "2404050010123"
-    assert r.product_code_type == "VSE"
+    assert r.code_type == "VSENationalCode"
     assert r.flow_characteristic == "E17"
     assert r.grid_area == "12Y-0000000719-J"
     assert r.business_reason == "C40"
@@ -66,11 +66,29 @@ def test_metric_type_none_for_unknown_flow(write_xml):
     assert parse_sdat(f).metric_type is None
 
 
+def test_unknown_flow_omits_direction_segment_labels(write_xml):
+    # No classification -> the shared labels are simply absent (not 'unknown')
+    f = write_xml(make_e31_xml(flow="E99", product_code="2404050010123"))
+    r = parse_sdat(f)
+    dps = transform_e31_to_datapoints(r)
+    assert "direction" not in dps[0]["metric"]
+    assert "segment" not in dps[0]["metric"]
+
+
+def test_metric_type_direction_segment_properties():
+    # The enum splits into the two VM labels; 'local' maps to 'cel'
+    assert MetricType.CONSUMPTION_LOCAL.direction == "consumption"
+    assert MetricType.CONSUMPTION_LOCAL.segment == "cel"
+    assert MetricType.PRODUCTION_GRID.direction == "production"
+    assert MetricType.PRODUCTION_GRID.segment == "grid"
+    assert MetricType.CONSUMPTION_TOTAL.segment == "total"
+
+
 def test_ebix_product_code(write_xml):
     f = write_xml(make_e31_xml(product_code="8716867000030", code_type="ebIXCode"))
     r = parse_sdat(f)
     assert r.product_code == "8716867000030"
-    assert r.product_code_type == "ebIX"
+    assert r.code_type == "ebIXCode"
 
 
 # --------------------------------------------------------------------------
@@ -143,12 +161,16 @@ def test_transform_builds_vm_datapoints(write_xml):
     dps = transform_e31_to_datapoints(r)
     assert len(dps) == 2
     m = dps[0]["metric"]
-    assert m["__name__"] == "energy_community_aggregate_kwh"
+    assert m["__name__"] == "cel_community_energy_kwh"
     assert m["project"] == "cel"
     assert m["community_id"] == "101110-002726"
     assert m["product_code"] == "2404050010123"
+    assert m["code_type"] == "VSENationalCode"
     assert m["flow_characteristic"] == "E17"
     assert m["data_source"] == "E31_AggregatedMeteredData"
+    # shared direction/segment labels, same scheme as E66
+    assert m["direction"] == "consumption"
+    assert m["segment"] == "cel"
     assert dps[0]["values"] == [5.0]
     assert isinstance(dps[0]["timestamps"][0], int)
 
@@ -217,6 +239,8 @@ def test_real_e31_transforms_to_datapoints():
     dps = transform_e31_to_datapoints(r)
     assert len(dps) == len(r.observations)
     m = dps[0]["metric"]
-    assert m["__name__"] == "energy_community_aggregate_kwh"
+    assert m["__name__"] == "cel_community_energy_kwh"
     assert m["project"] == "cel"
     assert m["data_source"] == "E31_AggregatedMeteredData"
+    assert m["direction"] in ("consumption", "production")
+    assert m["segment"] in ("cel", "grid", "total")

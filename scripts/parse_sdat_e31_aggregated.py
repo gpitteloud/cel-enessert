@@ -74,13 +74,13 @@ def parse_e31(root) -> Optional[MeteredData]:
             product_id = product.find('{http://www.strom.ch}ID/{http://www.strom.ch}ebIXCode')
             if product_id is not None:
                 result.product_code = product_id.text
-                result.product_code_type = 'ebIX'
+                result.code_type = 'ebIXCode'
             else:
                 # Try VSE code
                 product_id = product.find('{http://www.strom.ch}ID/{http://www.strom.ch}VSENationalCode')
                 if product_id is not None:
                     result.product_code = product_id.text
-                    result.product_code_type = 'VSE'
+                    result.code_type = 'VSENationalCode'
 
             measure_unit = product.find('{http://www.strom.ch}MeasureUnit')
             if measure_unit is not None:
@@ -185,11 +185,17 @@ def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict
     community_id = parsed_data.community_id or 'unknown'
     community_type = parsed_data.community_type or 'unknown'
     product_code = parsed_data.product_code or 'unknown'
+    code_type = parsed_data.code_type or 'unknown'
     flow = parsed_data.flow_characteristic or 'unknown'
     grid_area = parsed_data.grid_area or 'unknown'
+    metric_type = parsed_data.metric_type
 
-    # Create metric name
-    metric_name = 'energy_community_aggregate_kwh'
+    # Community aggregate (E31) kept under its own metric name so it never mixes
+    # with the per-meter E66 series (which would double-count on sum()). The two
+    # shared dimensions are exposed as labels, same scheme as E66:
+    #   direction = consumption | production
+    #   segment   = cel | grid | total
+    metric_name = 'cel_community_energy_kwh'
 
     for obs in parsed_data.observations:
         timestamp_dt = datetime.fromisoformat(obs.timestamp)
@@ -201,10 +207,17 @@ def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict
             'community_id': community_id,
             'community_type': community_type,
             'product_code': product_code,
+            'code_type': code_type,
             'flow_characteristic': flow,
             'grid_area': grid_area,
             'data_source': 'E31_AggregatedMeteredData',
         }
+
+        # Shared direction/segment labels (only when the metric type classified;
+        # e.g. an unknown flow leaves them off rather than emitting 'unknown').
+        if metric_type:
+            labels['direction'] = metric_type.direction
+            labels['segment'] = metric_type.segment
 
         # Add condition if present
         if obs.condition:
