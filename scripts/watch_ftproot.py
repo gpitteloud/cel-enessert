@@ -488,9 +488,12 @@ def main():
     # Clean up any pre-existing duplicates in ftproot
     cleanup_duplicates(watch_dir, event_handler.processed_files)
 
-    # Process any existing files in the directory on startup
+    # Process any existing files in the directory on startup.
+    # Sorted so the YYYYMMDD filename prefix yields chronological order: one
+    # batch per delivery day (the batcher flushes on date change), instead of
+    # arbitrary glob order interleaving dates into many tiny batches.
     logger.info("Scanning for existing files in watch directory...")
-    existing_files = list(watch_dir.glob("*.xml"))
+    existing_files = sorted(watch_dir.glob("*.xml"))
     if existing_files:
         logger.info(f"Found {len(existing_files)} existing XML files to process")
         for xml_file in existing_files:
