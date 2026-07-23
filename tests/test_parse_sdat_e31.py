@@ -5,6 +5,7 @@ from parse_sdat import parse_sdat
 from parse_sdat_e31_aggregated import (
     transform_e31_to_datapoints,
 )
+from models import MetricType
 from conftest import make_e31_xml, real_files
 
 
@@ -30,6 +31,39 @@ def test_flow_e18_production(write_xml):
     f = write_xml(make_e31_xml(flow="E18"))
     r = parse_sdat(f)
     assert r.flow_characteristic == "E18"
+
+
+# --------------------------------------------------------------------------
+# metric_type classification (shared scheme with E66)
+# --------------------------------------------------------------------------
+
+def test_metric_type_consumption_local(write_xml):
+    # E17 (consumption) + VSE local code -> CONSUMPTION_LOCAL
+    f = write_xml(make_e31_xml(flow="E17", product_code="2404050010123"))
+    assert parse_sdat(f).metric_type == MetricType.CONSUMPTION_LOCAL
+
+
+def test_metric_type_production_local(write_xml):
+    # E18 (production) + VSE local code -> PRODUCTION_LOCAL
+    f = write_xml(make_e31_xml(flow="E18", product_code="2404050010123"))
+    assert parse_sdat(f).metric_type == MetricType.PRODUCTION_LOCAL
+
+
+def test_metric_type_consumption_grid(write_xml):
+    f = write_xml(make_e31_xml(flow="E17", product_code="2404050010124"))
+    assert parse_sdat(f).metric_type == MetricType.CONSUMPTION_GRID
+
+
+def test_metric_type_production_total_ebix(write_xml):
+    f = write_xml(make_e31_xml(flow="E18", product_code="8716867000030",
+                               code_type="ebIXCode"))
+    assert parse_sdat(f).metric_type == MetricType.PRODUCTION_TOTAL
+
+
+def test_metric_type_none_for_unknown_flow(write_xml):
+    # A flow that is neither E17 nor E18 cannot be classified
+    f = write_xml(make_e31_xml(flow="E99", product_code="2404050010123"))
+    assert parse_sdat(f).metric_type is None
 
 
 def test_ebix_product_code(write_xml):

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import logging
 
-from models import Observation, MeteredData
+from models import Observation, MeteredData, classify_metric_type, flow_to_direction
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,12 @@ def parse_e31(root) -> Optional[MeteredData]:
             comm_type = community.find('{http://www.strom.ch}CommunityType/{http://www.strom.ch}VSENationalCode')
             if comm_type is not None:
                 result.community_type = comm_type.text
+
+        # Classify into the shared MetricType, same scheme as E66. Direction
+        # comes from the flow characteristic (E17 consumption / E18 production)
+        # rather than a metering point type.
+        direction = flow_to_direction(result.flow_characteristic)
+        result.metric_type = classify_metric_type(direction, result.product_code)
 
         # Parse observations
         observations = metering_data.findall('{http://www.strom.ch}Observation')

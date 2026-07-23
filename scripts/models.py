@@ -11,13 +11,47 @@ from typing import List, Optional
 
 
 class MetricType(str, Enum):
-    """Energy metric types (E66)."""
+    """Energy metric types, shared by E66 and E31."""
     CONSUMPTION_TOTAL = 'consumption_total'
     CONSUMPTION_GRID = 'consumption_grid'
     CONSUMPTION_LOCAL = 'consumption_local'
     PRODUCTION_TOTAL = 'production_total'
     PRODUCTION_GRID = 'production_grid'
     PRODUCTION_LOCAL = 'production_local'
+
+
+# Product codes shared across document types.
+#   VSE local exchange (CEL) / VSE grid residual / ebIX total (grid + local)
+_PRODUCT_METRIC = {
+    ('consumption', '2404050010123'): MetricType.CONSUMPTION_LOCAL,
+    ('production', '2404050010123'): MetricType.PRODUCTION_LOCAL,
+    ('consumption', '2404050010124'): MetricType.CONSUMPTION_GRID,
+    ('production', '2404050010124'): MetricType.PRODUCTION_GRID,
+    ('consumption', '8716867000030'): MetricType.CONSUMPTION_TOTAL,
+    ('production', '8716867000030'): MetricType.PRODUCTION_TOTAL,
+}
+
+# E31 encodes direction as a flow characteristic rather than a metering point type.
+_FLOW_TO_DIRECTION = {
+    'E17': 'consumption',
+    'E18': 'production',
+}
+
+
+def classify_metric_type(direction: Optional[str], product_code: Optional[str]) -> Optional[MetricType]:
+    """Map a flow direction + product code to a MetricType.
+
+    Shared by both document types: E66 derives ``direction`` from the metering
+    point type ('consumption'|'production'); E31 derives it from the flow
+    characteristic via :func:`flow_to_direction`. Returns None for any
+    unrecognized (direction, product_code) combination.
+    """
+    return _PRODUCT_METRIC.get((direction, product_code))
+
+
+def flow_to_direction(flow_characteristic: Optional[str]) -> Optional[str]:
+    """Map an E31 FlowCharacteristic (E17/E18) to a consumption/production direction."""
+    return _FLOW_TO_DIRECTION.get(flow_characteristic)
 
 
 @dataclass
@@ -46,10 +80,13 @@ class MeteredData:
     end: Optional[str] = None                # interval end (ISO-8601)
     resolution_minutes: Optional[int] = None
 
+    # --- common ---
+    # Classified from (direction, product_code); populated for both E66 and E31.
+    metric_type: Optional[MetricType] = None
+
     # --- E66 only ---
     meter_id: Optional[str] = None
-    metering_point_type: Optional[str] = None    # 'consumption' | 'production' | 'aggregated'
-    metric_type: Optional[MetricType] = None
+    metering_point_type: Optional[str] = None    # 'consumption' | 'production'
     code_type: Optional[str] = None              # 'ebIXCode' | 'VSENationalCode'
     is_production_breakdown: bool = False
     attributed_physical_meter: Optional[str] = None

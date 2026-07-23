@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 
-from models import MetricType, Observation, MeteredData
+from models import MetricType, Observation, MeteredData, classify_metric_type
 
 logger = logging.getLogger(__name__)
 
@@ -199,32 +199,11 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
 def determine_metric_type(product_code: str, result: MeteredData) -> Optional[MetricType]:
     """Map a product code + metering point type to a MetricType.
 
-    Returns None if the (product_code, metering_point_type) combination is not
-    one of the recognized ones.
+    The E66 metering point type ('consumption'|'production') is already the
+    direction the shared classifier expects, so this just delegates. Returns
+    None for any unrecognized combination.
     """
-    metric_type = None
-    metering_type = result.metering_point_type
-    if product_code == '2404050010123':
-        # CEL local exchange
-        if metering_type == 'consumption':
-            metric_type = MetricType.CONSUMPTION_LOCAL
-        elif metering_type == 'production':
-            metric_type = MetricType.PRODUCTION_LOCAL
-
-    elif product_code == '2404050010124':
-        # Grid (residual)
-        if metering_type == 'consumption':
-            metric_type = MetricType.CONSUMPTION_GRID
-        elif metering_type == 'production':
-            metric_type = MetricType.PRODUCTION_GRID
-
-    elif product_code == '8716867000030':
-        # Total (Grid + local)
-        if metering_type == 'consumption':
-            metric_type = MetricType.CONSUMPTION_TOTAL
-        elif metering_type == 'production':
-            metric_type = MetricType.PRODUCTION_TOTAL
-    return metric_type
+    return classify_metric_type(result.metering_point_type, product_code)
 
 
 def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter_id: str = None) -> List[Dict]:
