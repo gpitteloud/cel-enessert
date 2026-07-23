@@ -113,6 +113,9 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
                 elif meter_suffix and physical_production_meters and meter_suffix in physical_production_meters:
                     # Self-contained meter: the production breakdown is on the same meter ID
                     # that also reports the ebIX production total. Attribute to itself.
+                    # As of 2026-07, meter 0134575W (not linked to RCP) is the only
+                    # such meter -- the sole breakdown attributed to itself rather
+                    # than to a separate 085-prefixed virtual meter.
                     is_production_breakdown = True
                     attributed_physical_meter = meter_suffix
                     logger.info(f"Self-contained meter {meter_suffix} -> attributing production breakdown to itself")

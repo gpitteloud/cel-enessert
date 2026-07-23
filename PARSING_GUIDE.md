@@ -148,9 +148,14 @@ Virtual Meter: CH10111012345000000000000008574078
 
 #### Self-Contained Meters (newer pattern)
 
-Some members (e.g. meter suffix `0134575W`, joined ~July 2026) report their
-production breakdown **on the same meter ID** as the production total, instead
-of via a separate `085`-prefixed virtual meter.
+Meter suffix `0134575W` (joined ~July 2026) reports its production breakdown
+**on the same meter ID** as the production total, instead of via a separate
+`085`-prefixed virtual meter.
+
+`0134575W` is a **special meter, not linked to RCP** (Regroupement pour la
+Consommation Propre / self-consumption grouping). As of July 2026 it is the
+**only** self-contained meter — the sole case whose production breakdown is
+attributed to the meter itself rather than to a separate virtual meter.
 
 ```
 Meter: CH101110123450000000000000134575W
@@ -378,11 +383,13 @@ Production (E18):
 - ✅ **VSE breakdown**: CEL Local vs Grid split for production
 - ❌ **NOT real measurements**: These are estimated/calculated values
 
-**RCP meters** (Regroupement pour la Consommation Propre):
+**RCP meters** (Regroupement pour la Consommation Propre) — *hypothetical*:
 - ✅ **Grid connection point**: Measures net exchange for multiple units
 - ✅ **Both consumption & production**: Functions like physical meter
 - ✅ **Gets breakdown data**: Participates in CEL trading
 - Example: Apartment building with shared solar, only net grid exchange metered
+- ⚠️ **No RCP meter is confirmed in the data.** `0134575W` was once assumed to be
+  RCP but is **not** — it is a self-contained meter (see [Self-Contained Meters](#self-contained-meters-newer-pattern)).
 
 ### The Mapping Challenge
 
@@ -466,7 +473,8 @@ Current community mappings (as of June 2026):
 **Self-contained meter**: `0134575W` (joined ~July 2026) is **not** a virtual
 meter and has no mapping entry. It reports its production total *and* its VSE
 production breakdown on the same meter ID, so its breakdown is attributed to
-itself. See [Self-Contained Meters](#self-contained-meters-newer-pattern).
+itself. It is **not linked to RCP** and is currently the only such meter. See
+[Self-Contained Meters](#self-contained-meters-newer-pattern).
 
 ---
 

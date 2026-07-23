@@ -82,18 +82,19 @@
 - 0855225S → attributed to 0803097E
 
 ### Special Case: 0134575W (1 meter × 4 files = 4 files)
-This meter represents an **RCP (Regroupement pour la Consommation Propre)** - a self-consumption group within the CEL:
+This is a **special meter, NOT linked to RCP** (Regroupement pour la Consommation
+Propre / self-consumption grouping). It is the only self-contained meter — its
+production breakdown is attributed to the meter itself rather than to a separate
+virtual meter. Files:
 - 1 Consumption Total (ebIX)
-- 1 Production Total (ebIX) 
-- 2 Production VSE breakdown files
+- 1 Production Total (ebIX)
+- 2 Production VSE breakdown files (attributed to `0134575W` itself)
 
-**RCP characteristics:**
+**Characteristics:**
 - Daily production: 804 kWh (exceeds main community aggregate of 668 kWh)
 - Has both consumption & production (grid connection point)
 - Gets breakdown data (participates in CEL trading)
-- Multiple units behind one grid connection meter
-- Internal electricity sharing within RCP, only net exchange metered
-- Likely: apartment building or housing cooperative
+- Reports its production total *and* VSE breakdown on the same meter ID
 
 ## File Count Calculation
 

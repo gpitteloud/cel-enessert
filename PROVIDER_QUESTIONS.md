@@ -114,22 +114,19 @@ Physical → Virtual
 
 10. **Virtual meter purpose:** Are virtual meters created specifically to provide production VSE breakdowns because physical meters don't measure this directly?
 
-11. **Meter 0134575W - RCP (Regroupement pour la Consommation Propre):** This meter has unusual characteristics:
+11. **Meter 0134575W - special self-contained meter:** This meter has unusual characteristics:
     - Has both consumption and production (like physical meter)
     - Gets production breakdown (like virtual meter)
     - Daily production: 804 kWh (exceeds entire community aggregate of 668 kWh)
-    - No matching pair
-    
-    **Hypothesis**: This represents an RCP (self-consumption group) within the CEL community - a building or group of units that:
-    - Share electricity internally (behind one grid connection meter)
-    - Have one meter at their grid connection point (0134575W)
-    - Only net exchange with main grid is metered
-    - Participate in CEL trading as a single entity
-    
-    **Questions**: 
-    - Can you confirm this is an RCP? 
-    - How many units/members are behind this meter?
-    - Should RCP data be included in community totals or tracked separately?
+    - No matching pair — reports its production total *and* VSE breakdown on the same meter ID
+
+    **ANSWERED**: This meter is **NOT linked to RCP** (Regroupement pour la
+    Consommation Propre). The earlier RCP hypothesis is discarded. It is a
+    special self-contained meter; its breakdown is attributed to itself.
+
+    **Remaining questions**:
+    - What exactly does this meter represent, if not an RCP?
+    - Will other meters of this kind appear (it is currently the only one)?
 
 12. **New members:** When a new member joins:
     - Will they automatically get both physical and virtual meter IDs?
