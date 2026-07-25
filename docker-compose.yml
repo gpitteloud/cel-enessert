@@ -30,7 +30,7 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_INSTALL_PLUGINS=
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_community_overview.json
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_energy_overview.json
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
       - GF_SERVER_DOMAIN=grafana.oche22.ch
     depends_on:

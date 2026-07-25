@@ -72,7 +72,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": [
           {
@@ -138,7 +138,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})[$__interval:15m])) * 4",
           "legendFormat": "From CEL",
           "range": true,
           "refId": "A"
@@ -149,7 +149,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_grid_import_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})[$__interval:15m])) * 4",
           "hide": false,
           "legendFormat": "From Grid",
           "range": true,
@@ -157,7 +157,8 @@
         }
       ],
       "title": "Daily Consumption - ${meter_id}",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     },
     {
       "datasource": {
@@ -209,7 +210,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": [
           {
@@ -275,7 +276,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"})[$__interval:15m])) * 4",
           "legendFormat": "To CEL",
           "range": true,
           "refId": "A"
@@ -286,7 +287,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_grid_export_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"})[$__interval:15m])) * 4",
           "hide": false,
           "legendFormat": "To Grid",
           "range": true,
@@ -294,7 +295,8 @@
         }
       ],
       "title": "Daily Production - ${meter_id}",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     },
     {
       "datasource": {
@@ -349,7 +351,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_consumed_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "sum without(condition)(cel_energy_kwh{segment=\"total\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -411,7 +413,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "cel_energy_produced_kwh{meter_id=~\".*${meter_id}\"}",
+          "expr": "sum without(condition)(cel_energy_kwh{segment=\"total\", direction=\"production\", meter_id=~\".*${meter_id}\"})",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -481,7 +483,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "(sum(increase(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_grid_import_kwh{meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
+          "expr": "(sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -551,7 +553,7 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "(sum(increase(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_grid_export_kwh{meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
+          "expr": "(sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -614,7 +616,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": []
       },
@@ -648,14 +650,15 @@
             "uid": "VictoriaMetrics"
           },
           "editorMode": "code",
-          "expr": "(sum(cel_energy_grid_export_kwh{meter_id=~\".*${meter_id}\"}) + sum(cel_energy_local_export_kwh{meter_id=~\".*${meter_id}\"})) - (sum(cel_energy_grid_import_kwh{meter_id=~\".*${meter_id}\"}) + sum(cel_energy_local_import_kwh{meter_id=~\".*${meter_id}\"}))",
+          "expr": "((avg_over_time(sum(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"})[$__interval:15m]) + avg_over_time(sum(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"})[$__interval:15m])) - (avg_over_time(sum(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})[$__interval:15m]) + avg_over_time(sum(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})[$__interval:15m]))) * 4",
           "legendFormat": "Net Energy (positive = producing more)",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "Energy Balance - ${meter_id}",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     }
   ],
   "refresh": "",
@@ -677,14 +680,14 @@
           "type": "prometheus",
           "uid": "VictoriaMetrics"
         },
-        "definition": "label_values(cel_energy_consumed_kwh, meter_id)",
+        "definition": "label_values(cel_energy_kwh{segment=\"total\", direction=\"consumption\"}, meter_id)",
         "hide": 0,
         "includeAll": false,
         "multi": false,
         "name": "meter_id",
         "options": [],
         "query": {
-          "query": "label_values(cel_energy_consumed_kwh, meter_id)",
+          "query": "label_values(cel_energy_kwh{segment=\"total\", direction=\"consumption\"}, meter_id)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 1,

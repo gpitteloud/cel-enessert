@@ -81,7 +81,7 @@
         {
           "datasource": "VictoriaMetrics",
           "editorMode": "code",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "expr": "sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"})",
           "legendFormat": "Total Consumption",
           "range": true,
           "refId": "A"
@@ -136,7 +136,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "expr": "sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"})",
           "refId": "A",
           "editorMode": "code",
           "legendFormat": "Total Production",
@@ -200,7 +200,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "100 * (sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])) / sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])))",
+          "expr": "100 * (sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"}[$__range])) / sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"}[$__range])))",
           "refId": "A",
           "editorMode": "code",
           "legendFormat": "Total Consumption",
@@ -264,7 +264,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "100 * (sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])) / sum(increase(energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}[$__range])))",
+          "expr": "100 * (sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"}[$__range])) / sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"}[$__range])))",
           "refId": "A",
           "editorMode": "code",
           "legendFormat": "Total Consumption",
@@ -333,7 +333,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": [
           {
@@ -424,15 +424,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}",
-          "legendFormat": "Total Consumption",
-          "refId": "A",
-          "editorMode": "code",
-          "range": true
-        },
-        {
-          "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"})[$__interval:15m])) * 4",
           "legendFormat": "From CEL",
           "refId": "B",
           "editorMode": "code",
@@ -440,7 +432,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"})[$__interval:15m])) * 4",
           "legendFormat": "From Grid",
           "refId": "C",
           "editorMode": "code",
@@ -448,7 +440,8 @@
         }
       ],
       "title": "Community Consumption Over Time",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     },
     {
       "datasource": "VictoriaMetrics",
@@ -508,7 +501,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "expr": "sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"})",
           "legendFormat": "From CEL",
           "refId": "A",
           "editorMode": "code",
@@ -516,7 +509,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "expr": "sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"})",
           "legendFormat": "From Grid",
           "refId": "B",
           "editorMode": "code",
@@ -585,7 +578,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": [
           {
@@ -676,15 +669,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}",
-          "legendFormat": "Total Production",
-          "refId": "A",
-          "editorMode": "code",
-          "range": true
-        },
-        {
-          "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"production\"})[$__interval:15m])) * 4",
           "legendFormat": "To CEL",
           "refId": "B",
           "editorMode": "code",
@@ -692,7 +677,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"production\"})[$__interval:15m])) * 4",
           "legendFormat": "To Grid",
           "refId": "C",
           "editorMode": "code",
@@ -700,7 +685,8 @@
         }
       ],
       "title": "Community Production Over Time",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     },
     {
       "datasource": "VictoriaMetrics",
@@ -760,7 +746,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "expr": "sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"production\"})",
           "legendFormat": "To CEL",
           "refId": "A",
           "editorMode": "code",
@@ -768,7 +754,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "expr": "sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"production\"})",
           "legendFormat": "To Grid",
           "refId": "B",
           "editorMode": "code",
@@ -837,7 +823,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": [
           {
@@ -913,7 +899,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"})[$__interval:15m])) * 4",
           "legendFormat": "E31 Total",
           "refId": "A",
           "editorMode": "code",
@@ -921,7 +907,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "sum(cel_energy_grid_import_kwh{project=\"cel\"}) + sum(cel_energy_local_import_kwh{project=\"cel\"})",
+          "expr": "(avg_over_time(sum(cel_energy_kwh{segment=\"total\", direction=\"consumption\", project=\"cel\"})[$__interval:15m])) * 4",
           "legendFormat": "Sum(E66)",
           "refId": "B",
           "editorMode": "code",
@@ -929,7 +915,8 @@
         }
       ],
       "title": "Consumption Validation: E31 vs Sum of E66",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     },
     {
       "datasource": "VictoriaMetrics",
@@ -978,7 +965,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": [
           {
@@ -1054,7 +1041,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}",
+          "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"})[$__interval:15m])) * 4",
           "legendFormat": "E31 Total",
           "refId": "A",
           "editorMode": "code",
@@ -1062,7 +1049,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "sum(cel_energy_grid_export_kwh{project=\"cel\"}) + sum(cel_energy_local_export_kwh{project=\"cel\"})",
+          "expr": "(avg_over_time(sum(cel_energy_kwh{segment=\"total\", direction=\"production\", project=\"cel\"})[$__interval:15m])) * 4",
           "legendFormat": "Sum(E66)",
           "refId": "B",
           "editorMode": "code",
@@ -1070,7 +1057,8 @@
         }
       ],
       "title": "Production Validation: E31 vs Sum of E66",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     },
     {
       "datasource": "VictoriaMetrics",
@@ -1119,7 +1107,7 @@
               }
             ]
           },
-          "unit": "kwatth"
+          "unit": "kwatt"
         },
         "overrides": []
       },
@@ -1150,7 +1138,7 @@
       "targets": [
         {
           "datasource": "VictoriaMetrics",
-          "expr": "sum by() (energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E17\", condition=\"21\"}) - sum by() (cel_energy_grid_import_kwh{project=\"cel\"}) + sum by() (cel_energy_local_import_kwh{project=\"cel\"})",
+          "expr": "(avg_over_time(sum by() (cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"})[$__interval:15m]) - avg_over_time(sum by() (cel_energy_kwh{segment=\"total\", direction=\"consumption\", project=\"cel\"})[$__interval:15m])) * 4",
           "legendFormat": "Consumption: E31 - Sum(E66)",
           "refId": "A",
           "editorMode": "code",
@@ -1158,7 +1146,7 @@
         },
         {
           "datasource": "VictoriaMetrics",
-          "expr": "sum by() (energy_community_aggregate_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", flow_characteristic=\"E18\", condition=\"21\"}) - sum by() (cel_energy_grid_export_kwh{project=\"cel\"}) + sum by() (cel_energy_local_export_kwh{project=\"cel\"})",
+          "expr": "(avg_over_time(sum by() (cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"})[$__interval:15m]) - avg_over_time(sum by() (cel_energy_kwh{segment=\"total\", direction=\"production\", project=\"cel\"})[$__interval:15m])) * 4",
           "legendFormat": "Production: E31 - Sum(E66)",
           "refId": "B",
           "editorMode": "code",
@@ -1166,7 +1154,8 @@
         }
       ],
       "title": "Validation Difference (E31 - E66) - Should be close to zero",
-      "type": "timeseries"
+      "type": "timeseries",
+      "interval": "15m"
     }
   ],
   "refresh": "",
