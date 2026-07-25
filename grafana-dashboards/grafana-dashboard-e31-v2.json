@@ -395,6 +395,33 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*\\(kWh\\)$"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "kwatth"
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": true,
+                  "legend": false
+                }
+              }
+            ]
           }
         ]
       },
@@ -435,6 +462,22 @@
           "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"})[$__interval:15m])) * 4",
           "legendFormat": "From Grid",
           "refId": "C",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": "VictoriaMetrics",
+          "expr": "sum_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"})[$__interval:15m])",
+          "legendFormat": "From CEL (kWh)",
+          "refId": "D",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": "VictoriaMetrics",
+          "expr": "sum_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"})[$__interval:15m])",
+          "legendFormat": "From Grid (kWh)",
+          "refId": "E",
           "editorMode": "code",
           "range": true
         }
@@ -640,6 +683,33 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*\\(kWh\\)$"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "kwatth"
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "tooltip": false,
+                  "viz": true,
+                  "legend": false
+                }
+              }
+            ]
           }
         ]
       },
@@ -680,6 +750,22 @@
           "expr": "(avg_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"production\"})[$__interval:15m])) * 4",
           "legendFormat": "To Grid",
           "refId": "C",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": "VictoriaMetrics",
+          "expr": "sum_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"production\"})[$__interval:15m])",
+          "legendFormat": "To CEL (kWh)",
+          "refId": "D",
+          "editorMode": "code",
+          "range": true
+        },
+        {
+          "datasource": "VictoriaMetrics",
+          "expr": "sum_over_time(sum without(condition)(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"production\"})[$__interval:15m])",
+          "legendFormat": "To Grid (kWh)",
+          "refId": "E",
           "editorMode": "code",
           "range": true
         }

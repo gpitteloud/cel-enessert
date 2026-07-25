@@ -48,6 +48,26 @@ Stat and pie panels don't need the power conversion (their panel-level reduce
 `sum without(condition)(...)`. Gauge panels already use `sum(increase(...))`,
 which collapses `condition` on its own, so they were left as-is.
 
+### Legend "Total" on power charts — the hidden kWh companion series
+
+A Grafana timeseries panel applies **one unit to the whole field**, so the
+legend's `Total`/`Mean`/`Max` are all formatted with that unit. On a power (kW)
+line, `Mean` and `Max` are meaningful (avg / peak power) but `Total` is
+`Σ(power samples)` — ~4× the energy at 15-min resolution and not stable across
+zoom. There's no per-calc unit, so the fix is a **second, hidden series** per
+segment that carries true energy:
+
+```promql
+sum_over_time(sum without(condition)(<selector>)[$__interval:15m])
+```
+
+- `sum_over_time(...[$__interval:15m])` totals the 15-min energy inside each
+  step bucket, so the legend's `Sum` of this series equals real kWh at any zoom.
+- These companions are named `... (kWh)` and pinned via a `byRegexp`
+  (`.*\(kWh\)$`) override to `unit: kwatth`, `hideFrom.viz: true` — they show
+  only in the legend/tooltip, never as a line. Read `Sum` for energy (kWh) and
+  the power series' `Mean`/`Max` for power (kW).
+
 ## The `condition` label — collapse it in every query
 
 The provider marks each 15-min reading as **measured** (no `condition`) or
