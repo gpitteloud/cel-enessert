@@ -2,7 +2,7 @@
 
 ## Summary
 
-Through extensive analysis of May-June 2026 data files, we've **confirmed** many aspects of the system. This document contains **26 remaining questions** where we need official confirmation or additional information.
+Through extensive analysis of May-June 2026 data files, we've **confirmed** many aspects of the system. This document contains **28 remaining questions** where we need official confirmation or additional information.
 
 ### What We've Confirmed ✓
 
@@ -16,6 +16,8 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - **Community ID**: 101110-002726, Type CT01
 - **Physical-virtual mappings**: 9 discovered pairs by matching production totals
 - **E31 stability**: Always 6 E31 files regardless of member count
+- **E31 production = sum of physical E66 production**: exact match once virtual
+  meters' duplicate production totals are excluded (e.g. 2026-06-15: both 2558.6 kWh)
 
 ### What We Need From You ❓
 
@@ -170,8 +172,33 @@ Physical → Virtual
     - Billing/settlement?
 
 16. **E31 vs E66 consistency:** Should E31 community totals exactly match the sum of E66 individual meters?
-    - We observe small differences
-    - Is this expected (different estimation algorithms) or should they be identical?
+    - **PARTIALLY ANSWERED (our side):** For **production**, E31 total matches the
+      sum of E66 *physical* production totals **exactly** (e.g. 2026-06-15:
+      E31 = 2558.6 kWh vs sum(E66) = 2558.6 kWh, 0.00% diff), once we stop
+      double-counting the virtual meters (each virtual meter reports the same
+      production total as its physical meter; we now keep only the physical one).
+    - **Remaining question:** confirm that E31 production total is defined as the
+      sum of physical meters' production totals (not something independently
+      estimated), so the exact match is guaranteed rather than coincidental.
+
+16a. **E31 consumption is zero from 2026-06-01 onward:** In the delivered files,
+    all E31 **consumption** series (E17 -- Total, CEL, and Grid) contain
+    `<Volume>0.000</Volume>` for every 15-min interval starting with the file
+    dated 2026-06-01 (data date 2026-06-01) through the latest delivery, while
+    the corresponding E66 individual-meter consumption is non-zero and E31
+    **production** (E18) is populated normally.
+    - Late-May files (data dates 2026-05-21 .. 2026-05-29) DO carry non-zero E31
+      consumption.
+    - **Questions:** Is E31 consumption aggregation broken/disabled from June
+      onward, or is this expected? Will it be backfilled? Should we rely on the
+      E66 sum for community consumption instead?
+
+16b. **Monthly E31 file overlapping daily files:** One delivery (2026-06-18)
+    contained an E31 file with a **31-day** interval (2976 observations, start
+    2026-04-30) alongside the usual 5-day daily files. Its data date range
+    (from 2026-04-30) predates our E66 coverage.
+    - **Questions:** Are monthly/backfill E31 files sent on a schedule? How
+      should they be reconciled with the overlapping daily files (which wins)?
 
 ---
 

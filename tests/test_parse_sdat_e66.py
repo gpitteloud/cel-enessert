@@ -114,6 +114,43 @@ def test_self_contained_meter_attributed_to_itself(write_xml):
     assert r.attributed_physical_meter == "0134575W"
 
 
+def test_virtual_meter_production_total_dropped(write_xml):
+    # A mapped virtual meter's ebIX production TOTAL duplicates its physical
+    # meter's total, so it must be dropped (returns None) to avoid double
+    # counting the community production sum.
+    virt = "CH1011101234500000000000000855229G"
+    f = write_xml(make_e66_xml(point="production", meter_id=virt,
+                               product_code="8716867000030",
+                               code_type="ebIXCode"))
+    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
+    assert r is None
+
+
+def test_self_contained_meter_production_total_kept(write_xml):
+    # The self-contained meter is NOT in meter_mappings (only in the physical
+    # set), so its own production total must be kept, not dropped.
+    mid = "CH101110123450000000000000134575W"
+    f = write_xml(make_e66_xml(point="production", meter_id=mid,
+                               product_code="8716867000030",
+                               code_type="ebIXCode"))
+    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"},
+                       physical_production_meters={"0134575W"})
+    assert r is not None
+    assert r.metric_type == MetricType.PRODUCTION_TOTAL
+    assert r.is_production_breakdown is False
+
+
+def test_physical_meter_production_total_kept(write_xml):
+    # A physical producer's own ebIX production total is always kept.
+    mid = "CH101110123450000000000000020576V"
+    f = write_xml(make_e66_xml(point="production", meter_id=mid,
+                               product_code="8716867000030",
+                               code_type="ebIXCode"))
+    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
+    assert r is not None
+    assert r.metric_type == MetricType.PRODUCTION_TOTAL
+
+
 def test_unknown_virtual_meter_returns_none(write_xml):
     # Production VSE breakdown, unknown meter, no mapping, not self-contained
     mid = "CH101110123450000000000000999999X"
@@ -224,12 +261,28 @@ _E66_SAMPLES = real_files("*_E66_*.xml")
 
 @pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
 def test_real_e66_files_all_parse():
-    """Every real E66 file must parse to a MeteredData (no crashes, no None)."""
+    """Every real E66 file either parses to a MeteredData or is deliberately
+    dropped. The only legitimate drop is a mapped virtual meter's ebIX
+    production TOTAL (identical to its physical meter's total)."""
     parsed = 0
+    dropped = 0
     for f in _E66_SAMPLES:
         r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                            physical_production_meters=SAMPLE_PHYSICAL_METERS)
-        assert r is not None, f"failed to parse real file: {f.name}"
+        if r is None:
+            # Only a mapped virtual meter's production total may be dropped.
+            suffix = f.name  # filename doesn't carry meter id; re-parse raw
+            import xml.etree.ElementTree as _ET
+            ns = {'rsm': 'http://www.strom.ch'}
+            md = _ET.parse(f).getroot().find('.//rsm:MeteringData', ns)
+            pp = md.find('.//rsm:ProductionMeteringPoint/rsm:VSENationalID', ns)
+            ebix = md.find('.//rsm:Product/rsm:ID/rsm:ebIXCode', ns)
+            assert pp is not None and ebix is not None, \
+                f"unexpected drop of {f.name} (not a production ebIX file)"
+            assert pp.text[-8:] in SAMPLE_MAPPINGS, \
+                f"unexpected drop of {f.name} (not a mapped virtual meter)"
+            dropped += 1
+            continue
         assert r.document_type == "E66"
         assert r.resolution_minutes == 15
         # 15-min resolution over whole days => observation count is a multiple
@@ -238,7 +291,8 @@ def test_real_e66_files_all_parse():
         assert len(r.observations) % 96 == 0, f"{f.name}: {len(r.observations)} obs"
         assert r.community_id  # present
         parsed += 1
-    assert parsed == len(_E66_SAMPLES)
+    assert parsed + dropped == len(_E66_SAMPLES)
+    assert dropped > 0, "expected some virtual production totals to be dropped"
 
 
 @pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")

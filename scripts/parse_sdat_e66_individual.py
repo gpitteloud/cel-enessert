@@ -96,6 +96,23 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
         if product_code:
             metric_type = determine_metric_type(product_code, result)
 
+            # A mapped virtual meter also reports an ebIX production TOTAL that is
+            # identical to its physical meter's production total -- that equality
+            # is exactly how auto-discovery pairs them. Storing both would double
+            # the community production total, so drop the virtual copy: the
+            # physical meter's total is kept, and the virtual meter's VSE
+            # breakdown (handled below) is re-attributed to that same physical
+            # meter. The self-contained meter (e.g. 0134575W) is in
+            # physical_production_meters but NOT in meter_mappings, so it is not
+            # affected and keeps its own total.
+            if (result.metering_point_type == 'production'
+                    and code_type == 'ebIXCode' and meter_mappings):
+                meter_suffix = meter_id[-8:] if meter_id and len(meter_id) >= 8 else None
+                if meter_suffix in meter_mappings:
+                    logger.info(f"Virtual meter {meter_suffix} production total dropped "
+                                f"(identical to physical {meter_mappings[meter_suffix]})")
+                    return None
+
             # Mark if this is a production breakdown file (VSE CEL/Grid codes on
             # a production point). Attribute it to a physical meter, either a
             # mapped separate virtual meter or a self-contained meter (itself).
