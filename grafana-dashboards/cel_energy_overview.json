@@ -104,26 +104,6 @@
                 }
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*\\(kWh\\)$"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "kwatth"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "tooltip": false,
-                  "viz": true,
-                  "legend": false
-                }
-              }
-            ]
           }
         ]
       },
@@ -137,7 +117,6 @@
       "options": {
         "legend": {
           "calcs": [
-            "sum",
             "mean",
             "max"
           ],
@@ -174,30 +153,6 @@
           "legendFormat": "From Grid",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
-          },
-          "editorMode": "code",
-          "expr": "sum_over_time(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__interval:15m])",
-          "hide": false,
-          "legendFormat": "From CEL (kWh)",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
-          },
-          "editorMode": "code",
-          "expr": "sum_over_time(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__interval:15m])",
-          "hide": false,
-          "legendFormat": "From Grid (kWh)",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Daily Consumption - ${meter_id}",
@@ -286,26 +241,6 @@
                 }
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*\\(kWh\\)$"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "kwatth"
-              },
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "tooltip": false,
-                  "viz": true,
-                  "legend": false
-                }
-              }
-            ]
           }
         ]
       },
@@ -319,7 +254,6 @@
       "options": {
         "legend": {
           "calcs": [
-            "sum",
             "mean",
             "max"
           ],
@@ -356,30 +290,6 @@
           "legendFormat": "To Grid",
           "range": true,
           "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
-          },
-          "editorMode": "code",
-          "expr": "sum_over_time(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__interval:15m])",
-          "hide": false,
-          "legendFormat": "To CEL (kWh)",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
-          },
-          "editorMode": "code",
-          "expr": "sum_over_time(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__interval:15m])",
-          "hide": false,
-          "legendFormat": "To Grid (kWh)",
-          "range": true,
-          "refId": "D"
         }
       ],
       "title": "Daily Production - ${meter_id}",
@@ -718,8 +628,8 @@
       "options": {
         "legend": {
           "calcs": [
-            "sum",
-            "mean"
+            "mean",
+            "max"
           ],
           "displayMode": "table",
           "placement": "right",

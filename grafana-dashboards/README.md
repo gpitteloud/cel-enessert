@@ -54,25 +54,28 @@ Stat and pie panels don't need the power conversion — their panel-level reduce
 `sum` totals energy over the range correctly — so they use bare selectors.
 Gauge panels use `sum(increase(<selector>[$__range]))`.
 
-### Legend "Total" on power charts — the hidden kWh companion series
+### Legend calcs on power charts — `Mean` and `Max`
 
-A Grafana timeseries panel applies **one unit to the whole field**, so the
-legend's `Total`/`Mean`/`Max` are all formatted with that unit. On a power (kW)
-line, `Mean` and `Max` are meaningful (avg / peak power) but `Total` is
-`Σ(power samples)` — ~4× the energy at 15-min resolution and not stable across
-zoom. There's no per-calc unit, so the fix is a **second, hidden series** per
-segment that carries true energy:
+Every timeseries panel's legend shows `calcs: ["mean", "max"]`. The three
+**validation** panels add `min`: their series are signed differences, so the
+negative extreme matters as much as the positive one and `max` alone would hide
+it.
 
-```promql
-sum_over_time(<selector>[$__interval:15m])
-```
+A Grafana timeseries panel applies **one unit to the whole field**, so all legend
+calcs are formatted with that unit and there is no per-calc unit. On a power (kW)
+line, `Mean` and `Max` are meaningful (average / peak power), but `Total` is
+`Σ(power samples)` — meaningless as kW, ~4× the energy at 15-min resolution, and
+not stable across zoom. So **`Total`/`Sum` is not shown on any power chart**.
 
-- `sum_over_time(...[$__interval:15m])` totals the 15-min energy inside each
-  step bucket, so the legend's `Sum` of this series equals real kWh at any zoom.
-- These companions are named `... (kWh)` and pinned via a `byRegexp`
-  (`.*\(kWh\)$`) override to `unit: kwatth`, `hideFrom.viz: true` — they show
-  only in the legend/tooltip, never as a line. Read `Sum` for energy (kWh) and
-  the power series' `Mean`/`Max` for power (kW).
+Energy (kWh) is not mixed into these legends either. Read it from the panels
+built for it: the **stat** panels (Total Consumption / Total Production) and the
+**pie** panels, whose panel-level reduce `sum` totals true energy over the range.
+
+> An earlier version added a hidden `... (kWh)` companion series (a
+> `sum_over_time(...)` target pinned to `unit: kwatth` + `hideFrom.viz`) so the
+> legend could carry real energy. It was removed: two entries per segment made
+> the legend harder to read for a number already available elsewhere. Don't
+> reintroduce it — if a query or override mentions `(kWh)`, it's a leftover.
 
 ## Available Dashboards
 
