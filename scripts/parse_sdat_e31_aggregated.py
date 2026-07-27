@@ -153,9 +153,11 @@ def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict
             labels['direction'] = metric_type.direction
             labels['segment'] = metric_type.segment
 
-        # Add condition if present
-        if obs.condition:
-            labels['condition'] = obs.condition
+        # `condition` (measured vs estimated) is deliberately NOT a label: the
+        # provider revises a slot's condition across overlapping deliveries, so
+        # keeping it in the series identity would split one slot into two
+        # parallel series and double-count it on sum(). See the matching note in
+        # parse_sdat_e66_individual.transform_to_datapoints.
 
         data_point = {
             'metric': {

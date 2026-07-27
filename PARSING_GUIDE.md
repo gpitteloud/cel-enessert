@@ -442,12 +442,37 @@ breakdown in this order:
    present in the discovered mappings → attribute to its paired physical meter.
 2. **Self-contained meter** — the suffix is itself a physical production meter
    (it reports an ebIX production total) → attribute the breakdown to itself.
-3. **Unknown** — neither of the above → the file is skipped and logged as an
-   error (indicates a genuinely new, unrecognized meter).
+3. **Unknown** — neither of the above → the file is treated as a failure and
+   logged as an error (indicates a genuinely new, unrecognized meter), so it
+   stays in the incoming folder and is retried on the next batch.
 
 To support case 2, discovery also builds the set of all suffixes that report an
 ebIX production total (`get_physical_production_meters()`), passed to the parser
 alongside the virtual→physical mappings.
+
+### Intentional skips are not errors
+
+A mapped virtual meter also delivers an ebIX **production total** that is
+identical to its physical meter's (that equality is how discovery pairs them).
+Ingesting both would double the community production total, so the parser drops
+the virtual copy — about **9 files per daily delivery**.
+
+This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
+(`scripts/models.py`) rather than `None`:
+
+| Parser return | Meaning | Watcher behaviour |
+|---------------|---------|-------------------|
+| `MeteredData` | parsed | send to VM, archive (`FileOutcome.INGESTED`) |
+| `SkippedDocument` | valid, deliberately not ingested | log at **INFO**, archive (`FileOutcome.SKIPPED`) |
+| `None` | genuine failure (malformed, unknown meter, missing fields) | log at WARNING/ERROR, **keep in incoming** for retry (`FileOutcome.FAILED`) |
+
+Skipped files are archived like ingested ones because the decision is permanent
+— leaving them in `/data/incoming` would make them reappear (and be re-reported)
+on every delivery. The batch summary counts them separately:
+
+```
+Ingested: 100, Skipped by design: 9, Errors: 0
+```
 
 > **History**: Before July 2026 all members used the separate-virtual-meter
 > pattern (case 1). Meter `0134575W` introduced the self-contained pattern

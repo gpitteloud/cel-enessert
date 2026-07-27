@@ -7,7 +7,7 @@ typos on string keys) and one shared shape across both document types.
 """
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Union
 
 
 class MetricType(str, Enum):
@@ -74,6 +74,21 @@ def flow_to_direction(flow_characteristic: Optional[str]) -> Optional[str]:
     return _FLOW_TO_DIRECTION.get(flow_characteristic)
 
 
+@dataclass(frozen=True)
+class SkippedDocument:
+    """A document that was understood but deliberately NOT ingested.
+
+    Returned instead of ``None`` so callers can tell an *expected* drop apart
+    from a *failure*. The only current case is a mapped virtual meter's ebIX
+    production total, which duplicates its physical meter's total (~9 files per
+    daily delivery). Without this distinction those drops were logged as
+    "Could not parse (unknown type or invalid)" and left in the incoming folder,
+    looking like a daily error and never clearing.
+    """
+    reason: str
+    meter_id: Optional[str] = None
+
+
 @dataclass
 class Observation:
     """A single interval reading."""
@@ -115,3 +130,7 @@ class MeteredData:
     flow_characteristic: Optional[str] = None    # 'E17' consumption | 'E18' production
     grid_area: Optional[str] = None
     community_type: Optional[str] = None
+
+
+# What a parser hands back: parsed data, an intentional skip, or a failure.
+ParseResult = Union[MeteredData, SkippedDocument, None]

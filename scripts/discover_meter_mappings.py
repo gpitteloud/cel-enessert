@@ -27,9 +27,20 @@ def extract_production_total(xml_file: Path) -> Tuple[str, float, str]:
     Returns: (meter_suffix, total_kwh, metering_type) or None
     """
     try:
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
+        return _production_total_from_root(ET.parse(xml_file).getroot())
+    except Exception as e:
+        logger.debug(f"Could not extract from {xml_file.name}: {e}")
+        return None
 
+
+def _production_total_from_root(root) -> Tuple[str, float, str]:
+    """Extract (meter_suffix, total_kwh, 'physical'|'virtual') from a parsed
+    ebIX production-total document, or None if it isn't one.
+
+    Split out from extract_production_total so the same logic can be applied to
+    XML read from an archive zip (bytes) as well as a file on disk.
+    """
+    try:
         # Get meter ID
         meter_elem = root.find('.//{http://www.strom.ch}VSENationalID')
         if meter_elem is None:
@@ -69,7 +80,7 @@ def extract_production_total(xml_file: Path) -> Tuple[str, float, str]:
         return (meter_suffix, round(total, 3), metering_type)
 
     except Exception as e:
-        logger.debug(f"Could not extract from {xml_file.name}: {e}")
+        logger.debug(f"Could not extract production total: {e}")
         return None
 
 
@@ -116,6 +127,36 @@ def discover_mappings(data_dir: Path, archive_dir: Path = None) -> Dict[str, str
                 physical_meters[meter_suffix] = total
             elif metering_type == 'virtual':
                 virtual_meters[meter_suffix] = total
+
+    # Fall back to the newest archive zip when loose XML yields nothing usable.
+    # Once a delivery is fully handled, incoming is empty (ingested AND
+    # intentionally-skipped files are both archived), so the ebIX production
+    # totals this matching needs live only inside the zips -- same reason
+    # get_physical_production_meters() reads them. One zip = one delivery date,
+    # so the totals being compared cover the same period.
+    if not (physical_meters and virtual_meters) and archive_dir and archive_dir.exists():
+        zips = sorted(archive_dir.glob('*.zip'))
+        if zips:
+            newest = zips[-1]
+            logger.info(f"No production totals in loose XML, reading archive zip {newest.name}")
+            try:
+                with zipfile.ZipFile(newest, 'r') as zf:
+                    for name in zf.namelist():
+                        if not name.endswith('.xml') or '_E66_' not in name:
+                            continue
+                        try:
+                            result = _production_total_from_root(ET.fromstring(zf.read(name)))
+                        except Exception:
+                            continue
+                        if not result:
+                            continue
+                        meter_suffix, total, metering_type = result
+                        if metering_type == 'physical':
+                            physical_meters[meter_suffix] = total
+                        elif metering_type == 'virtual':
+                            virtual_meters[meter_suffix] = total
+            except Exception as e:
+                logger.warning(f"Could not read zip {newest.name}: {e}")
 
     logger.info(f"Found {len(physical_meters)} physical meters with production")
     logger.info(f"Found {len(virtual_meters)} virtual meters with production")

@@ -9,6 +9,7 @@ import sys
 import os
 import time
 import logging
+from enum import Enum
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -46,12 +47,30 @@ logger = logging.getLogger(__name__)
 
 # Import parsers
 sys.path.insert(0, '/app/scripts')
+from models import SkippedDocument
 from parse_sdat import parse_sdat
 from parse_sdat_e66_individual import transform_to_datapoints
 from parse_sdat_e31_aggregated import transform_e31_to_datapoints
 from send_to_victoriametrics import send_batch
 from discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
 import yaml
+
+
+class FileOutcome(Enum):
+    """Result of handling one file, and what the batch loop should do with it.
+
+    SKIPPED is NOT an error: the file was understood and deliberately not
+    ingested (a mapped virtual meter's duplicate production total, ~9 per
+    delivery). It must still be archived, otherwise it stays in the incoming
+    folder forever and gets re-examined -- and re-reported -- every delivery.
+    """
+    INGESTED = 'ingested'   # sent to VictoriaMetrics -> archive
+    SKIPPED = 'skipped'     # intentional, expected      -> archive
+    FAILED = 'failed'       # real problem               -> keep for retry
+
+    @property
+    def archivable(self) -> bool:
+        return self is not FileOutcome.FAILED
 
 
 def load_config():
@@ -163,9 +182,12 @@ class SDATFileHandler(FileSystemEventHandler):
 
         if not delivery_date or not delivery_date.isdigit():
             logger.warning(f"Cannot determine delivery date from filename: {file_path.name}")
-            # Process immediately for non-standard files
+            # Process immediately for non-standard files. No delivery date means
+            # no daily zip to append to, so archive it as a loose file -- but
+            # only if it was handled (ingested or intentionally skipped).
             self.processing.add(str(file_path))
-            self.process_file(file_path)
+            if self.process_file(file_path).archivable:
+                self.archive_file(file_path)
             return
 
         # Check if this is a new delivery batch
@@ -222,8 +244,9 @@ class SDATFileHandler(FileSystemEventHandler):
 
         # Process all files in batch
         success_count = 0
+        skipped_count = 0
         error_count = 0
-        successfully_processed_files = []
+        archivable_files = []
 
         for file_path in self.pending_files:
             # Check if file still exists (might have been manually deleted)
@@ -248,12 +271,19 @@ class SDATFileHandler(FileSystemEventHandler):
             self.processing.add(str(file_path))
 
             try:
-                if self.process_file(file_path):
-                    # Only archive files that were fully processed
-                    successfully_processed_files.append(file_path)
-                    success_count += 1
+                outcome = self.process_file(file_path)
+
+                # Ingested AND intentionally-skipped files are both archived:
+                # the skip is a permanent decision, so leaving the file in the
+                # source folder would only make it reappear every delivery.
+                if outcome.archivable:
+                    archivable_files.append(file_path)
+                    if outcome is FileOutcome.INGESTED:
+                        success_count += 1
+                    else:
+                        skipped_count += 1
                 else:
-                    # Skipped/errored - leave file in source folder for retry
+                    # Real failure - leave file in source folder for retry
                     logger.warning(f"File not processed, keeping in source folder: {file_path.name}")
                     error_count += 1
             except Exception as e:
@@ -262,9 +292,10 @@ class SDATFileHandler(FileSystemEventHandler):
                 # Release lock on error
                 self.processing.discard(str(file_path))
 
-        # Archive successfully processed files as a zip (skipped/errored files stay in source)
-        if successfully_processed_files and self.current_delivery_date:
-            self.archive_batch_as_zip(successfully_processed_files, self.current_delivery_date)
+        # Archive ingested + intentionally-skipped files as a zip (only real
+        # failures stay in the source folder, so incoming ends up empty)
+        if archivable_files and self.current_delivery_date:
+            self.archive_batch_as_zip(archivable_files, self.current_delivery_date)
 
         # Clear batch
         self.pending_files = []
@@ -272,7 +303,8 @@ class SDATFileHandler(FileSystemEventHandler):
 
         logger.info(f"=" * 80)
         logger.info(f"Batch processing complete")
-        logger.info(f"Success: {success_count}, Errors: {error_count}")
+        logger.info(f"Ingested: {success_count}, Skipped by design: {skipped_count}, "
+                    f"Errors: {error_count}")
         logger.info(f"=" * 80)
 
     def on_modified(self, event):
@@ -281,15 +313,17 @@ class SDATFileHandler(FileSystemEventHandler):
         # This prevents duplicate processing when FTP triggers both created and modified events
         pass
 
-    def process_file(self, file_path: Path) -> bool:
+    def process_file(self, file_path: Path) -> FileOutcome:
         """Process a single XML file (E66 or E31)
 
         Note: Lock should already be acquired by the caller (event handler)
 
         Returns:
-            True if the file was fully processed and sent to VictoriaMetrics.
-            False if it was skipped or errored (file should remain in source
-            folder and NOT be archived).
+            FileOutcome.INGESTED - parsed and sent to VictoriaMetrics.
+            FileOutcome.SKIPPED  - valid but deliberately not ingested (expected;
+                                   archived like an ingested file, not an error).
+            FileOutcome.FAILED   - could not be handled; file stays in the source
+                                   folder for retry and is NOT archived.
         """
         try:
             logger.info(f"Processing {file_path.name}")
@@ -301,13 +335,20 @@ class SDATFileHandler(FileSystemEventHandler):
                 physical_production_meters=self.physical_production_meters,
             )
 
+            # Deliberate, expected drop (duplicate virtual-meter production
+            # total). Log at INFO -- it is not a parse failure.
+            if isinstance(parsed_data, SkippedDocument):
+                logger.info(f"Skipped by design: {file_path.name} "
+                            f"({parsed_data.reason})")
+                return FileOutcome.SKIPPED
+
             if parsed_data is None:
                 logger.warning(f"Could not parse (unknown type or invalid): {file_path.name}")
-                return False
+                return FileOutcome.FAILED
 
             if not parsed_data.observations:
                 logger.warning(f"No data found in {parsed_data.document_type} file {file_path.name}")
-                return False
+                return FileOutcome.FAILED
 
             if parsed_data.document_type == 'E31':
                 # Community aggregate
@@ -324,20 +365,28 @@ class SDATFileHandler(FileSystemEventHandler):
                         virtual_meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else None
                         logger.error(f"Unknown virtual meter {virtual_meter_suffix} - no mapping found in auto-discovery. Skipping file.")
                         logger.error(f"This indicates a new member was added. Run discovery manually or wait for next batch.")
-                        return False
+                        return FileOutcome.FAILED
 
-                    attributed_meter_id = f"CH101110123450000000000000{attributed_meter}"
+                    # Reconstruct the physical meter's full ID by swapping the
+                    # last 8 chars of the virtual meter's own ID. The full-length
+                    # prefix (e.g. "CH10111012345000000000000", 25 chars) is thus
+                    # taken from real data rather than hardcoded -- a hardcoded
+                    # prefix had one extra zero, producing a 34-char ID that
+                    # matched no real meter (the total is stored under the real
+                    # 33-char ID).
+                    virtual_full_id = parsed_data.meter_id or ''
+                    attributed_meter_id = virtual_full_id[:-8] + attributed_meter
                     logger.info(f"Attributing production breakdown to physical meter: {attributed_meter}")
 
                 data_points = transform_to_datapoints(parsed_data, attributed_meter_id=attributed_meter_id)
 
             else:
                 logger.warning(f"Unsupported document type {parsed_data.document_type}: {file_path.name}")
-                return False
+                return FileOutcome.FAILED
 
             if not data_points:
                 logger.warning(f"No data points generated from {file_path.name}")
-                return False
+                return FileOutcome.FAILED
 
             # Send to VictoriaMetrics
             vm_url = self.api_config['victoriametrics']['url']
@@ -347,14 +396,14 @@ class SDATFileHandler(FileSystemEventHandler):
 
             if error_count == 0:
                 logger.info(f"Successfully processed {file_path.name} ({success_count} data points)")
-                return True
+                return FileOutcome.INGESTED
             else:
                 logger.error(f"Failed to process {file_path.name} ({error_count} errors)")
-                return False
+                return FileOutcome.FAILED
 
         except Exception as e:
             logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
-            return False
+            return FileOutcome.FAILED
 
         finally:
             # Always release lock, even if we returned early

@@ -15,9 +15,18 @@ than baked-into-the-name variants:
 Shared labels:
 
 - `direction` = `consumption` \| `production`
-- `segment` = `cel` \| `grid` \| `total`  (total = cel + grid; total is *measured*, cel/grid are *estimated*, Condition 21)
+- `segment` = `cel` \| `grid` \| `total`  (total = cel + grid)
 - `product_code` (`8716867000030` = total, `2404050010123` = CEL, `2404050010124` = grid), `code_type`, `community_id`
 - E66 also: `meter_id`; E31 also: `community_type`, `grid_area`
+
+> **`condition` is NOT a label.** The provider marks each reading measured or
+> estimated (`21`) and *revises that grade across overlapping deliveries* — the
+> same 15-min slot can arrive estimated one day and measured the next. If
+> `condition` were part of the series identity, that slot would land in two
+> parallel series and every `sum()` would double-count it. So the parser drops
+> `condition` on ingest: each `(meter, segment, direction)` is a single series
+> and a later delivery overwrites the earlier value in place. Queries therefore
+> use bare selectors — no `sum without(condition)` wrapper is needed anywhere.
 
 > Two distinct metric names are kept deliberately so `sum()` over per-meter data
 > is never confused with the community aggregate.
@@ -31,7 +40,7 @@ summing, so a zoomed-out chart under-reads by up to ~4×.
 The timeseries (line) panels therefore display **average power in kW** instead:
 
 ```promql
-(avg_over_time(sum without(condition)(<selector>)[$__interval:15m])) * 4
+(avg_over_time(<selector>[$__interval:15m])) * 4
 ```
 
 - `avg_over_time(...[$__interval:15m])` averages every 15-min sample inside the
@@ -39,14 +48,11 @@ The timeseries (line) panels therefore display **average power in kW** instead:
 - `* 4` converts kWh per 15-min (0.25 h) to kW.
 - The `:15m` subquery step floors the resolution at the native 15 min so
   `$__interval` never drops below it (no empty buckets / gaps).
-- `sum without(condition)(...)` — see next section.
 - Unit is `kwatt` (kW).
 
-Stat and pie panels don't need the power conversion (their panel-level reduce
-`sum` totals energy over the range correctly), but they **do** need the
-`condition` collapse below — so their bare selectors are wrapped in
-`sum without(condition)(...)`. Gauge panels already use `sum(increase(...))`,
-which collapses `condition` on its own, so they were left as-is.
+Stat and pie panels don't need the power conversion — their panel-level reduce
+`sum` totals energy over the range correctly — so they use bare selectors.
+Gauge panels use `sum(increase(<selector>[$__range]))`.
 
 ### Legend "Total" on power charts — the hidden kWh companion series
 
@@ -58,7 +64,7 @@ zoom. There's no per-calc unit, so the fix is a **second, hidden series** per
 segment that carries true energy:
 
 ```promql
-sum_over_time(sum without(condition)(<selector>)[$__interval:15m])
+sum_over_time(<selector>[$__interval:15m])
 ```
 
 - `sum_over_time(...[$__interval:15m])` totals the 15-min energy inside each
@@ -67,27 +73,6 @@ sum_over_time(sum without(condition)(<selector>)[$__interval:15m])
   (`.*\(kWh\)$`) override to `unit: kwatth`, `hideFrom.viz: true` — they show
   only in the legend/tooltip, never as a line. Read `Sum` for energy (kWh) and
   the power series' `Mean`/`Max` for power (kW).
-
-## The `condition` label — collapse it in every query
-
-The provider marks each 15-min reading as **measured** (no `condition`) or
-**estimated** (`condition="21"`), and mixes both within a single series over
-time. Because `condition` is a stored VM label, every `(direction, segment)`
-therefore resolves to **two time series** — one `{condition="21"}` and one with
-no `condition`. Left alone this makes each line/slice/stat appear **twice** (the
-symptom that motivated this).
-
-**Rule: no panel should ever expose a raw `cel_energy_kwh` /
-`cel_community_energy_kwh` selector.** Always collapse `condition` first:
-
-- Line panels: `avg_over_time(sum without(condition)(<selector>)[$__interval:15m]) * 4`
-- Stat / pie panels (bare selectors): `sum without(condition)(<selector>)`
-- Gauge panels: `sum(increase(<selector>[$__range]))` already collapses it.
-
-Note the aggregation order for line panels: the `sum` goes **inside** the
-`avg_over_time` subquery. The two condition variants share the hour bucket at the
-measured→estimated transition, so averaging *before* collapsing
-(`sum without(condition)(avg_over_time(...))`) would double-count that bucket.
 
 ## Available Dashboards
 
@@ -121,8 +106,10 @@ single-sourced** — see below.
 
 - **Production:** the difference panel should sit at **≈ 0** (E31 total ==
   sum of E66 physical production totals, exact to rounding, e.g. both 2558.6 kWh
-  on 2026-06-15). A large gap here means duplicate virtual-meter totals have
-  crept back in (see next section).
+  on 2026-06-15). A large gap most likely means the data was ingested by an old
+  parser that stored `condition` as a label (so revised slots double-counted) or
+  duplicate virtual-meter totals crept back in — see below. Both are fixed at
+  ingest; a stale gap is cured by a full re-replay through the current parser.
 - **Consumption:** currently **not** ≈ 0, for a provider-side reason, not a bug:
   E31 consumption is delivered as all-zero from data date **2026-06-01 onward**,
   and a monthly E31 file injects consumption from 2026-04-30 where no E66 exists.
@@ -140,6 +127,11 @@ while re-attributing the virtual meter's CEL/Grid **breakdown** to the physical
 one physical ID, and `sum(cel_energy_kwh{segment="total", direction="production"})`
 counts each producer once. (The self-contained meter `0134575W` carries its own
 total + breakdown and is exempt from this drop.)
+
+Those ~9 dropped files per delivery are an expected outcome, not failures: the
+parser returns a `SkippedDocument`, the watcher logs it at INFO and archives the
+file (`Skipped by design:` / `Skipped by design: 9` in the batch summary). Only
+genuine failures stay in `/data/incoming`.
 
 > If the production validation panel ever shows sum(E66) ≈ 1.6× E31, the fix is
 > either a stale replay (run `scripts/cleanup_virtual_production_totals.py`) or a

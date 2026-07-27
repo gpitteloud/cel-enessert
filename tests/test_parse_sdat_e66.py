@@ -1,6 +1,7 @@
 """Tests for parse_sdat_e66_individual (ValidatedMeteredData_1.6)."""
 import pytest
 
+from models import MeteredData, SkippedDocument
 from parse_sdat import parse_sdat
 from parse_sdat_e66_individual import (
     transform_to_datapoints,
@@ -116,14 +117,17 @@ def test_self_contained_meter_attributed_to_itself(write_xml):
 
 def test_virtual_meter_production_total_dropped(write_xml):
     # A mapped virtual meter's ebIX production TOTAL duplicates its physical
-    # meter's total, so it must be dropped (returns None) to avoid double
-    # counting the community production sum.
+    # meter's total, so it must be dropped to avoid double counting the
+    # community production sum. The drop is signalled as a SkippedDocument
+    # (not None) so callers can log it as expected rather than as a failure.
     virt = "CH1011101234500000000000000855229G"
     f = write_xml(make_e66_xml(point="production", meter_id=virt,
                                product_code="8716867000030",
                                code_type="ebIXCode"))
     r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
-    assert r is None
+    assert isinstance(r, SkippedDocument)
+    assert r.meter_id == virt
+    assert "0020576V" in r.reason
 
 
 def test_self_contained_meter_production_total_kept(write_xml):
@@ -152,7 +156,9 @@ def test_physical_meter_production_total_kept(write_xml):
 
 
 def test_unknown_virtual_meter_returns_none(write_xml):
-    # Production VSE breakdown, unknown meter, no mapping, not self-contained
+    # Production VSE breakdown, unknown meter, no mapping, not self-contained.
+    # This IS a failure (a new member needs discovery), so it must stay None --
+    # never a SkippedDocument, which would silence it and archive the file.
     mid = "CH101110123450000000000000999999X"
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
@@ -212,8 +218,9 @@ def test_transform_builds_vm_datapoints(write_xml):
     assert m["meter_id"] == "CH101110123450000000000000020576V"
     # community_id emitted for E66 too (shared with E31)
     assert m["community_id"] == "101110-002726"
-    # condition split into its own series, same as E31
-    assert m["condition"] == "21"
+    # condition is NOT a label: the provider revises a slot's condition across
+    # deliveries, so keeping it in series identity would double-count on sum().
+    assert "condition" not in m
     assert dps[0]["values"] == [1.0]
     # timestamp converted to epoch millis (int)
     assert isinstance(dps[0]["timestamps"][0], int)
@@ -244,6 +251,12 @@ def test_transform_empty_when_no_observations():
     assert transform_to_datapoints(None) == []
 
 
+def test_transform_empty_for_skipped_document():
+    # A SkippedDocument has no observations, so it yields no datapoints instead
+    # of raising (the watcher returns before this, but keep it defensive).
+    assert transform_to_datapoints(SkippedDocument(reason="dup total")) == []
+
+
 def test_transform_empty_when_no_metric_type(write_xml):
     f = write_xml(make_e66_xml(product_code=None))
     r = parse_sdat(f)
@@ -262,25 +275,18 @@ _E66_SAMPLES = real_files("*_E66_*.xml")
 @pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
 def test_real_e66_files_all_parse():
     """Every real E66 file either parses to a MeteredData or is deliberately
-    dropped. The only legitimate drop is a mapped virtual meter's ebIX
-    production TOTAL (identical to its physical meter's total)."""
+    skipped -- never a hard failure (None). The only legitimate skip is a mapped
+    virtual meter's ebIX production TOTAL (identical to its physical meter's)."""
     parsed = 0
     dropped = 0
     for f in _E66_SAMPLES:
         r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                            physical_production_meters=SAMPLE_PHYSICAL_METERS)
-        if r is None:
-            # Only a mapped virtual meter's production total may be dropped.
-            suffix = f.name  # filename doesn't carry meter id; re-parse raw
-            import xml.etree.ElementTree as _ET
-            ns = {'rsm': 'http://www.strom.ch'}
-            md = _ET.parse(f).getroot().find('.//rsm:MeteringData', ns)
-            pp = md.find('.//rsm:ProductionMeteringPoint/rsm:VSENationalID', ns)
-            ebix = md.find('.//rsm:Product/rsm:ID/rsm:ebIXCode', ns)
-            assert pp is not None and ebix is not None, \
-                f"unexpected drop of {f.name} (not a production ebIX file)"
-            assert pp.text[-8:] in SAMPLE_MAPPINGS, \
-                f"unexpected drop of {f.name} (not a mapped virtual meter)"
+        assert r is not None, f"{f.name}: unexpected parse failure"
+        if isinstance(r, SkippedDocument):
+            # Only a mapped virtual meter's production total may be skipped.
+            assert r.meter_id and r.meter_id[-8:] in SAMPLE_MAPPINGS, \
+                f"unexpected skip of {f.name} (not a mapped virtual meter)"
             dropped += 1
             continue
         assert r.document_type == "E66"
@@ -303,7 +309,7 @@ def test_real_e66_product_codes_are_known():
     for f in _E66_SAMPLES:
         r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                            physical_production_meters=SAMPLE_PHYSICAL_METERS)
-        if r and r.product_code:
+        if isinstance(r, MeteredData) and r.product_code:
             seen.add(r.product_code)
     assert seen, "no product codes seen"
     unexpected = seen - known

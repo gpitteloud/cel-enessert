@@ -175,11 +175,14 @@ def test_transform_builds_vm_datapoints(write_xml):
     assert isinstance(dps[0]["timestamps"][0], int)
 
 
-def test_transform_includes_condition_label(write_xml):
+def test_transform_omits_condition_label(write_xml):
+    # condition is parsed onto the Observation but NOT emitted as a series
+    # label: the provider revises a slot's condition across deliveries, so a
+    # condition label would split one slot into two series and double-count it.
     f = write_xml(make_e31_xml(values=(1.0,)))
     r = parse_sdat(f)
     dps = transform_e31_to_datapoints(r)
-    assert dps[0]["metric"]["condition"] == "21"
+    assert "condition" not in dps[0]["metric"]
 
 
 def test_transform_empty_input():

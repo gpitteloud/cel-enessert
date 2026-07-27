@@ -10,9 +10,8 @@ mis-named or renamed file is still routed correctly.
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional
 
-from models import MeteredData
+from models import ParseResult
 from parse_sdat_e66_individual import parse_e66
 from parse_sdat_e31_aggregated import parse_e31
 
@@ -24,7 +23,7 @@ _DOC_TYPE_PATH = ('.//{http://www.strom.ch}DocumentType'
 
 
 def parse_sdat(xml_file: Path, meter_mappings: dict = None,
-               physical_production_meters: set = None) -> Optional[MeteredData]:
+               physical_production_meters: set = None) -> ParseResult:
     """
     Parse an SDAT XML file, dispatching to the E66 or E31 decoder by content.
 
@@ -34,8 +33,10 @@ def parse_sdat(xml_file: Path, meter_mappings: dict = None,
         physical_production_meters: self-contained meter suffixes (E66 only, optional)
 
     Returns:
-        MeteredData (document_type 'E66' or 'E31'), or None if the file cannot
-        be parsed, has no DocumentType, or is an unsupported document type.
+        MeteredData (document_type 'E66' or 'E31'); a SkippedDocument when the
+        file is valid but deliberately not ingested (see parse_e66); or None if
+        the file cannot be parsed, has no DocumentType, or is an unsupported
+        document type.
     """
     xml_file = Path(xml_file)
     try:

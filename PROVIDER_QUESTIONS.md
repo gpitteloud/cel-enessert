@@ -11,7 +11,12 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - **Delivery pattern**: Daily at 09:45-09:50, 5-day coverage with 4-day overlap
 - **Data stability**: Overlapping days are identical (0% change observed)
 - **Meter types**: Physical meters (consumption + production total) vs Virtual meters (production breakdown only)
-- **Condition 21**: All VSE breakdown data is estimated, total values are measured
+- **Condition 21**: VSE breakdown data is *usually* estimated (Condition 21) and
+  totals are *usually* measured — but this is **not absolute**: the provider
+  **revises a slot's condition across overlapping deliveries** (a given 15-min
+  slot can arrive estimated one day and measured the next, on both breakdown and
+  total). See Q8a. Because of this, `condition` is deliberately **not** stored as
+  a series label (it would split one slot into two series and double-count it).
 - **Flow characteristics**: E17 (consumption) and E18 (production) in E31 files
 - **Community ID**: 101110-002726, Type CT01
 - **Physical-virtual mappings**: 9 discovered pairs by matching production totals
@@ -86,6 +91,24 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
    - Or are these calculated from total values + community generation?
 
 8. **Historical data:** Will historical Condition 21 data (May-June 2026) be replaced with validated measurements, or does estimated data remain as-is?
+
+8a. **Condition revised across deliveries — UNDERSTOOD (confirmed by domain
+   knowledge, 2026-07-25):** This is the essence of Condition 21. The provider
+   marks a period `Condition 21` when its data is **not yet confirmed
+   (provisional)**; in a later delivery it supplies the **confirmed** value for
+   that same period and **removes** the `21` flag. So the same 15-min slot can
+   arrive `Condition 21` one day and confirmed (no condition) the next — e.g.
+   meter 0134575W, slot 2026-07-08 19:15, was `Condition 21` in the delivery
+   dated 2026-07-09 and confirmed in the delivery dated 2026-07-10.
+   - **Rule we apply:** the **most recent delivery of a slot is authoritative**;
+     the earlier (provisional) grade is superseded. We never retain both.
+   - **Implementation:** `condition` is NOT a series label, and re-ingesting a
+     slot overwrites the previous value in place — so the latest delivery
+     naturally wins. (An older parser that labelled by `condition` kept both the
+     provisional and confirmed copies as separate series, which double-counted
+     on `sum()`.)
+   - **Only open confirmation:** none required for behaviour; optionally confirm
+     the provider never re-opens a confirmed slot back to provisional.
 
 ---
 

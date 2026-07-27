@@ -12,13 +12,14 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from models import MetricType, MeteredData, classify_metric_type
+from models import (
+    MetricType, MeteredData, ParseResult, SkippedDocument, classify_metric_type)
 from sdat_xml import extract_product_code, extract_resolution_minutes, parse_observations
 
 logger = logging.getLogger(__name__)
 
 
-def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set = None) -> Optional[MeteredData]:
+def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set = None) -> ParseResult:
     """
     Decode a ValidatedMeteredData_1.6 (E66) document.
 
@@ -38,8 +39,12 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
             both the total and the VSE breakdown on the same meter ID (optional)
 
     Returns:
-        MeteredData with document_type='E66' populated, or None if the document
-        lacks required content (missing MeteringData, meter_id, or resolution).
+        MeteredData with document_type='E66' populated;
+        SkippedDocument if the document is valid but deliberately not ingested
+        (a mapped virtual meter's duplicate production total -- an expected,
+        non-error outcome for ~9 files per delivery);
+        None if the document lacks required content (missing MeteringData,
+        meter_id, or resolution) or cannot be attributed.
     """
     try:
         # Namespace
@@ -109,9 +114,13 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
                     and code_type == 'ebIXCode' and meter_mappings):
                 meter_suffix = meter_id[-8:] if meter_id and len(meter_id) >= 8 else None
                 if meter_suffix in meter_mappings:
-                    logger.info(f"Virtual meter {meter_suffix} production total dropped "
-                                f"(identical to physical {meter_mappings[meter_suffix]})")
-                    return None
+                    # Not an error: report it as an intentional skip so the
+                    # caller logs it as expected and still archives the file.
+                    return SkippedDocument(
+                        reason=(f"virtual meter {meter_suffix} production total "
+                                f"duplicates physical {meter_mappings[meter_suffix]}"),
+                        meter_id=meter_id,
+                    )
 
             # Mark if this is a production breakdown file (VSE CEL/Grid codes on
             # a production point). Attribute it to a physical meter, either a
@@ -188,7 +197,7 @@ def determine_metric_type(product_code: str, result: MeteredData) -> Optional[Me
     return classify_metric_type(result.metering_point_type, product_code)
 
 
-def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter_id: str = None) -> List[Dict]:
+def transform_to_datapoints(parsed_data: ParseResult, attributed_meter_id: str = None) -> List[Dict]:
     """
     Transform parsed data into VictoriaMetrics data points
 
@@ -206,7 +215,9 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
             contained detection). Overrides the meter_id label so the breakdown
             is stored against the physical meter rather than the virtual one.
     """
-    if not parsed_data or not parsed_data.observations:
+    # getattr: tolerates a SkippedDocument (no observations) as well as None,
+    # so callers don't have to type-check before transforming.
+    if not getattr(parsed_data, 'observations', None):
         return []
 
     # Single metric name for all per-meter (E66) energy. The two orthogonal
@@ -253,9 +264,13 @@ def transform_to_datapoints(parsed_data: Optional[MeteredData], attributed_meter
         if meter_id:
             labels['meter_id'] = meter_id
 
-        # Estimated vs measured readings split into separate series (e.g. "21").
-        if obs.condition:
-            labels['condition'] = obs.condition
+        # NB: `condition` (measured vs estimated, e.g. "21") is deliberately NOT
+        # a label. The provider REVISES a slot's condition across overlapping
+        # deliveries (same 15-min slot delivered as estimated one day, measured
+        # the next). If condition were part of the series identity, that slot
+        # would land in TWO parallel series and any sum() would double-count it.
+        # Keeping it out means each (meter, segment, direction) is a single
+        # series and a later delivery overwrites the earlier value in place.
 
         #TG: Isn't this unnecessarily cluttering the database with duplicate labels?
         #  GP: NO, labels are not duplicated when stored in VM, it's the other way around:
