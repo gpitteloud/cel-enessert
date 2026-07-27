@@ -107,17 +107,39 @@ The E66 side sums `segment="total"` across all meters. This is a clean
 measured-vs-measured comparison **only because production totals are
 single-sourced** — see below.
 
-- **Production:** the difference panel should sit at **≈ 0** (E31 total ==
-  sum of E66 physical production totals, exact to rounding, e.g. both 2558.6 kWh
-  on 2026-06-15). A large gap most likely means the data was ingested by an old
-  parser that stored `condition` as a label (so revised slots double-counted) or
-  duplicate virtual-meter totals crept back in — see below. Both are fixed at
-  ingest; a stale gap is cured by a full re-replay through the current parser.
-- **Consumption:** currently **not** ≈ 0, for a provider-side reason, not a bug:
-  E31 consumption is delivered as all-zero from data date **2026-06-01 onward**,
-  and a monthly E31 file injects consumption from 2026-04-30 where no E66 exists.
-  Until the provider clarifies (see `PROVIDER_QUESTIONS.md` Q16a/Q16b), treat the
-  E66 sum as the source of truth for community consumption.
+- **Production:** the difference panel sits at **≈ 0 up to data date
+  2026-06-30** (E31 total == sum of E66 physical production totals, exact to
+  rounding, e.g. both 2558.6 kWh on 2026-06-15). A gap of the *wrong sign* —
+  sum(E66) ≈ 1.6× E31 — means an ingest regression: an old parser storing
+  `condition` as a label (revised slots double-counted) or duplicate
+  virtual-meter totals creeping back in, see below. Both are fixed at ingest, so
+  a stale gap is cured by a full re-replay through the current parser.
+- **Production from 2026-07-01:** sum(E66) is a steady **0.89–0.94 × E31**
+  (30–60 kWh/day short) for a provider-side reason, not a bug. Meter `0046782G`
+  delivers production `0.000` for every interval from data date 2026-06-23
+  onward — on its physical ebIX total *and* on virtual twin `08552310`'s
+  CEL/Grid breakdown — yet E31 started including it again on 2026-07-01. The
+  missing energy has the shape of one meter's daily solar profile. See
+  `PROVIDER_QUESTIONS.md` Q16c.
+- **Consumption:** small and positive — sum(E66) runs **1.00–1.09 × E31**
+  throughout (E66 slightly above E31, no sign flip). A monthly E31 file also
+  injects consumption from 2026-04-30 where no E66 exists — that day alone reads
+  as a large negative difference. See `PROVIDER_QUESTIONS.md` Q16a/Q16b.
+
+> **If June consumption shows E31 ≈ 0 (sum(E66) > 2× E31), the monthly backfill
+> lost the overwrite race.** June 2026 E31 consumption exists in exactly **one
+> place**: six monthly E31 files (2880 observations each, covering
+> 2026-05-31..2026-06-30) delivered on **2026-07-07** at `1047xx`. Every June
+> *daily* delivery (20260603..20260625) carries `0.000` for all consumption
+> intervals. The backfill and the dailies produce **identical label sets**, so
+> they are the same VM series and the **last write wins**. Replayed in ascending
+> delivery order the backfill lands last and June reads 1.02–1.09; if those six
+> files are re-ingested *before* the June dailies — or never ingested at all
+> (e.g. dedup skipped them because they were already listed in an archive zip) —
+> June collapses to E31 = 0 for 22 days.
+>
+> Fix without a full re-replay: re-ingest just those six files **after**
+> everything else, then confirm June ratios return to ~1.03.
 
 #### Meter attribution — why production totals aren't double-counted
 

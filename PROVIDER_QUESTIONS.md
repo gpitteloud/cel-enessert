@@ -223,6 +223,30 @@ Physical → Virtual
     - **Questions:** Are monthly/backfill E31 files sent on a schedule? How
       should they be reconciled with the overlapping daily files (which wins)?
 
+
+16c. **E31 production exceeds sum(E66) by ~9-10% from 2026-07-01 (meter
+    `0046782G`):** Meter `0046782G` reports production `0.000` for **every**
+    15-min interval from data date **2026-06-23** onward (and also 2026-06-08 ..
+    2026-06-17), on **both** its physical ebIX total (`8716867000030`) and its
+    virtual twin `08552310`'s VSE CEL/Grid breakdown
+    (`2404050010123` / `2404050010124`). The other 9 producers report normally.
+    - Through **2026-06-30** this was self-consistent: E31 production total
+      equalled sum(E66 physical totals) **exactly** (ratio 1.000 every day),
+      i.e. E31 excluded this meter too.
+    - From **2026-07-01** E31 production is systematically **higher** than
+      sum(E66): ratio 0.890-0.937 every day, a shortfall of 30-60 kWh/day
+      (~971 kWh over 2026-07-01 .. 2026-07-22, ~9-10%). The missing amount has
+      the **shape of a single meter's daily solar profile**, not a flat scale
+      factor - consistent with E31 now including `0046782G` while its E66 files
+      still contain only zeros. E31/E66 **consumption** stays at ~1.00
+      throughout, so this is production-specific.
+    - **Questions:** Is `0046782G` still an active producer? If yes, why are its
+      E66 files all-zero since 2026-06-23 (meter fault, communication outage,
+      or a delivery bug), and will they be corrected/backfilled? If E31 estimates
+      or substitutes for a non-reporting meter, please confirm - we need to know
+      whether to trust E31 or sum(E66) as the community production total. Also:
+      what changed on 2026-07-01 that made E31 start counting it while E66 did
+      not?
 ---
 
 ## 6. Data Completeness and Edge Cases

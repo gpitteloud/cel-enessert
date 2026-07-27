@@ -704,12 +704,34 @@ meter_mappings:
 - If file already in archive: Add timestamp suffix to avoid overwriting
 - Example: `file_20260626_174530.xml` (timestamped duplicate)
 
-**Data-level**:
-- VictoriaMetrics identifies points by: `metric_name + labels + timestamp`
-- Same point = overwrite (last write wins)
-- Reprocessing files = same data = idempotent operation
+**Data-level** — requires `--dedup.minScrapeInterval=15m` on VictoriaMetrics:
 
-**Result**: Safe to reprocess files - no duplicates created!
+- A point's identity is `metric_name + labels + timestamp`.
+- **Ingesting the same point twice does NOT simply overwrite it.** VM collapses
+  identical `(metric_name, labels, timestamp)` on ingestion by keeping the
+  **maximum** value — but on *query* it only collapses samples that fall within
+  one discrete `-dedup.minScrapeInterval` window, which defaults to **1 minute**.
+  Our slots are 15 min apart, so at the default nothing collapsed and every
+  delivery's copy was counted.
+- The provider sends **overlapping 5-day files daily**, so each slot is ingested
+  5-7 times. Symptom of the missing flag: `sum(E66)` reads ~6x the E31 aggregate
+  (measured: June 2026 consumption, ratio 2.0-6.5). Production still read 1.000
+  because both sides inflate by the same factor and it cancels in the ratio —
+  **a correct-looking production panel does not prove dedup is working.**
+- Setting `--dedup.minScrapeInterval=15m` (== native resolution) keeps one sample
+  per real slot. Never set it higher: 30m/1h would drop genuine distinct slots.
+
+> **Residual 1.15% overstatement.** Ingest dedup keeps the **maximum** value for
+> a timestamp, not the newest. The provider revises ~2.6% of overlapping slots
+> *downward* (e.g. meter `0050170B`, 2026-05-22T00:00: `0.003` on delivery
+> 20260527 → `0.002` on 20260605), and those revisions are lost. Measured over
+> 2026-04-30..2026-07-22: +2145 kWh on 187063 kWh = **+1.1467%**, worst single
+> slot +9.4 kWh. To be exact, superseded values must not be written at all —
+> i.e. skip re-ingesting slots an earlier delivery already covered, rather than
+> relying on the store to pick a winner.
+
+**Result**: reprocessing files is safe *for series identity* (no new series are
+created), but it is **not** value-idempotent without the dedup flag.
 
 ---
 

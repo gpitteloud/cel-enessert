@@ -30,6 +30,12 @@ processing:
   archive_processed: true
   archive_path: "data/archive"
 
+  # Newest-value-per-slot store used by vm_upsert. Must live on a mounted
+  # volume (docker-compose maps /volume1/docker/cel/state here): if it is lost,
+  # every slot looks new again and revisions can no longer be detected, so
+  # superseded values would stay in VictoriaMetrics.
+  state_db: "/data/state/vm_samples.db"
+
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR

@@ -12,7 +12,30 @@ services:
     command:
       - "--storageDataPath=/victoria-metrics-data"
       - "--httpListenAddr=:8428"
-      - "--retentionPeriod=24"
+      # 2 years. An unsuffixed number means MONTHS in VictoriaMetrics, so the
+      # previous "24" was already 2 years, not 24 hours -- spelled as 2y here
+      # because it reads unambiguously. Valid suffixes are h/d/w/y only; there
+      # is no "m" suffix, so "24m" would be rejected.
+      - "--retentionPeriod=20y"
+      # REQUIRED, not an optimisation. The provider delivers overlapping 5-day
+      # files daily, so each 15-min slot is imported 5-7 times. Without this
+      # flag every copy was retained and sum()/increase() counted the slot 5-7
+      # times -- sum(E66) read ~6x E31 for June 2026 consumption.
+      #
+      # VM de-duplicates identical (metric_name, labels, timestamp) on ingestion
+      # regardless of this flag, but on QUERY it only collapses samples within a
+      # discrete interval of -dedup.minScrapeInterval (default 1m). Our slots
+      # are 15 min apart, so at 1m nothing collapsed. 15m == the native
+      # resolution keeps exactly one sample per real slot. Do NOT set it larger:
+      # 30m or 1h would silently drop real distinct slots and halve the energy.
+      #
+      # CAVEAT: ingest dedup keeps the sample with the MAXIMUM value for a given
+      # timestamp, not the most recently written one. The provider revises ~2.6%
+      # of overlapping slots downward, so totals read ~1.15% high (measured over
+      # 2026-04-30..2026-07-22; worst single slot +9.4 kWh). Acceptable versus
+      # the ~500% error it replaces. To be exact you must avoid writing the
+      # superseded values at all -- see PARSING_GUIDE.md "Overlapping deliveries".
+      - "--dedup.minScrapeInterval=15m"
     networks:
       - cel-network
 
@@ -27,8 +50,11 @@ services:
       - /volume1/docker/cel/grafana-provisioning:/etc/grafana/provisioning
       - /volume1/docker/cel/grafana-dashboards:/var/lib/grafana/dashboards
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # No GF_SECURITY_ADMIN_USER / _PASSWORD on purpose. Grafana only applies
+      # them when it initialises an empty grafana-data volume, so they cannot
+      # change the live password -- they would just hardcode a stale credential
+      # here and silently reset the admin back to it if the volume is ever
+      # recreated. Manage the password in Grafana's UI instead.
       - GF_INSTALL_PLUGINS=
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_energy_overview.json
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
@@ -48,6 +74,7 @@ services:
       - /volume1/docker/cel/config:/app/config
       - /volume1/docker/cel/logs:/app/logs
       - /volume1/docker/cel/archive:/data/archive
+      - /volume1/docker/cel/state:/data/state
     working_dir: /app
     command: >
       sh -c "

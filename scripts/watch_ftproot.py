@@ -51,7 +51,7 @@ from models import SkippedDocument
 from parse_sdat import parse_sdat
 from parse_sdat_e66_individual import transform_to_datapoints
 from parse_sdat_e31_aggregated import transform_e31_to_datapoints
-from send_to_victoriametrics import send_batch
+from vm_upsert import SampleStore, upsert
 from discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
 import yaml
 
@@ -105,6 +105,14 @@ class SDATFileHandler(FileSystemEventHandler):
         # Load configuration
         self.api_config = load_config()
         logger.info("Configuration loaded")
+
+        # Local record of the newest value per (series, timestamp). Needed
+        # because VictoriaMetrics cannot overwrite a single timestamp, so a
+        # revised slot is detected here and its series is rewritten.
+        self.sample_store = SampleStore(
+            Path(self.api_config.get('processing', {}).get(
+                'state_db', '/data/state/vm_samples.db')))
+        logger.info(f"Sample store: {self.sample_store.path}")
 
         # Auto-discover meter mappings (virtual -> physical)
         # Tries to load from cache first, discovers if cache missing/stale
@@ -388,17 +396,32 @@ class SDATFileHandler(FileSystemEventHandler):
                 logger.warning(f"No data points generated from {file_path.name}")
                 return FileOutcome.FAILED
 
-            # Send to VictoriaMetrics
+            # Send to VictoriaMetrics.
+            # Upsert (not plain import) so the NEWEST delivery's value wins: the
+            # provider re-sends every slot in 5-7 overlapping files and revises
+            # ~2.6% of them, and VM has no per-timestamp overwrite -- it keeps
+            # the MAXIMUM value for a duplicated timestamp. See vm_upsert.py.
             vm_url = self.api_config['victoriametrics']['url']
-            batch_size = self.api_config['processing'].get('batch_size', 1000)
 
-            success_count, error_count = send_batch(data_points, vm_url, batch_size)
+            delivery = file_path.name[:8]
+            if not (len(delivery) == 8 and delivery.isdigit()):
+                # No delivery date in the name (non-standard file): treat it as
+                # the newest possible so its values are authoritative.
+                delivery = '99999999'
 
-            if error_count == 0:
-                logger.info(f"Successfully processed {file_path.name} ({success_count} data points)")
+            stats = upsert(data_points, vm_url, delivery, self.sample_store)
+
+            if stats['failed'] == 0:
+                logger.info(
+                    f"Successfully processed {file_path.name} "
+                    f"(new={stats['new']}, unchanged={stats['unchanged']}, "
+                    f"revised={stats['revised']}, "
+                    f"series_rewritten={stats['rewritten_series']}, "
+                    f"stale={stats['stale']})")
                 return FileOutcome.INGESTED
             else:
-                logger.error(f"Failed to process {file_path.name} ({error_count} errors)")
+                logger.error(f"Failed to process {file_path.name} "
+                             f"({stats['failed']} errors)")
                 return FileOutcome.FAILED
 
         except Exception as e:
