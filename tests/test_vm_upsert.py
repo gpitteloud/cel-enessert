@@ -284,12 +284,16 @@ def test_real_overlapping_deliveries_yield_newest_value(fake_vm, sample_store,
 
     batches = {d: _parse_delivery(f) for d, f in groups.items()}
 
+    # float(): the parsers now emit Decimal (for QuestDB's DECIMAL(12,3)), but
+    # the VM path cannot carry it -- JSON has no decimal type and VM stores
+    # float64, so vm_upsert coerces. Mirroring that here keeps the oracle honest
+    # about what VM actually holds; exactness is what QuestDB buys us.
     expected = {}
     for delivery in sorted(batches):
         for p in batches[delivery]:
             selector = selector_for(p['metric'])
             for ts, value in zip(p['timestamps'], p['values']):
-                expected.setdefault(selector, {})[ts] = value
+                expected.setdefault(selector, {})[ts] = float(value)
 
     deliveries = sorted(batches, reverse=(order == 'descending'))
     for delivery in deliveries:

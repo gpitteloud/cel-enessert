@@ -6,6 +6,7 @@ Using dataclasses instead of plain dicts gives attribute access (no silent
 typos on string keys) and one shared shape across both document types.
 """
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 from typing import List, Optional, Union
 
@@ -91,10 +92,16 @@ class SkippedDocument:
 
 @dataclass
 class Observation:
-    """A single interval reading."""
+    """A single interval reading.
+
+    ``value`` is a Decimal, not a float: it is stored in a DECIMAL(12,3) column
+    for exact arithmetic, and parsing via float first would reintroduce the
+    binary rounding that column exists to avoid. Built from the XML text
+    directly -- Decimal(str) is exact, Decimal(float) is not.
+    """
     sequence: int
     timestamp: str          # ISO-8601 string
-    value: float
+    value: Decimal
     condition: Optional[str] = None    # e.g. "21" = estimated (E31; may be set on E66)
 
 

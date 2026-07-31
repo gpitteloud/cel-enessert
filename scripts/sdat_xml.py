@@ -10,9 +10,17 @@ All helpers operate on an already-parsed <MeteringData> element and the shared
 ``ns`` namespace map; they never touch files.
 """
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Tuple
 
 from models import Observation
+
+# Scale of the DECIMAL(12,3) column the values land in. Every observation in the
+# 3297-file sample corpus has exactly 3 decimal places, so this is lossless --
+# but a 4-dp value would be rounded silently by the database, so reject it here
+# instead. If the provider ever changes resolution this fires loudly and the
+# column scale must be widened before ingesting.
+VALUE_SCALE = 3
 
 
 def extract_product_code(metering_data, ns) -> Tuple[Optional[str], Optional[str]]:
@@ -53,6 +61,11 @@ def parse_observations(metering_data, ns, start_iso: str, resolution_minutes: in
     element are skipped; a malformed numeric value raises (ValueError), which
     the parser's outer handler treats as a fatal document error rather than
     silently ingesting partial data.
+
+    Volumes are parsed as Decimal straight from the XML text (never via float)
+    so the value stored in the DECIMAL(12,3) column is exactly what the provider
+    sent. A value with more than VALUE_SCALE decimal places raises ValueError
+    rather than let the database round it away unnoticed.
     """
     base_dt = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
     observations = []
@@ -63,7 +76,17 @@ def parse_observations(metering_data, ns, start_iso: str, resolution_minutes: in
             continue
 
         sequence = int(seq_elem.text)
-        volume = float(vol_elem.text)
+        raw_volume = (vol_elem.text or '').strip()
+        try:
+            volume = Decimal(raw_volume)
+        except InvalidOperation:
+            # Match float()'s contract: the outer handler treats ValueError as a
+            # fatal document error instead of ingesting partial data.
+            raise ValueError(f"Invalid Volume value: {raw_volume!r}")
+        if -volume.as_tuple().exponent > VALUE_SCALE:
+            raise ValueError(
+                f"Volume {raw_volume!r} has more than {VALUE_SCALE} decimal "
+                f"places; DECIMAL(12,{VALUE_SCALE}) would round it silently")
         cond_elem = obs.find('.//rsm:Condition', ns)
         obs_dt = base_dt + timedelta(minutes=(sequence - 1) * resolution_minutes)
 
