@@ -39,6 +39,27 @@ services:
     networks:
       - cel-network
 
+  # Migration target, see MIGRATION_QUESTDB.md. Runs alongside VictoriaMetrics
+  # until the dashboards are converted; the parser dual-writes (see the
+  # `questdb.enabled` flag in config/api_config.yaml).
+  questdb:
+    image: questdb/questdb:9.4.3
+    container_name: cel-questdb
+    restart: unless-stopped
+    # DELIBERATELY no `ports:` -- QuestDB OSS serves the web console and the
+    # REST API on 9000 with no meaningful auth, so publishing it would be the
+    # same unauthenticated-write exposure VM had. Everything that needs it
+    # (parser, Grafana) is on cel-network. To inspect the console, tunnel it:
+    #   ssh -L 9000:cel-questdb:9000 <nas>     (or `docker exec` + curl)
+    volumes:
+      - /volume1/docker/cel/questdb-data:/var/lib/questdb
+    environment:
+      # Pin the version so a silent `latest` bump can't change dedup or decimal
+      # behaviour under us. Both are load-bearing here.
+      - QDB_TELEMETRY_ENABLED=false
+    networks:
+      - cel-network
+
   grafana:
     image: grafana/grafana:latest
     container_name: cel-grafana
@@ -55,7 +76,10 @@ services:
       # change the live password -- they would just hardcode a stale credential
       # here and silently reset the admin back to it if the volume is ever
       # recreated. Manage the password in Grafana's UI instead.
-      - GF_INSTALL_PLUGINS=
+      # QuestDB datasource plugin (pre-1.0; see MIGRATION_QUESTDB.md Phase 5).
+      # If it proves unusable, the fallback is Grafana's built-in Postgres
+      # datasource against questdb:8812 -- remove this line in that case.
+      - GF_INSTALL_PLUGINS=questdb-questdb-datasource
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_energy_overview.json
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
       - GF_SERVER_DOMAIN=grafana.oche22.ch
@@ -78,13 +102,18 @@ services:
     working_dir: /app
     command: >
       sh -c "
-        pip install --no-cache-dir requests pyyaml watchdog &&
+        pip install --no-cache-dir requests pyyaml watchdog 'psycopg[binary]' &&
         python scripts/watch_ftproot.py
       "
     environment:
       - VICTORIA_METRICS_URL=http://victoriametrics:8428
+      # PG-wire endpoint. Default OSS credentials are admin/quest and cannot be
+      # changed in OSS without server.conf; the port is unpublished (see the
+      # questdb service) so it is reachable only from cel-network.
+      - QUESTDB_DSN=postgresql://admin:quest@questdb:8812/qdb
     depends_on:
       - victoriametrics
+      - questdb
     networks:
       - cel-network
 
