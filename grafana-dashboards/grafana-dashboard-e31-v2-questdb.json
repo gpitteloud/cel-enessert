@@ -1,0 +1,207 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "QuestDB port of 'CEL Community Aggregates E31 v2' (MIGRATION_QUESTDB.md Phase 5). Row + panel 7 only, converted first to settle the SQL query shape before the remaining panels follow. Structure matches grafana-dashboard-e31-v2.json so the two can be compared panel by panel while VM is still live.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 6,
+      "title": "Consumption Breakdown",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "description": "kW from 15-min kWh slots, from the E31 community aggregate. Two things differ from the VM original beyond syntax: (1) the constant label that worked around VM's flat namespace is gone -- the table name scopes it now; (2) product_code is replaced by segment ('cel'/'grid'), which is the same distinction under the name the parser actually stores. product_code would work identically; segment is used because it survives a provider-side encoding change (see classify_metric_type in models.py).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "kwatt"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "From CEL"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "From Grid"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "meta": {
+            "promql": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"}[$__interval:15m])) * 4"
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, avg(slot_kwh) * 4 AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'cel'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "meta": {
+            "promql": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"}[$__interval:15m])) * 4"
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, avg(slot_kwh) * 4 AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'grid'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "C"
+        }
+      ],
+      "title": "Community Consumption Over Time",
+      "type": "timeseries",
+      "interval": "15m"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "cel",
+    "e31",
+    "community",
+    "questdb"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "Europe/Zurich",
+  "title": "CEL Community Aggregates E31 v2 (QuestDB)",
+  "uid": "cel-community-e31-v2-questdb",
+  "version": 1,
+  "weekStart": "monday"
+}

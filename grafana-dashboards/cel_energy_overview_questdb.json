@@ -1,0 +1,216 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "datasource",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "QuestDB port of 'CEL Energy Overview' (MIGRATION_QUESTDB.md Phase 5). Panel 1 only, converted first to settle the SQL query shape before the remaining 6 panels follow. Structure is byte-identical to cel_energy_overview.json apart from the datasource and targets, so the two can be compared panel by panel while VM is still live.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "description": "kW from 15-min kWh slots. The PromQL original was avg_over_time(...[$__interval:15m]) * 4; the SQL equivalent must average per 15-min slot FIRST and only then scale by 4. sum(value) * 4 over a bucket wider than 15 min would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW). The inner SAMPLE BY 15m is what pins the slot width regardless of the outer bucket.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "kwatt"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "From CEL"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "From Grid"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "meta": {
+            "promql": "(avg_over_time(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__interval:15m])) * 4"
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, avg(slot_kwh) * 4 AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "hide": false,
+          "meta": {
+            "promql": "(avg_over_time(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__interval:15m])) * 4"
+          },
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, avg(slot_kwh) * 4 AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B"
+        }
+      ],
+      "title": "Daily Consumption - ${meter_id}",
+      "type": "timeseries",
+      "interval": "15m"
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "cel",
+    "energy",
+    "questdb"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "0217130Y",
+          "value": "0217130Y"
+        },
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
+        },
+        "definition": "SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "meter_id",
+        "options": [],
+        "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
+        "refresh": 1,
+        "regex": ".*([0-9A-Z]{8})$",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "CEL Energy Overview (QuestDB)",
+  "uid": "cel-energy-overview-questdb",
+  "version": 1,
+  "weekStart": ""
+}

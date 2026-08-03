@@ -339,22 +339,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Total"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "blue",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "CEL Local"
+              "options": "From CEL"
             },
             "properties": [
               {
@@ -369,7 +354,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Grid"
+              "options": "From Grid"
             },
             "properties": [
               {
@@ -377,21 +362,6 @@
                 "value": {
                   "fixedColor": "orange",
                   "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Total Consumption"
-            },
-            "properties": [
-              {
-                "id": "custom.stacking",
-                "value": {
-                  "group": "A",
-                  "mode": "none"
                 }
               }
             ]
@@ -584,22 +554,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Total"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "yellow",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Used in CEL"
+              "options": "To CEL"
             },
             "properties": [
               {
@@ -614,7 +569,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Exported to Grid"
+              "options": "To Grid"
             },
             "properties": [
               {
@@ -622,21 +577,6 @@
                 "value": {
                   "fixedColor": "purple",
                   "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Total Production"
-            },
-            "properties": [
-              {
-                "id": "custom.stacking",
-                "value": {
-                  "group": "A",
-                  "mode": "none"
                 }
               }
             ]
@@ -829,7 +769,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "E31 Aggregate"
+              "options": "E31 Total"
             },
             "properties": [
               {
@@ -848,7 +788,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "E66 Sum"
+              "options": "Sum(E66)"
             },
             "properties": [
               {
@@ -971,7 +911,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "E31 Aggregate"
+              "options": "E31 Total"
             },
             "properties": [
               {
@@ -990,7 +930,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "E66 Sum"
+              "options": "Sum(E66)"
             },
             "properties": [
               {

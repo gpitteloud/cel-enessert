@@ -1,0 +1,32 @@
+apiVersion: 1
+
+# QuestDB alongside VictoriaMetrics (MIGRATION_QUESTDB.md Phase 5). Both are
+# provisioned at once on purpose: the *-questdb.json dashboards can be compared
+# against their VM originals panel by panel before VM is retired in Phase 7.
+#
+# uid is pinned to "QuestDB" because the dashboard JSONs reference it by uid.
+# Grafana would otherwise assign a random one and every panel would load with
+# "datasource not found".
+datasources:
+  - name: QuestDB
+    type: questdb-questdb-datasource
+    uid: QuestDB
+    access: proxy
+    # PG-wire, not the 9000 REST/console port. Default OSS credentials are
+    # admin/quest and cannot be changed in OSS without server.conf; neither port
+    # is published outside cel-network (see docker-compose.yml).
+    url: questdb:8812
+    user: admin
+    isDefault: false
+    editable: false
+    jsonData:
+      server: questdb
+      port: 8812
+      username: admin
+      # QuestDB OSS PG-wire does not offer TLS; the traffic never leaves the
+      # docker network.
+      tlsMode: disable
+      # QuestDB has a single database, `qdb`.
+      database: qdb
+    secureJsonData:
+      password: quest
