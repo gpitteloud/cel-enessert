@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,31 @@ def _split_statements(sql: str):
     return [s.strip() for s in without_comments.split(';') if s.strip()]
 
 
+def connect_with_retry(psycopg, dsn: str, timeout: float, interval: float = 2.0):
+    """Connect, retrying until `timeout` seconds have passed.
+
+    Needed because this runs as a compose init container: `depends_on` only waits
+    for the container to start, not for QuestDB to accept PG-wire connections, so
+    a single attempt loses a startup race. Retries only connection failures --
+    once connected, a schema problem is reported, never retried.
+    """
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return psycopg.connect(dsn, autocommit=False)
+        except Exception as e:
+            if time.monotonic() >= deadline:
+                logger.error(
+                    f"Cannot connect to QuestDB after {attempt} attempts "
+                    f"({timeout:.0f}s): {e}")
+                return None
+            if attempt == 1:
+                logger.info(f"QuestDB not ready yet, retrying up to {timeout:.0f}s")
+            time.sleep(interval)
+
+
 def apply_schema(conn, sql: str) -> int:
     statements = _split_statements(sql)
     with conn.cursor() as cur:
@@ -60,12 +86,33 @@ def apply_schema(conn, sql: str) -> int:
     return len(statements)
 
 
+def table_columns(cur, table: str) -> dict:
+    """{column: (type, is_upsert_key)} for one table.
+
+    The table name is inlined rather than bound as a parameter: QuestDB cannot
+    infer the type of a bind variable inside a table function and rejects
+    `table_columns($1)` with "argument type mismatch ... actual: unknown". The
+    name is validated first so an inlined identifier can never carry SQL -- these
+    names come from EXPECTED_* above, not from input, but validating keeps that
+    true if this is ever called with something else.
+    """
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', table):
+        raise ValueError(f"refusing to inline unsafe table name: {table!r}")
+    cur.execute(
+        f'SELECT "column", type, upsertKey FROM table_columns(\'{table}\')')
+    return {col: (typ, bool(key)) for col, typ, key in cur.fetchall()}
+
+
 def verify(conn) -> list:
     """Return a list of problems; empty means the schema is as intended."""
     problems = []
     with conn.cursor() as cur:
         cur.execute('SELECT table_name, dedup FROM tables()')
         tables = {name: dedup for name, dedup in cur.fetchall()}
+
+        # One round trip per table, reused by both checks below.
+        columns = {t: table_columns(cur, t) for t in EXPECTED_DEDUP_KEYS
+                   if t in tables}
 
         for table, expected_keys in EXPECTED_DEDUP_KEYS.items():
             if table not in tables:
@@ -84,9 +131,8 @@ def verify(conn) -> list:
             # upsertKey tells us which columns actually form the dedup key. A
             # missing key column means duplicate rows instead of an overwrite;
             # an extra one (condition, code_type) means double-counting.
-            cur.execute(
-                'SELECT "column", upsertKey FROM table_columns(%s)', (table,))
-            actual_keys = {col for col, is_key in cur.fetchall() if is_key}
+            actual_keys = {col for col, (_, is_key) in columns[table].items()
+                           if is_key}
             if actual_keys != expected_keys:
                 missing = expected_keys - actual_keys
                 extra = actual_keys - expected_keys
@@ -100,10 +146,8 @@ def verify(conn) -> list:
         for table, (column, precision, scale) in EXPECTED_DECIMAL.items():
             if table not in tables:
                 continue
-            cur.execute(
-                'SELECT "column", type FROM table_columns(%s)', (table,))
-            types = {col: typ for col, typ in cur.fetchall()}
-            actual = types.get(column)
+            entry = columns[table].get(column)
+            actual = entry[0] if entry else None
             expected = f'DECIMAL({precision},{scale})'
             # Compare loosely on whitespace; QuestDB may render "DECIMAL(12, 3)".
             if actual is None or actual.replace(' ', '').upper() != expected:
@@ -124,6 +168,9 @@ def main() -> int:
                         help='QuestDB PG-wire DSN (default: $QUESTDB_DSN)')
     parser.add_argument('--check-only', action='store_true',
                         help='verify an existing schema without creating it')
+    parser.add_argument('--wait', type=float, default=60.0, metavar='SECONDS',
+                        help='how long to wait for QuestDB to accept connections '
+                             '(default 60; 0 = single attempt)')
     args = parser.parse_args()
 
     try:
@@ -132,10 +179,8 @@ def main() -> int:
         logger.error("psycopg is required: pip install 'psycopg[binary]'")
         return 2
 
-    try:
-        conn = psycopg.connect(args.dsn, autocommit=False)
-    except Exception as e:
-        logger.error(f"Cannot connect to QuestDB: {e}")
+    conn = connect_with_retry(psycopg, args.dsn, args.wait)
+    if conn is None:
         return 2
 
     try:

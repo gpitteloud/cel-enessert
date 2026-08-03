@@ -4,6 +4,18 @@
 victoriametrics:
   url: "http://victoriametrics:8428"
 
+# QuestDB - migration target, see MIGRATION_QUESTDB.md.
+# While `enabled` is true the parser writes every file to BOTH stores so they can
+# be compared on real data. QuestDB should read ~1.15% LOWER than VM: that gap is
+# VM's max-value dedup inflation disappearing, and is the success signal.
+questdb:
+  enabled: false
+  # false: a QuestDB failure is logged but does not fail the file (VM has it).
+  # Flip to true once QuestDB is the system of record, so failures are retried.
+  required: false
+  # Defaults to $QUESTDB_DSN, set in docker-compose.yml.
+  dsn: ""
+
 # Project configuration
 project:
   name: "cel"

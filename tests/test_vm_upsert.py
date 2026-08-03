@@ -321,3 +321,72 @@ def test_real_deliveries_contain_downward_revisions():
                 seen[key] = value
 
     assert downward > 0, 'expected the provider to revise some slots downward'
+
+
+# --------------------------------------------------------------------------
+# Thread safety
+# --------------------------------------------------------------------------
+
+def test_store_is_usable_from_another_thread(fake_vm, sample_store):
+    """Reproduces the production failure on the newest delivery of a replay.
+
+    The watcher builds the SampleStore on the main thread but flushes a batch
+    from a threading.Timer thread when no later delivery arrives to trigger the
+    date-change flush -- i.e. for the LAST delivery only. With the default
+    check_same_thread=True that raised
+
+        sqlite3.ProgrammingError: SQLite objects created in a thread can only be
+        used in that same thread
+
+    for every file of that one day, and because upsert() runs before the QuestDB
+    write, those files landed in neither store.
+    """
+    import threading
+
+    error = []
+
+    def run():
+        try:
+            upsert([point(METRIC, [TS], [1.0])], 'http://vm', '20260723',
+                   sample_store)
+        except Exception as e:      # noqa: BLE001 - reported via `error`
+            error.append(e)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=10)
+
+    assert not error, f"cross-thread upsert failed: {error[0]!r}"
+    assert fake_vm.data[selector_for(METRIC)] == {TS: 1.0}
+
+
+def test_concurrent_upserts_do_not_corrupt_the_store(fake_vm, sample_store):
+    """check_same_thread=False alone would only *permit* races; _lock prevents them.
+
+    Distinct series per thread, so the correct end state is unambiguous: every
+    thread's value must be present and readable afterwards. A missing series or a
+    raised exception means the locking is wrong.
+    """
+    import threading
+
+    threads, errors = [], []
+
+    def run(index):
+        metric = dict(METRIC, meter_id=f'M{index}')
+        try:
+            upsert([point(metric, [TS], [float(index)])], 'http://vm',
+                   '20260723', sample_store)
+        except Exception as e:      # noqa: BLE001 - reported via `errors`
+            errors.append(e)
+
+    for i in range(8):
+        thread = threading.Thread(target=run, args=(i,))
+        threads.append(thread)
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, f"concurrent upserts failed: {errors[:3]}"
+    for i in range(8):
+        selector = selector_for(dict(METRIC, meter_id=f'M{i}'))
+        assert fake_vm.data[selector] == {TS: float(i)}, selector

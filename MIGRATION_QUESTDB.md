@@ -1,6 +1,10 @@
 # Migration: VictoriaMetrics → QuestDB
 
-Status: **planned, not started.** Nothing in `scripts/` targets QuestDB yet.
+Status: **phases 0-3 done and deployed** -- the schema is live on the NAS and
+verified by `questdb_init.py`. Phase 4 tooling (`scripts/questdb_replay.py`) is
+written and tested but has not been run against the real archive yet.
+`questdb.enabled` is still `false` in `config/api_config.yaml`, so live ingestion
+does not write to QuestDB and VM remains the system of record. Phase table below.
 
 ## Why
 
@@ -45,11 +49,14 @@ options are read-before-write — reintroducing the complexity we are removing �
   irrelevant.
 - Startup rescan: safe already — `sorted(watch_dir.glob("*.xml"))` at
   `watch_ftproot.py:568` puts the `YYYYMMDD` prefix in chronological order.
-- **Manual replay: must be sorted.** `reprocess_all_data.sh` currently does
-  `mv .../archive/*.xml .../incoming/`, relying on the watcher's sort. That
-  happens to be correct, but it is now a *correctness* requirement rather than a
-  batching nicety, so it needs a comment saying so — and any new replay tooling
-  must sort explicitly.
+- **Manual replay: sorted explicitly.** `scripts/questdb_replay.py` reads the
+  archive's per-delivery `YYYYMMDD.zip` files, sorts them by name (== by date),
+  logs the order it will use, and refuses to run if a loose `.xml` in the archive
+  is newer than the last zip -- which would otherwise be replayed first and then
+  overwritten by an older zip. `--dry-run` prints the order without writing.
+  `reprocess_all_data.sh` (the VM-oriented path, which moves files through the
+  watcher) relies on the watcher's own sort and carries a header comment saying
+  the ordering is now load-bearing.
 
 This trade is deliberate: one documented ordering rule in place of ~300 lines of
 stateful reconciliation plus a non-atomic rewrite window.
@@ -67,7 +74,7 @@ CREATE TABLE cel_energy (                 -- E66, per-meter
   value        DECIMAL(12, 3),  -- exact; matches the source's 3 decimals
   code_type    SYMBOL,          -- payload: derivable from product_code
   condition    SYMBOL           -- payload: provider revises it (never a key)
-) TIMESTAMP(ts) PARTITION BY MONTH WAL TTL 2 YEARS
+) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, meter_id, direction, segment, product_code, community_id);
 
 CREATE TABLE cel_community_energy (       -- E31, community aggregate
@@ -81,13 +88,14 @@ CREATE TABLE cel_community_energy (       -- E31, community aggregate
   community_type SYMBOL,
   grid_area      SYMBOL,
   condition      SYMBOL
-) TIMESTAMP(ts) PARTITION BY MONTH WAL TTL 2 YEARS
+) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, direction, segment, product_code, community_id);
 
 CREATE TABLE cel_ingest_log (             -- provenance, ~1 row per file
   ts           TIMESTAMP,
   delivery     SYMBOL,
   file_name    SYMBOL,
+  document_type SYMBOL,          -- E66 | E31 | unknown
   rows_written LONG,
   outcome      SYMBOL           -- ingested | skipped | failed
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL;
@@ -96,6 +104,14 @@ CREATE TABLE cel_ingest_log (             -- provenance, ~1 row per file
 Two tables for E66/E31 rather than one metric-name column: a `sum()` can no
 longer accidentally mix per-meter readings with the community aggregate that
 already contains them. Structural, not a naming convention.
+
+**No `TTL` clause.** Retention is intentionally left open rather than mirroring
+VM's `--retentionPeriod=2y`: the provider's history is the only copy of this data
+and a TTL silently drops the oldest partition. Add it later with
+`ALTER TABLE cel_energy SET TTL 2 YEARS` if the volume ever justifies it — note
+TTL is OSS-only. The authoritative DDL is `scripts/questdb_schema.sql`; this
+listing is a copy, and `scripts/questdb_init.py --check-only` verifies the
+database against the DDL, not against this document.
 
 ### Key design rules
 
@@ -175,16 +191,20 @@ def write(data_points, dsn, table) -> Dict[str, int]:
 
 ## Phases
 
-| # | Work | Deliverable |
-|---|---|---|
-| 0 | Add `questdb` service to compose alongside VM | `docker-compose.yml` |
-| 1 | Schema + idempotent init | `scripts/questdb_schema.sql` |
-| 2 | Writer; `Decimal`-valued observations; watcher writes to QuestDB **and** VM behind a config flag | `scripts/questdb_writer.py` |
-| 3 | Port the test suite to LWW semantics | `tests/test_questdb_writer.py` |
-| 4 | Replay all archived XML **sorted by delivery prefix** | — |
-| 5 | Convert 27 dashboard expressions to SQL | `grafana-dashboards/*.json` |
-| 6 | Validate QuestDB vs VM day-by-day | — |
-| 7 | Remove VM, `vm_upsert.py`, `send_to_victoriametrics.py`, VM datasource | — |
+Status as of 2026-08-01: phases 0-3 complete and deployed (schema live and
+verified on the NAS); Phase 4 tooling written and tested (109 tests passing) but
+not yet run against the real archive; 5-7 open.
+
+| # | Work | Deliverable | Status |
+|---|---|---|---|
+| 0 | Add `questdb` service to compose alongside VM | `docker-compose.yml` | done |
+| 1 | Schema + idempotent init | `scripts/questdb_schema.sql`, `scripts/questdb_init.py` | done |
+| 2 | Writer; `Decimal`-valued observations; watcher writes to QuestDB **and** VM behind a config flag | `scripts/questdb_writer.py`, `watch_ftproot.py`, `config/api_config.yaml` | done (flag off) |
+| 3 | Port the test suite to LWW semantics | `tests/test_questdb_writer.py`, `tests/conftest.py` | done (28 new, 99 total) |
+| 4 | Replay all archived XML **sorted by delivery prefix** | `scripts/questdb_replay.py` | ready to run |
+| 5 | Convert 27 dashboard expressions to SQL | `grafana-dashboards/*.json` | open |
+| 6 | Validate QuestDB vs VM day-by-day | — | open |
+| 7 | Remove VM, `vm_upsert.py`, `send_to_victoriametrics.py`, VM datasource | — | open |
 
 No data migration: history is rebuilt by replaying the XML archive (Phase 4).
 

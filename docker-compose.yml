@@ -1,5 +1,8 @@
-version: '3.8'
-
+# No `version:` key. It was only ever read by the legacy docker-compose v1
+# (Python) binary; Compose v2 ignores it and warns that it is obsolete. Keeping
+# it would also be actively misleading here: this file uses
+# `condition: service_completed_successfully`, which the 3.8 schema it claimed to
+# conform to did not support.
 services:
   victoriametrics:
     image: victoriametrics/victoria-metrics:latest
@@ -60,6 +63,42 @@ services:
     networks:
       - cel-network
 
+  # One-shot schema init. Runs to completion and exits; `restart: "no"` plus the
+  # parser's `service_completed_successfully` dependency means the parser cannot
+  # start against an unverified schema.
+  #
+  # This is a separate container rather than something baked into the questdb
+  # image on purpose. QuestDB has no docker-entrypoint-initdb.d hook (that is a
+  # Postgres convention) and no Python in the image, so a custom image would need
+  # a wrapper entrypoint that backgrounds the server to run the DDL -- and that
+  # would defeat the point of questdb_init.py, which exits non-zero on a wrong
+  # schema. A wrapper that failed would leave the database up and writable, which
+  # is worse than not starting at all.
+  #
+  # TIMING: `service_completed_successfully` makes the whole deploy BLOCK on this
+  # container, and it pip-installs before it runs. Budget ~1-2 min on a cold
+  # start. That exceeds Cloudflare Tunnel's ~100s origin timeout, so deploy this
+  # stack over SSH or the LAN IP, never through the tunnel -- a 502 there is the
+  # gateway giving up on a deploy that is still running, not a rejected file.
+  questdb-init:
+    image: python:3.11-slim
+    container_name: cel-questdb-init
+    restart: "no"
+    volumes:
+      - /volume1/docker/cel/scripts:/app/scripts:ro
+    working_dir: /app
+    command: >
+      sh -c "
+        pip install --no-cache-dir 'psycopg[binary]' &&
+        python scripts/questdb_init.py --wait 60
+      "
+    environment:
+      - QUESTDB_DSN=postgresql://admin:quest@questdb:8812/qdb
+    depends_on:
+      - questdb
+    networks:
+      - cel-network
+
   grafana:
     image: grafana/grafana:latest
     container_name: cel-grafana
@@ -84,7 +123,11 @@ services:
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
       - GF_SERVER_DOMAIN=grafana.oche22.ch
     depends_on:
+      # Both stores: grafana-provisioning/datasources/ now defines a QuestDB
+      # datasource too, and the *-questdb.json dashboards read through it. Only
+      # ordering, not readiness -- Grafana retries a datasource that is not up.
       - victoriametrics
+      - questdb
     networks:
       - cel-network
 
@@ -112,26 +155,31 @@ services:
       # questdb service) so it is reachable only from cel-network.
       - QUESTDB_DSN=postgresql://admin:quest@questdb:8812/qdb
     depends_on:
-      - victoriametrics
-      - questdb
+      victoriametrics:
+        condition: service_started
+      questdb-init:
+        # Not just `questdb`: wait for the schema to be applied AND verified.
+        # Starting sooner risks the first INSERT auto-creating a table without
+        # DEDUP and with a default DECIMAL(18,3) -- silently reintroducing the
+        # duplicate-counting this migration removes.
+        condition: service_completed_successfully
     networks:
       - cel-network
-
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: cloudflared-tunnel
-    restart: unless-stopped
-    user: root
-    command: tunnel --config /etc/cloudflared/config.yml run grafana
-    volumes:
-      - /volume1/docker/cel/cloudflared:/etc/cloudflared:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - cel-network
-    depends_on:
-      - grafana
 
 networks:
   cel-network:
-    driver: bridge
+    # EXTERNAL and explicitly named, so this stack does not own it. The tunnel
+    # stack (docker-compose.cloudflared.yml) attaches to the same network, and a
+    # shared resource must outlive both stacks: if this stack created it, tearing
+    # this stack down would try to delete the network out from under cloudflared.
+    #
+    # `name:` pins the real Docker name. Without it, Compose would prefix the
+    # project name (stack `cel` -> `cel_cel-network`), so the two stacks would
+    # have to guess at a name that changes if the stack is ever renamed.
+    #
+    # Create it ONCE before deploying either stack (Portainer -> Networks -> Add
+    # network, name `cel-network`, driver bridge), or:
+    #   docker network create cel-network
+    # If it is missing, both stacks fail loudly with "network not found".
+    external: true
+    name: cel-network

@@ -342,3 +342,118 @@ def sample_store(tmp_path):
     store = SampleStore(tmp_path / 'vm_samples.db')
     yield store
     store.close()
+
+
+# --------------------------------------------------------------------------
+# Fake QuestDB
+# --------------------------------------------------------------------------
+
+class FakeQuestDB:
+    """In-memory stand-in reproducing DEDUP UPSERT KEYS: last write wins.
+
+    The contrast with FakeVictoriaMetrics is the entire point of the migration:
+    VM keeps the MAXIMUM value for a duplicated key, QuestDB *replaces* the row.
+    A downward revision therefore lands here and cannot land there.
+
+    ``rows`` is ``{table: {key_tuple: full_row}}``, so a key collision overwrites
+    exactly as the database would. ``inserted`` counts rows sent (including ones
+    that overwrote), letting tests assert on write volume.
+    """
+
+    # Must mirror questdb_schema.sql. A drift here would make the tests pass
+    # against semantics the database does not actually have.
+    DEDUP_KEYS = {
+        'cel_energy': ('ts', 'meter_id', 'direction', 'segment', 'product_code',
+                       'community_id'),
+        'cel_community_energy': ('ts', 'direction', 'segment', 'product_code',
+                                 'community_id'),
+        'cel_ingest_log': None,       # no dedup: every ingestion is an event
+    }
+
+    def __init__(self):
+        self.rows = {}
+        self.inserted = 0
+        self.statements = []
+        self.fail_next_write = False
+        self.committed = 0
+        self.rolled_back = 0
+
+    def execute(self, sql, params):
+        """Apply one INSERT the way QuestDB would."""
+        if self.fail_next_write:
+            self.fail_next_write = False
+            raise RuntimeError('injected QuestDB write failure')
+
+        self.statements.append(sql)
+        table, columns = self._parse_insert(sql)
+        table_rows = self.rows.setdefault(table, {})
+        keys = self.DEDUP_KEYS.get(table)
+
+        for row in params:
+            record = dict(zip(columns, row))
+            if keys is None:
+                # No dedup: append under a synthetic unique key.
+                table_rows[len(table_rows)] = record
+            else:
+                table_rows[tuple(record[k] for k in keys)] = record
+            self.inserted += 1
+
+    @staticmethod
+    def _parse_insert(sql):
+        import re as _re
+        match = _re.match(
+            r'INSERT INTO (\w+) \(([^)]+)\) VALUES', sql.strip())
+        assert match, f"unexpected SQL: {sql}"
+        return match.group(1), [c.strip() for c in match.group(2).split(',')]
+
+    def values(self, table):
+        """{key_tuple: value} for assertions about what the table now holds."""
+        return {k: r['value'] for k, r in self.rows.get(table, {}).items()}
+
+    def total(self, table):
+        from decimal import Decimal
+        return sum((r['value'] for r in self.rows.get(table, {}).values()),
+                   Decimal('0'))
+
+    def row_count(self, table):
+        return len(self.rows.get(table, {}))
+
+
+@pytest.fixture
+def fake_questdb(monkeypatch):
+    """A QuestDBWriter whose psycopg connection is a FakeQuestDB.
+
+    Patches the writer's `_connect` rather than the psycopg module: the SQL and
+    the executemany/commit/rollback flow are still exercised, only the socket is
+    replaced.
+    """
+    import questdb_writer
+
+    fake = FakeQuestDB()
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def executemany(self, sql, params):
+            fake.execute(sql, list(params))
+
+    class FakeConn:
+        closed = False
+
+        def cursor(self):
+            return FakeCursor()
+
+        def commit(self):
+            fake.committed += 1
+
+        def rollback(self):
+            fake.rolled_back += 1
+
+    writer = questdb_writer.QuestDBWriter(dsn='postgresql://fake')
+    monkeypatch.setattr(writer, '_connect', lambda: FakeConn())
+    fake.writer = writer
+    return fake

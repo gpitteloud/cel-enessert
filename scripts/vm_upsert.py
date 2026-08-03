@@ -44,6 +44,7 @@ an older delivery can never clobber a newer one.
 import json
 import logging
 import sqlite3
+import threading
 import urllib.parse
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -83,7 +84,15 @@ class SampleStore:
     def __init__(self, path: Path = DEFAULT_STATE_PATH):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        # check_same_thread=False because the watcher constructs this on the main
+        # thread but flushes a batch from a threading.Timer thread when a delivery
+        # is not followed by another one (i.e. the newest delivery -- which is why
+        # this only ever failed for the last day of a replay, with
+        # "SQLite objects created in a thread can only be used in that same
+        # thread"). Every method holds _lock, so concurrent use is serialised
+        # rather than merely permitted.
+        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._lock = threading.RLock()
         self.conn.executescript(
             """
             PRAGMA journal_mode=WAL;
@@ -103,55 +112,65 @@ class SampleStore:
         self.conn.commit()
 
     def close(self):
-        self.conn.close()
+        with self._lock:
+            self.conn.close()
 
     def series_id(self, metric: Dict[str, str]) -> int:
         key = _labels_key(metric)
-        cur = self.conn.execute(
-            'SELECT series_id FROM series WHERE labels = ?', (key,))
-        row = cur.fetchone()
-        if row:
-            return row[0]
-        cur = self.conn.execute(
-            'INSERT INTO series (labels) VALUES (?)', (key,))
-        return cur.lastrowid
+        with self._lock:
+            cur = self.conn.execute(
+                'SELECT series_id FROM series WHERE labels = ?', (key,))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+            cur = self.conn.execute(
+                'INSERT INTO series (labels) VALUES (?)', (key,))
+            return cur.lastrowid
 
     def existing(self, series_id: int, timestamps: Iterable[int]) -> Dict[int, Tuple[float, str]]:
         """Return {ts: (value, delivery)} for the timestamps already stored."""
         out = {}
         ts_list = list(timestamps)
-        for i in range(0, len(ts_list), 500):     # keep SQL variables bounded
-            chunk = ts_list[i:i + 500]
-            marks = ','.join('?' * len(chunk))
-            rows = self.conn.execute(
-                f'SELECT ts, value, delivery FROM samples '
-                f'WHERE series_id = ? AND ts IN ({marks})',
-                (series_id, *chunk))
-            for ts, value, delivery in rows:
-                out[ts] = (value, delivery)
+        with self._lock:
+            for i in range(0, len(ts_list), 500):     # keep SQL variables bounded
+                chunk = ts_list[i:i + 500]
+                marks = ','.join('?' * len(chunk))
+                rows = self.conn.execute(
+                    f'SELECT ts, value, delivery FROM samples '
+                    f'WHERE series_id = ? AND ts IN ({marks})',
+                    (series_id, *chunk))
+                for ts, value, delivery in rows:
+                    out[ts] = (value, delivery)
         return out
 
     def put(self, series_id: int, ts: int, value: float, delivery: str):
-        self.conn.execute(
-            'INSERT INTO samples (series_id, ts, value, delivery) '
-            'VALUES (?, ?, ?, ?) '
-            'ON CONFLICT(series_id, ts) DO UPDATE SET value = excluded.value, '
-            'delivery = excluded.delivery',
-            (series_id, ts, value, delivery))
+        with self._lock:
+            self.conn.execute(
+                'INSERT INTO samples (series_id, ts, value, delivery) '
+                'VALUES (?, ?, ?, ?) '
+                'ON CONFLICT(series_id, ts) DO UPDATE SET value = excluded.value, '
+                'delivery = excluded.delivery',
+                (series_id, ts, value, delivery))
 
     def all_samples(self, series_id: int) -> List[Tuple[int, float]]:
-        rows = self.conn.execute(
-            'SELECT ts, value FROM samples WHERE series_id = ? ORDER BY ts',
-            (series_id,))
-        return list(rows)
+        with self._lock:
+            rows = self.conn.execute(
+                'SELECT ts, value FROM samples WHERE series_id = ? ORDER BY ts',
+                (series_id,))
+            # Materialised inside the lock: a lazy cursor would be iterated after
+            # release, letting another thread write mid-read.
+            return list(rows)
 
     def labels_for(self, series_id: int) -> Dict[str, str]:
-        row = self.conn.execute(
-            'SELECT labels FROM series WHERE series_id = ?', (series_id,)).fetchone()
+        with self._lock:
+            row = self.conn.execute(
+                'SELECT labels FROM series WHERE series_id = ?',
+                (series_id,)).fetchone()
         return json.loads(row[0]) if row else {}
 
     def commit(self):
-        self.conn.commit()
+        with self._lock:
+            self.conn.commit()
 
 
 def _post_import(points: List[Dict], vm_url: str) -> bool:

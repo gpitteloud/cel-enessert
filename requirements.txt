@@ -10,5 +10,10 @@ pyyaml==6.0.1
 # Optional: Directory watching for automation
 watchdog==4.0.0
 
+# QuestDB over PG-wire (port 8812). The PG-wire path is used instead of ILP
+# because it carries decimal.Decimal natively, which the DECIMAL(12,3) value
+# column depends on -- see MIGRATION_QUESTDB.md.
+psycopg[binary]==3.2.3
+
 # Testing (dev only)
 pytest==8.3.4

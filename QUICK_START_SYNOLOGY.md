@@ -40,72 +40,23 @@ Default configuration should work. Meters are identified automatically from SDAT
 1. Open Portainer: `http://192.168.1.133:9000`
 2. Go to: **Stacks** → **Add stack**
 3. Name: `cel` (must match /volume1/docker/cel directory)
-4. Copy this stack configuration:
+4. Copy the stack configuration:
 
-```yaml
-version: '3.8'
+**Use the stack configuration from [`docker-compose.yml`](docker-compose.yml)** --
+copy that file's contents verbatim into the Portainer editor.
 
-services:
-  victoriametrics:
-    image: victoriametrics/victoria-metrics:latest
-    container_name: cel-victoriametrics
-    restart: unless-stopped
-    ports:
-      - "8428:8428"
-    volumes:
-      - /volume1/docker/cel/victoria-data:/victoria-metrics-data
-    command:
-      - "--storageDataPath=/victoria-metrics-data"
-      - "--httpListenAddr=:8428"
-      - "--retentionPeriod=24"
-    networks:
-      - cel-network
+This guide used to inline its own copy, which silently drifted from the real file
+and is why it is now a pointer: the stale copy was missing
+`--dedup.minScrapeInterval=15m` (without which every 15-min slot is counted 5-7
+times), the `/data/state` mount that `vm_upsert`'s revision store needs, and the
+whole `questdb` service. Deploying it would have quietly reintroduced fixed bugs.
 
-  grafana:
-    image: grafana/grafana:latest
-    container_name: cel-grafana
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    volumes:
-      - /volume1/docker/cel/grafana-data:/var/lib/grafana
-      - /volume1/docker/cel/grafana-provisioning:/etc/grafana/provisioning
-      - /volume1/docker/cel/grafana-dashboards:/var/lib/grafana/dashboards
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    depends_on:
-      - victoriametrics
-    networks:
-      - cel-network
+Two notes when pasting:
 
-  cel-parser:
-    image: python:3.11-slim
-    container_name: cel-parser
-    restart: unless-stopped
-    volumes:
-      - /volume1/ftproot:/data/incoming:ro
-      - /volume1/docker/cel/scripts:/app/scripts
-      - /volume1/docker/cel/config:/app/config
-      - /volume1/docker/cel/logs:/app/logs
-      - /volume1/docker/cel/archive:/data/archive
-    working_dir: /app
-    command: >
-      sh -c "
-        pip install --no-cache-dir requests pyyaml watchdog &&
-        python scripts/watch_ftproot.py
-      "
-    environment:
-      - VICTORIA_METRICS_URL=http://victoriametrics:8428
-    depends_on:
-      - victoriametrics
-    networks:
-      - cel-network
-
-networks:
-  cel-network:
-    driver: bridge
-```
+- There is no `version:` key. Compose v2 ignores it, and the file relies on
+  `condition: service_completed_successfully`, which predates the old 3.x schema.
+- Grafana's admin password is **not** set via environment variables. Set it in
+  Grafana's UI on first login; see the comment in `docker-compose.yml` for why.
 
 5. Click **Deploy the stack**
 6. Wait 2-3 minutes for containers to start
@@ -115,12 +66,17 @@ networks:
 Check containers in Portainer → **Containers**:
 
 - ✅ `cel-victoriametrics` - running
-- ✅ `cel-grafana` - running  
+- ✅ `cel-questdb` - running
+- ✅ `cel-grafana` - running
 - ✅ `cel-parser` - running
+- ⏹️ `cel-questdb-init` - **exited 0**. This one is supposed to stop: it applies
+  and verifies the QuestDB schema, then exits. A non-zero exit means the schema
+  is wrong and `cel-parser` will not start at all -- check its logs before
+  anything else. Do not work around it by starting the parser manually: ingesting
+  into an unverified schema can auto-create a table without DEDUP.
 
 Open Grafana: `http://192.168.1.133:3000`
-- Login: `admin` / `admin`
-- Change password
+- Log in with the admin password you set (the stack does not preset one)
 
 ## 5. Test with FTP (5 minutes)
 

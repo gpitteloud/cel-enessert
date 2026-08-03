@@ -1,0 +1,58 @@
+# Cloudflare Tunnel -- DELIBERATELY a separate stack from docker-compose.yml.
+#
+# It used to live in the main `cel` stack, which created a bootstrap trap: the
+# tunnel is what carries the Portainer session used to redeploy the stack, so
+# every redeploy recreated cloudflared and severed the connection mid-deploy.
+# The symptom was a "502" that looked like a rejected stack definition but was
+# really the gateway dying underneath a still-running deploy.
+#
+# Its lifecycle is genuinely independent -- ingress for Grafana/Portainer/NAS has
+# nothing to do with parsing SDAT files -- so it belongs on its own. Deploy the
+# data stack as often as you like without touching your own access path.
+#
+# Deploy as its OWN Portainer stack, named `cloudflared` (Stacks -> Add stack ->
+# paste this file). Once it is a separate stack, redeploying the `cel` stack never
+# touches it, so Portainer sessions arriving through the tunnel survive.
+#
+# The one deploy you must NOT do through the tunnel is a redeploy of THIS stack --
+# that recreates the container carrying your request. Use the LAN IP
+# (http://192.168.1.133:9000) or SSH for changes to this file only.
+#
+# Prerequisite: the shared `cel-network` must already exist (see the networks
+# block at the bottom).
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tunnel
+    restart: unless-stopped
+    user: root
+    command: tunnel --config /etc/cloudflared/config.yml run grafana
+    volumes:
+      # Unchanged path: the tunnel credentials and config.yml stay where they
+      # are, so no Cloudflare-side reconfiguration is needed.
+      - /volume1/docker/cel/cloudflared:/etc/cloudflared:ro
+    # Required for ingress rules that address the host, e.g. Portainer and DSM
+    # on host.docker.internal:9000 / :5001 -- those are not containers on
+    # cel-network, so they are only reachable via the host gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      # Joins the data stack's network as an EXTERNAL network so ingress rules
+      # written as `http://grafana:3000` keep resolving by container name. Both
+      # addressing styles therefore still work, whichever config.yml uses:
+      # container DNS (grafana:3000) and host gateway (host.docker.internal:3000).
+      - cel-network
+
+networks:
+  cel-network:
+    # Same external, explicitly-named network the cel stack attaches to. Neither
+    # stack creates or owns it -- create it once, out of band:
+    #   docker network create cel-network
+    # (or Portainer -> Networks -> Add network, driver bridge)
+    #
+    # This is what decouples the two stacks: the cel stack can be redeployed or
+    # removed entirely without disturbing the network cloudflared sits on, so the
+    # tunnel stays up and your Portainer session survives.
+    external: true
+    name: cel-network

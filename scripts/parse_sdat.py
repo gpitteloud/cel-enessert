@@ -40,11 +40,33 @@ def parse_sdat(xml_file: Path, meter_mappings: dict = None,
     """
     xml_file = Path(xml_file)
     try:
-        root = ET.parse(xml_file).getroot()
-    except ET.ParseError as e:
-        logger.error(f"{xml_file.name}: XML parse error: {e}")
+        data = xml_file.read_bytes()
+    except OSError as e:
+        logger.error(f"{xml_file.name}: cannot read: {e}")
         return None
+    return parse_sdat_bytes(
+        data, xml_file.name, meter_mappings=meter_mappings,
+        physical_production_meters=physical_production_meters)
 
+
+def parse_sdat_bytes(data: bytes, name: str, meter_mappings: dict = None,
+                     physical_production_meters: set = None) -> ParseResult:
+    """Same as parse_sdat, but from bytes already in memory.
+
+    Exists so the archive replay (questdb_replay.py) can parse zip members
+    without extracting them to disk. `name` is only used for log messages.
+    Keeping the E66/E31 dispatch here means replay routes documents exactly the
+    way live ingestion does -- a second copy of this logic could drift.
+    """
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as e:
+        logger.error(f"{name}: XML parse error: {e}")
+        return None
+    return _dispatch(root, name, meter_mappings, physical_production_meters)
+
+
+def _dispatch(root, name: str, meter_mappings, physical_production_meters):
     doc_type_elem = root.find(_DOC_TYPE_PATH)
     doc_type = doc_type_elem.text if doc_type_elem is not None else None
 
@@ -54,6 +76,6 @@ def parse_sdat(xml_file: Path, meter_mappings: dict = None,
     elif doc_type == 'E31':
         return parse_e31(root)
     else:
-        logger.error(f"{xml_file.name}: unsupported or missing DocumentType "
+        logger.error(f"{name}: unsupported or missing DocumentType "
                      f"(ebIXCode={doc_type!r})")
         return None

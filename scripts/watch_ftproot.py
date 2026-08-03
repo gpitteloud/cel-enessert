@@ -52,6 +52,7 @@ from parse_sdat import parse_sdat
 from parse_sdat_e66_individual import transform_to_datapoints
 from parse_sdat_e31_aggregated import transform_e31_to_datapoints
 from vm_upsert import SampleStore, upsert
+from questdb_writer import DEFAULT_DSN as QUESTDB_DEFAULT_DSN, QuestDBWriter
 from discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
 import yaml
 
@@ -113,6 +114,21 @@ class SDATFileHandler(FileSystemEventHandler):
             Path(self.api_config.get('processing', {}).get(
                 'state_db', '/data/state/vm_samples.db')))
         logger.info(f"Sample store: {self.sample_store.path}")
+
+        # QuestDB: migration target (see MIGRATION_QUESTDB.md). While both are
+        # enabled every file is written to VM and QuestDB, so the two can be
+        # compared on real data before VM is retired. QuestDB needs no local
+        # state -- DEDUP UPSERT KEYS makes the last write win in the database.
+        questdb_config = self.api_config.get('questdb', {})
+        self.questdb_enabled = bool(questdb_config.get('enabled', False))
+        self.questdb_required = bool(questdb_config.get('required', False))
+        self.questdb = None
+        if self.questdb_enabled:
+            self.questdb = QuestDBWriter(
+                questdb_config.get('dsn') or QUESTDB_DEFAULT_DSN)
+            logger.info(f"QuestDB writes ENABLED (required={self.questdb_required})")
+        else:
+            logger.info("QuestDB writes disabled")
 
         # Auto-discover meter mappings (virtual -> physical)
         # Tries to load from cache first, discovers if cache missing/stale
@@ -265,15 +281,7 @@ class SDATFileHandler(FileSystemEventHandler):
 
             # Ensure file is complete (wait if still being written)
             # This handles the case where batch timer expires while a file is still uploading
-            max_wait = 5
-            for i in range(max_wait):
-                try:
-                    last_size = file_path.stat().st_size
-                    time.sleep(1)
-                    if file_path.stat().st_size == last_size:
-                        break  # File size stable, upload complete
-                except:
-                    break  # File issues, will error during processing
+            wait_until_stable(file_path)
 
             # Acquire processing lock
             self.processing.add(str(file_path))
@@ -321,6 +329,42 @@ class SDATFileHandler(FileSystemEventHandler):
         # This prevents duplicate processing when FTP triggers both created and modified events
         pass
 
+    def _write_questdb(self, parsed_data, file_path: Path, delivery: str,
+                       attributed_meter_id) -> bool:
+        """Write one parsed document to QuestDB. Returns True if it FAILED.
+
+        While migrating, `questdb.required: false` keeps a QuestDB outage from
+        failing files that VictoriaMetrics already accepted -- the file would be
+        retried and re-sent to VM, which is harmless but noisy. Once QuestDB is
+        the system of record, set `required: true` so a failure marks the file
+        FAILED and it is retried rather than silently lost.
+        """
+        if not self.questdb:
+            return False
+
+        try:
+            if parsed_data.document_type == 'E31':
+                rows = self.questdb.write_e31(parsed_data)
+            else:
+                rows = self.questdb.write_e66(
+                    parsed_data, attributed_meter_id=attributed_meter_id)
+
+            logger.info(f"QuestDB: wrote {rows} rows from {file_path.name}")
+            self.questdb.log_ingest(
+                delivery=delivery, file_name=file_path.name,
+                document_type=parsed_data.document_type,
+                rows_written=rows, outcome='ingested')
+            return False
+
+        except Exception as e:
+            logger.error(f"QuestDB write failed for {file_path.name}: {e}",
+                         exc_info=True)
+            self.questdb.log_ingest(
+                delivery=delivery, file_name=file_path.name,
+                document_type=parsed_data.document_type,
+                rows_written=0, outcome='failed')
+            return self.questdb_required
+
     def process_file(self, file_path: Path) -> FileOutcome:
         """Process a single XML file (E66 or E31)
 
@@ -358,13 +402,16 @@ class SDATFileHandler(FileSystemEventHandler):
                 logger.warning(f"No data found in {parsed_data.document_type} file {file_path.name}")
                 return FileOutcome.FAILED
 
+            # Set on the E66 path only; also passed to the QuestDB writer below,
+            # so it must be bound for every document type.
+            attributed_meter_id = None
+
             if parsed_data.document_type == 'E31':
                 # Community aggregate
                 data_points = transform_e31_to_datapoints(parsed_data)
 
             elif parsed_data.document_type == 'E66':
                 # Individual meter. Resolve production breakdown attribution.
-                attributed_meter_id = None
                 if parsed_data.is_production_breakdown:
                     attributed_meter = parsed_data.attributed_physical_meter
 
@@ -411,7 +458,13 @@ class SDATFileHandler(FileSystemEventHandler):
 
             stats = upsert(data_points, vm_url, delivery, self.sample_store)
 
-            if stats['failed'] == 0:
+            # QuestDB, from the same parsed document (not from data_points: those
+            # are VM's float-valued NDJSON, and the whole point of the DECIMAL
+            # column is to keep the provider's exact Decimal).
+            questdb_failed = self._write_questdb(
+                parsed_data, file_path, delivery, attributed_meter_id)
+
+            if stats['failed'] == 0 and not questdb_failed:
                 logger.info(
                     f"Successfully processed {file_path.name} "
                     f"(new={stats['new']}, unchanged={stats['unchanged']}, "
@@ -421,7 +474,8 @@ class SDATFileHandler(FileSystemEventHandler):
                 return FileOutcome.INGESTED
             else:
                 logger.error(f"Failed to process {file_path.name} "
-                             f"({stats['failed']} errors)")
+                             f"({stats['failed']} VM errors, "
+                             f"questdb_failed={questdb_failed})")
                 return FileOutcome.FAILED
 
         except Exception as e:
@@ -509,6 +563,54 @@ class SDATFileHandler(FileSystemEventHandler):
 
         except Exception as e:
             logger.error(f"Failed to archive {file_path.name}: {e}", exc_info=True)
+
+
+def wait_until_stable(file_path: Path, quiet_seconds: float = 2.0,
+                      timeout: float = 5.0, interval: float = 0.2) -> bool:
+    """Wait until `file_path` has stopped growing. True if it looks complete.
+
+    Guards against parsing a half-uploaded file when the batch timer fires
+    mid-transfer. Returns immediately for a file untouched for `quiet_seconds`,
+    which is every file during an archive replay -- the previous version slept a
+    full second per file unconditionally, which cost ~2.7 hours over a ~9,700
+    file replay before a single byte was parsed.
+
+    Cheap is not the same as weaker here. The old check compared two sizes one
+    second apart and accepted the file if they matched, so an upload that paused
+    for a second between chunks passed. This requires `quiet_seconds` of no
+    modification at all, then still confirms the size is unchanged.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stat = file_path.stat()
+        except OSError:
+            # Vanished or unreadable; process_file() reports the real error.
+            return False
+
+        # time.time(), not time.monotonic(): st_mtime is epoch-based, and
+        # monotonic has an arbitrary origin. Mixing them made this comparison
+        # never true, so every file fell through to the timeout below.
+        if time.time() - stat.st_mtime >= quiet_seconds:
+            return True
+
+        if time.monotonic() >= deadline:
+            # Still being written, or the clock disagrees with the filesystem
+            # (NFS/FTP timestamp skew). Fall back to the size comparison so a
+            # skewed mtime can't block ingestion forever.
+            size = stat.st_size
+            time.sleep(interval)
+            try:
+                if file_path.stat().st_size == size:
+                    return True
+            except OSError:
+                return False
+            logger.warning(
+                f"{file_path.name} still growing after {timeout:.0f}s, "
+                f"processing anyway")
+            return False
+
+        time.sleep(interval)
 
 
 def cleanup_duplicates(watch_dir: Path, processed_files: set):
