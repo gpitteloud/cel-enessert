@@ -340,6 +340,215 @@ def test_ingest_log_failure_is_swallowed(fake_questdb):
 
 
 # --------------------------------------------------------------------------
+# A connection the server dropped
+# --------------------------------------------------------------------------
+#
+# Observed in production 2026-08-03: an E31 delivery failed with
+#
+#   psycopg.OperationalError: consuming input failed: server closed the
+#   connection unexpectedly
+#     ... during handling of the above exception, another exception occurred:
+#   questdb_writer.py:169 in write -> conn.rollback()
+#   psycopg.OperationalError: the connection is lost
+#
+# Two separate defects. (1) This writer holds ONE connection for the life of the
+# parser, which runs for weeks and writes in a burst once a day; the socket idles
+# ~24h and gets dropped, but psycopg's `closed` only reflects a client-side close
+# so _connect() handed the dead connection straight back. (2) The handler's
+# unconditional rollback() raised a *second* error on the dead socket, which
+# became the headline in the log and buried the actual cause.
+
+
+class DroppedConnectionError(Exception):
+    """Stands in for psycopg.OperationalError, which is not installed here.
+
+    Matched by class NAME (see questdb_writer.CONNECTION_ERROR_NAMES), because
+    psycopg is pip-installed in the container and absent in this environment.
+    Renamed below so the retry path is reachable in a test.
+    """
+
+
+# Assigned here, not as `__name__ = ...` in the class body: type.__name__ is a
+# data descriptor on the metaclass, so it wins over a class-dict entry and the
+# in-body form would leave type(exc).__name__ reading 'DroppedConnectionError'.
+DroppedConnectionError.__name__ = 'OperationalError'
+
+
+class FlakyConn:
+    """A connection that fails while `budget` has failures left, then works.
+
+    `budget` is a one-element list shared by every connection the fixture opens,
+    so poison(2) means "the next two executemany calls fail" regardless of which
+    connection serves them. Per-connection counters would make poison(2)
+    indistinguishable from poison(1): the retry runs on a *fresh* connection.
+
+    rollback() always raises, reproducing the second exception from the log: the
+    real failure mode is that you cannot roll back a connection that is gone.
+    """
+
+    def __init__(self, budget, fake):
+        self.budget = budget
+        self.fake = fake
+        self.closed = False
+        self.rollbacks_attempted = 0
+        self.close_calls = 0
+
+    def cursor(self):
+        conn = self
+
+        class Cursor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def executemany(self, sql, params):
+                if conn.budget[0] > 0:
+                    conn.budget[0] -= 1
+                    raise DroppedConnectionError(
+                        'consuming input failed: server closed the connection '
+                        'unexpectedly')
+                conn.fake.execute(sql, list(params))
+
+        return Cursor()
+
+    def commit(self):
+        self.fake.committed += 1
+
+    def rollback(self):
+        self.rollbacks_attempted += 1
+        raise DroppedConnectionError('the connection is lost')
+
+    def close(self):
+        self.close_calls += 1
+        self.closed = True
+
+
+@pytest.fixture
+def flaky_questdb(monkeypatch):
+    """A writer whose connections drop, tracking how many were opened.
+
+    Unlike `fake_questdb` this patches psycopg.connect-equivalent behaviour, so
+    the caching in _connect() is exercised rather than bypassed -- the bug was in
+    that caching.
+    """
+    fake = FakeQuestDB()
+    writer = questdb_writer.QuestDBWriter(dsn='postgresql://fake')
+    opened = []
+    budget = [0]
+
+    def _connect():
+        # Mirrors the real _connect(), including the `closed` check that is
+        # exactly what fails to notice a server-side drop.
+        if writer._conn is None or writer._conn.closed:
+            writer._conn = FlakyConn(budget, fake)
+            opened.append(writer._conn)
+        return writer._conn
+
+    monkeypatch.setattr(writer, '_connect', _connect)
+    fake.writer = writer
+    fake.opened = opened
+    fake.poison = lambda n=1: budget.__setitem__(0, n)
+    return fake
+
+
+def test_dropped_connection_is_replaced_and_the_write_lands(flaky_questdb):
+    """The exact production failure: rows must still reach QuestDB."""
+    flaky_questdb.poison(1)
+    written = flaky_questdb.writer.write_e66(e66([(TS, '1.000')]))
+
+    assert written == 1
+    assert flaky_questdb.row_count('cel_energy') == 1
+    assert len(flaky_questdb.opened) == 2, 'should have reconnected'
+    assert flaky_questdb.committed == 1
+
+
+def test_the_dead_connection_is_not_reused(flaky_questdb):
+    """_discard() must clear the cache; `closed` alone never would.
+
+    Without it the retry re-fetches the same dead connection and fails again --
+    and every subsequent delivery keeps failing until the parser restarts, which
+    is why one bad night silenced a whole day.
+    """
+    flaky_questdb.poison(1)
+    flaky_questdb.writer.write_e66(e66([(TS, '1.000')]))
+    dead = flaky_questdb.opened[0]
+
+    assert dead.close_calls == 1
+    assert flaky_questdb.writer._conn is flaky_questdb.opened[1]
+    assert flaky_questdb.writer._conn is not dead
+
+
+def test_failing_rollback_does_not_mask_the_original_error(flaky_questdb):
+    """The log must name the cause, not the failed cleanup.
+
+    Both connections drop, so the retry is exhausted and write() raises. The
+    exception that escapes must be the server-closed-the-connection one; before
+    the fix, rollback()'s "the connection is lost" replaced it.
+    """
+    flaky_questdb.poison(2)
+    with pytest.raises(DroppedConnectionError) as exc:
+        flaky_questdb.writer.write_e66(e66([(TS, '1.000')]))
+
+    assert 'server closed the connection' in str(exc.value)
+    assert 'the connection is lost' not in str(exc.value)
+    assert flaky_questdb.opened[-1].rollbacks_attempted == 1, (
+        'rollback should still be attempted, just not allowed to raise')
+
+
+def test_retry_happens_once_not_forever(flaky_questdb):
+    """One retry. A down QuestDB must fail the file, not spin on it."""
+    flaky_questdb.poison(5)
+    with pytest.raises(DroppedConnectionError):
+        flaky_questdb.writer.write_e66(e66([(TS, '1.000')]))
+
+    assert len(flaky_questdb.opened) == 2
+    assert flaky_questdb.row_count('cel_energy') == 0
+
+
+def test_a_query_error_is_not_retried(flaky_questdb):
+    """Only connection errors are transient.
+
+    A bad column or a type violation fails identically on retry, so retrying it
+    only doubles the log noise and hides that the error is deterministic.
+    """
+    flaky_questdb.writer.write_e66(e66([(TS, '1.000')]))   # opens conn #1
+    flaky_questdb.fail_next_write = True                   # RuntimeError, not OperationalError
+    with pytest.raises(RuntimeError, match='injected'):
+        flaky_questdb.writer.write_e66(e66([(TS2, '2.000')]))
+
+    assert len(flaky_questdb.opened) == 1, 'must not reconnect'
+
+
+def test_retried_write_does_not_duplicate_rows(flaky_questdb):
+    """The retry is only safe because the INSERT is idempotent.
+
+    If the commit actually landed before the ack was lost, the retry re-sends the
+    same rows -- and DEDUP UPSERT KEYS collapses them. Asserting on the resulting
+    table rather than on the write count is the point: 2x the inserts, 1x the row.
+    """
+    flaky_questdb.poison(1)
+    flaky_questdb.writer.write_e66(e66([(TS, '1.000'), (TS2, '2.000')]))
+    flaky_questdb.writer.write_e66(e66([(TS, '1.000'), (TS2, '2.000')]))
+
+    assert flaky_questdb.row_count('cel_energy') == 2
+    assert flaky_questdb.total('cel_energy') == Decimal('3.000')
+
+
+def test_is_connection_error_classifies_by_name():
+    """Guards the name-matching against a rename in questdb_writer."""
+    assert questdb_writer.is_connection_error(DroppedConnectionError('x'))
+    assert not questdb_writer.is_connection_error(RuntimeError('x'))
+    assert not questdb_writer.is_connection_error(TypeError('x'))
+
+    class Subclass(DroppedConnectionError):
+        """A driver's subclass must still be recognised, via the MRO."""
+
+    assert questdb_writer.is_connection_error(Subclass('x'))
+
+
+# --------------------------------------------------------------------------
 # Golden test over real overlapping deliveries
 # --------------------------------------------------------------------------
 

@@ -131,6 +131,24 @@ def validate_rows(rows: Sequence[tuple], columns: Sequence[str]) -> List[tuple]:
     return checked
 
 
+# Exception class names that mean "the connection is unusable", as opposed to
+# "the query was bad". Matched by name across the MRO rather than with
+# isinstance(psycopg.OperationalError, ...) because psycopg is an optional
+# runtime dependency here -- it is pip-installed in the container and absent in
+# the dev/test environment, which is also why _connect() imports it lazily. A
+# name check keeps the retry logic testable without the driver.
+#
+# Deliberately NOT including ProgrammingError/DataError: those are deterministic,
+# so retrying them just produces the same failure twice and doubles the log noise.
+CONNECTION_ERROR_NAMES = frozenset({'OperationalError', 'InterfaceError'})
+
+
+def is_connection_error(exc: BaseException) -> bool:
+    """True if `exc` means the socket is gone, so a reconnect could help."""
+    return any(cls.__name__ in CONNECTION_ERROR_NAMES
+               for cls in type(exc).__mro__)
+
+
 class QuestDBWriter:
     """Thin INSERT wrapper holding one connection for the process lifetime."""
 
@@ -148,6 +166,48 @@ class QuestDBWriter:
         if self._conn is not None and not self._conn.closed:
             self._conn.close()
 
+    def _discard(self) -> None:
+        """Drop the cached connection so the next _connect() opens a fresh one.
+
+        `closed` is only set by a *client-side* close, so a connection the server
+        dropped still reports closed == False and _connect() would hand it back.
+        close() on a dead socket can itself raise, hence the guard.
+        """
+        conn, self._conn = self._conn, None
+        if conn is None:
+            return
+        try:
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Ignoring error closing a dead connection: {e}")
+
+    @staticmethod
+    def _safe_rollback(conn) -> None:
+        """Roll back without letting the attempt mask the real error.
+
+        When the server has closed the socket, rollback() raises
+        "the connection is lost" from inside the original exception's handler --
+        so the log shows that as the headline error and the actual cause
+        ("server closed the connection unexpectedly") only as a chained note.
+        The rollback is a courtesy anyway: a dropped connection has already
+        discarded its transaction server-side.
+        """
+        try:
+            conn.rollback()
+        except Exception as e:
+            logger.debug(f"Rollback on a broken connection failed: {e}")
+
+    def _execute(self, sql: str, rows: Sequence[tuple]) -> int:
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.executemany(sql, rows)
+            conn.commit()
+        except Exception:
+            self._safe_rollback(conn)
+            raise
+        return len(rows)
+
     def write(self, table: str, columns: Sequence[str],
               rows: Sequence[tuple]) -> int:
         """Insert rows; DEDUP UPSERT KEYS makes the last write win.
@@ -155,20 +215,35 @@ class QuestDBWriter:
         Returns the number of rows sent. Raises on failure so the caller can mark
         the file FAILED and retry it. Unlike the VM path there is no
         partially-applied state to repair: the insert is one transaction.
+
+        Retries ONCE on a dead connection. This writer holds one connection for
+        the life of the parser, which runs for weeks and writes in a burst once a
+        day -- so the socket idles ~24h between uses and gets dropped by a QuestDB
+        restart or by whatever reaps idle TCP in between. The failure surfaces on
+        the next executemany, i.e. on a real delivery.
+
+        The retry is safe because the insert is idempotent: it either never
+        committed (the transaction died with the connection) or it committed and
+        DEDUP UPSERT KEYS makes re-sending the same rows a no-op. cel_ingest_log
+        has no dedup, so the narrow case of "commit landed but the ack was lost"
+        can leave a duplicate log event there -- an extra provenance row, which is
+        preferable to losing the data the row describes.
         """
         rows = validate_rows(rows, columns)
         if not rows:
             return 0
 
-        conn = self._connect()
+        sql = insert_sql(table, columns)
         try:
-            with conn.cursor() as cur:
-                cur.executemany(insert_sql(table, columns), rows)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        return len(rows)
+            return self._execute(sql, rows)
+        except Exception as e:
+            if not is_connection_error(e):
+                raise
+            logger.warning(
+                f"QuestDB connection lost ({e}); reconnecting and retrying "
+                f"{len(rows)} rows into {table}")
+            self._discard()
+            return self._execute(sql, rows)
 
     def write_e66(self, parsed, attributed_meter_id: Optional[str] = None) -> int:
         return self.write(E66_TABLE, E66_COLUMNS,
