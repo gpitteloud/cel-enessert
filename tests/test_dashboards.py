@@ -46,6 +46,11 @@ def by_name_overrides(panel):
             if o.get('matcher', {}).get('id') == 'byName']
 
 
+def by_frame_ref_id_overrides(panel):
+    return [o for o in panel.get('fieldConfig', {}).get('overrides', [])
+            if o.get('matcher', {}).get('id') == 'byFrameRefID']
+
+
 @pytest.fixture(params=ALL_DASHBOARDS)
 def dashboard(request):
     return request.param, load(request.param)
@@ -81,14 +86,39 @@ def test_every_byname_override_matches_a_real_series(dashboard):
     assert not dead, 'dead byName overrides:\n' + '\n'.join(dead)
 
 
-def test_no_duplicate_override_for_one_series(dashboard):
-    """Two overrides on the same series: the later silently wins."""
+def test_every_frame_ref_id_override_matches_a_real_target(dashboard):
+    """A byFrameRefID override pointing at no target is dead, exactly as byName is.
+
+    The QuestDB ports match this way because the plugin prefixes each frame with
+    its refId, so byName has nothing to match. Same silent failure, different
+    matcher -- a typo'd refId costs the panel its colours and its legend names.
+    """
     name, data = dashboard
     for panel in data['panels']:
-        targeted = [o['matcher']['options'] for o in by_name_overrides(panel)]
-        assert len(targeted) == len(set(targeted)), (
-            f"{name} panel {panel['id']}: duplicate overrides for "
-            f"{[n for n in targeted if targeted.count(n) > 1]}")
+        refs = {t.get('refId') for t in panel.get('targets', [])}
+        for override in by_frame_ref_id_overrides(panel):
+            assert override['matcher']['options'] in refs, (
+                f"{name} panel {panel['id']} ({panel.get('title')}): override "
+                f"for refId {override['matcher']['options']!r} matches none of "
+                f"{sorted(r for r in refs if r)}")
+
+
+def test_no_duplicate_override_for_one_series(dashboard):
+    """Two overrides on the same series: the later silently wins.
+
+    Checked per matcher kind: a byName and a byFrameRefID override may
+    legitimately carry the same string, since one names a series and the other a
+    refId.
+    """
+    name, data = dashboard
+    for panel in data['panels']:
+        for kind, overrides in (('byName', by_name_overrides(panel)),
+                                ('byFrameRefID',
+                                 by_frame_ref_id_overrides(panel))):
+            targeted = [o['matcher']['options'] for o in overrides]
+            assert len(targeted) == len(set(targeted)), (
+                f"{name} panel {panel['id']}: duplicate {kind} overrides for "
+                f"{[n for n in targeted if targeted.count(n) > 1]}")
 
 
 def test_panel_ids_are_unique(dashboard):

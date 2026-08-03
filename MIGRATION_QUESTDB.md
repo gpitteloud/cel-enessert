@@ -1,10 +1,10 @@
 # Migration: VictoriaMetrics → QuestDB
 
-Status: **phases 0-3 done and deployed** -- the schema is live on the NAS and
-verified by `questdb_init.py`. Phase 4 tooling (`scripts/questdb_replay.py`) is
-written and tested but has not been run against the real archive yet.
-`questdb.enabled` is still `false` in `config/api_config.yaml`, so live ingestion
-does not write to QuestDB and VM remains the system of record. Phase table below.
+Status: **phases 0-5 done** -- the schema is live on the NAS, the archive has been
+replayed, `questdb.enabled` is `true` there (still `false` in the repo copy of
+`config/api_config.yaml`, so do not deploy that file over it), and both
+dashboards are fully converted to SQL. VM remains the system of record until
+Phase 6 validates the two against each other. Phase table below.
 
 ## Why
 
@@ -191,9 +191,8 @@ def write(data_points, dsn, table) -> Dict[str, int]:
 
 ## Phases
 
-Status as of 2026-08-01: phases 0-3 complete and deployed (schema live and
-verified on the NAS); Phase 4 tooling written and tested (109 tests passing) but
-not yet run against the real archive; 5-7 open.
+Status as of 2026-08-03: phases 0-5 complete (197 tests passing). The archive has
+been replayed and dual-write is live on the NAS; 6-7 open.
 
 | # | Work | Deliverable | Status |
 |---|---|---|---|
@@ -201,8 +200,8 @@ not yet run against the real archive; 5-7 open.
 | 1 | Schema + idempotent init | `scripts/questdb_schema.sql`, `scripts/questdb_init.py` | done |
 | 2 | Writer; `Decimal`-valued observations; watcher writes to QuestDB **and** VM behind a config flag | `scripts/questdb_writer.py`, `watch_ftproot.py`, `config/api_config.yaml` | done (flag off) |
 | 3 | Port the test suite to LWW semantics | `tests/test_questdb_writer.py`, `tests/conftest.py` | done (28 new, 99 total) |
-| 4 | Replay all archived XML **sorted by delivery prefix** | `scripts/questdb_replay.py` | ready to run |
-| 5 | Convert 27 dashboard expressions to SQL | `grafana-dashboards/*.json` | open |
+| 4 | Replay all archived XML **sorted by delivery prefix** | — (ran via the watcher; `questdb_replay.py` since removed) | done |
+| 5 | Convert 27 dashboard expressions to SQL | `grafana-dashboards/*-questdb.json` | done (22 panels, 27 expressions) |
 | 6 | Validate QuestDB vs VM day-by-day | — | open |
 | 7 | Remove VM, `vm_upsert.py`, `send_to_victoriametrics.py`, VM datasource | — | open |
 
@@ -231,14 +230,50 @@ the upsert key. Port from `tests/test_vm_upsert.py` (21 tests):
 Drop as obsolete: `stale`/out-of-order refusal, `selector_for` escaping, the
 delete-then-rewrite paths, `fail_next_delete`, store-survives-reopen.
 
-### Phase 5 — dashboard conversion
+### Phase 5 — dashboard conversion (done)
 
-27 expressions (9 in `cel_energy_overview.json`, 18 in
-`grafana-dashboard-e31-v2.json`). Datasource: the official plugin is
-`questdb-questdb-datasource` — **v0.1.8, pre-1.0, signed `commercial`**. Fallback
-is Grafana's built-in Postgres datasource on port 8812, which the QuestDB docs
-say works but configures differently. **Convert one panel before the other 26**
-so the plugin decision is settled while VM is still live and comparable.
+27 expressions across 22 panels (9/7 in `cel_energy_overview.json`, 18/15 in
+`grafana-dashboard-e31-v2.json`), ported to `*-questdb.json` alongside the
+originals. Datasource: the official plugin is `questdb-questdb-datasource` —
+**v0.1.8, pre-1.0, signed `commercial`**. Fallback is Grafana's built-in Postgres
+datasource on port 8812, which the QuestDB docs say works but configures
+differently.
+
+`tests/test_dashboards_questdb.py` pins the ports against their originals panel
+by panel (only `datasource`, `targets`, `fieldConfig.overrides` and `description`
+may differ), so a Phase 6 side-by-side difference can only come from the data.
+`tests/test_dashboards.py` covers all four dashboards for defects Grafana does not
+report.
+
+#### Plugin constraints that cost real debugging time
+
+Four traps, each of which fails **silently** — no error in the panel, nothing in
+the Grafana log:
+
+1. **`format` is a numeric enum**, not a string. `src/types.ts`:
+   `Format { TIMESERIES = 0, TABLE = 1, AUTO = 2 }`, and `QuestDBSQLQuery`
+   requires both `format` and `selectedFormat`. Writing `"time_series"` (the
+   Prometheus/Postgres spelling) maps to no member and the panel renders "No
+   data". There is **no `editorMode` field**, and `meta` accepts only
+   `{timezone, builderOptions}` — park anything else at the top level.
+2. **No `DECIMAL` converter.** `pkg/converters/converters.go` maps exactly
+   `BOOL`, `INT2`, `FLOAT4`, `FLOAT8`, `TIMESTAMP`, `TIMESTAMP_NS`, by exact
+   string equality with no pattern fallback; `GetConverter` returns an empty
+   `sqlutil.Converter{}` otherwise, so the column arrives as a **string** and the
+   panel says "Data is missing a number field". Wrap the output column in
+   `cast(... AS DOUBLE)` — the **outer** expression only, so the inner sum stays
+   exact. `LONG`/`INT8` is not in the list either, so `count()` needs the same
+   treatment.
+3. **Frames are named by refId.** The plugin sets `frame.Name = refId`, and
+   Grafana prefixes the frame name when a panel has more than one frame — so a
+   two-target panel legends as "A From CEL". Worse, that prefix breaks every
+   `byName` field override, which then matches nothing and is ignored, dropping
+   the panel's colours. Use `byFrameRefID` overrides carrying both `displayName`
+   and `color`. Apply it even to single-target panels: `byName` works there until
+   a second target is added.
+4. **Gauges need `format: TABLE`** and a query that returns one row. A bucketed
+   query hands the gauge a series it reduces with `lastNotNull`, reporting the
+   newest bucket instead of the range total.
 
 The `avg_over_time(...[$__interval:15m]) * 4` idiom exists only to turn 15-min
 kWh into kW under PromQL's model. Note `sum(value) * 4` is **wrong** for a bucket
@@ -262,18 +297,49 @@ Self-consumption ratios lose `increase()`, which was always an odd fit for a
 gauge:
 
 ```sql
-SELECT 100 * sum(CASE WHEN segment = 'cel'  THEN value ELSE 0m END)
-           / sum(CASE WHEN segment IN ('cel','grid') THEN value ELSE 0m END) AS pct
+SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)
+           / cast(sum(value) AS DOUBLE) AS "CEL % of Consumption"
 FROM cel_energy
-WHERE $__timeFilter(ts) AND direction = 'consumption';
+WHERE $__timeFilter(ts) AND direction = 'consumption'
+  AND segment in ('cel', 'grid');
 ```
 
+**This is a deliberate behaviour change, not a translation.** `increase()` treats
+its input as a counter, but `cel_energy_kwh` is kWh-per-15-min-slot and falls as
+well as rises, so every decrease read as a counter reset and the VM gauges
+computed their ratio from accumulated positive deltas rather than from the
+totals. The four gauges (overview 5-6, E31 4-5) will therefore **disagree with
+their VM counterparts** — expected, and not a Phase 6 finding. `case when ... then
+value end` with no `else` yields NULL, which `sum()` skips, so no `0m` literal is
+needed.
+
+Three further notes on the port, each flagged in the panel descriptions too:
+
+- **E31 keys off `segment`, not `product_code`.** Same distinction, but under the
+  name the parser stores, so it survives a provider-side encoding change (see
+  `classify_metric_type` in `models.py`). The mapping is
+  `2404050010123 → cel`, `2404050010124 → grid`, `8716867000030 → total`.
+- **Panel 15's difference is one `UNION ALL`** with the E66 side negated, so a
+  single `sum()` per slot gives `E31 - Sum(E66)`. `UNION ALL` drops the designated
+  timestamp that `SAMPLE BY` needs, so the subquery re-declares it with
+  `ORDER BY ts` + `timestamp(ts)`.
+- **Panels 13-15 read both tables on purpose** — comparing them is the point.
+  Everywhere else that would double-count, since `cel_community_energy` already
+  contains what `cel_energy` sums to; `test_queries_target_the_right_table` holds
+  an explicit `(panel, refId)` allow-list.
+
 Plugin macros are `$__timeFilter(col)`, `$__sampleByInterval`, `$__fromTime` /
-`$__toTime`, and `$__conditionalAll(cond, $var)` — the last one replaces the
-`meter_id=~".*${meter_id}"` regex idiom and handles the "All" case properly.
-There is **no** `$__interval` macro on this datasource (that is Grafana/Prometheus
-naming); the Postgres fallback has a different set again, so macros must be
-revisited if you switch datasources.
+`$__toTime`, and `$__conditionalAll(cond, $var)`. There is **no** `$__interval`
+macro on this datasource (that is Grafana/Prometheus naming); the Postgres
+fallback has a different set again, so macros must be revisited if you switch
+datasources.
+
+The overview's `meter_id=~".*${meter_id}"` regex became
+`meter_id LIKE '%$meter_id'`, matching the variable's 8-char suffix against the
+full ID as the original did. `$__conditionalAll` is the better fit **if** the
+variable is ever set to `includeAll` — it is not today (`includeAll: false`,
+single-select), so `LIKE` matches the current behaviour exactly. Switch to
+`$__conditionalAll` at the same time as enabling "All", not before.
 
 Bonus: `toolbox/diagnose_validation_gap.py` (a ~500-line Python E66-vs-E31
 reconciliation) becomes a SQL join and can move into a dashboard panel.
@@ -285,6 +351,19 @@ max-dedup inflation being removed: it is the **success signal, not a bug**.
 Confirm per day over 20260430-20260727, and check the known anomalies survive
 (meter `0046782G` producing 0.0 from 2026-06-23; `0858140M` zero on 82/84 days).
 Rewrite `scripts/validate_daily_balance_vm.py` as the QuestDB equivalent.
+
+Compare **energy panels only**. The four gauges (overview 5-6, E31 4-5) are
+expected to disagree by much more than 1.15%, because dropping `increase()` was a
+correction rather than a translation — see Phase 5. Comparing them would produce a
+large difference that has nothing to do with dedup and would obscure the signal
+being measured.
+
+One known gap to check first: `20260803_094734_...E31....xml` failed its QuestDB
+write (a dropped connection, since fixed in `questdb_writer.py`) while VM accepted
+it. With `questdb.required: false` it was logged, archived, and not retried, and
+its `cel_ingest_log` row is missing too — the failed-outcome write used the same
+dead connection. The provider's overlapping 5-day deliveries should re-cover those
+slots, so verify rather than assume.
 
 ## Security
 
@@ -302,9 +381,16 @@ until Phase 7 — deployed and working, not deleted on plan.
 ## Open items
 
 - `questdb` Python client: does `Sender.row()` accept `decimal.Decimal`, or is
-  the string-cast route required? (Phase 2 — moot if we take the PG-wire path)
-- Grafana plugin v0.1.8 viability vs the Postgres datasource fallback (Phase 5)
+  the string-cast route required? (Phase 2 — moot, we took the PG-wire path)
 - Does any source file ever carry more than 3 decimals? (Phase 2 assertion)
+- Whether the four gauges should keep the corrected ratio or reproduce VM's
+  `increase()` behaviour for continuity. The correction is live; the VM panels are
+  still there to compare against until Phase 7.
+
+Resolved in Phase 5: the Grafana plugin v0.1.8 is viable — no need for the
+Postgres fallback — subject to the four silent-failure constraints listed under
+Phase 5 (numeric `format` enum, no `DECIMAL` converter, refId-prefixed frame
+names, `TABLE` format for gauges).
 
 Resolved while writing this guide: `DEDUP UPSERT KEYS` is last-write-wins and
 requires WAL + the designated timestamp in the keys; `DECIMAL` exists in OSS with
