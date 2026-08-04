@@ -1078,7 +1078,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Sum(E66)\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'total'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Sum(E66)\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'total'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
           "selectedFormat": 0,
           "promqlOriginal": "(avg_over_time(sum(cel_energy_kwh{segment=\"total\", direction=\"consumption\", project=\"cel\"})[$__interval:15m])) * 4"
@@ -1087,7 +1087,7 @@
       "title": "Consumption Validation: E31 vs Sum of E66",
       "type": "timeseries",
       "interval": "15m",
-      "description": "Cross-table by design: the E31 community aggregate against the sum of every E66 meter. Target B has no community filter because cel_energy has no community column to filter on."
+      "description": "Cross-table by design: the E31 community aggregate against the sum of every E66 meter in the same community. Both sides filter community_id -- 8 delivered meters carry no community at all and are not in the E31 aggregate, so an unscoped sum(cel_energy) overstates this by ~24% (consumption) / ~33% (production). See MIGRATION_QUESTDB.md."
     },
     {
       "datasource": {
@@ -1228,7 +1228,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Sum(E66)\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'total'\n    AND direction = 'production'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Sum(E66)\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'total'\n    AND direction = 'production'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
           "selectedFormat": 0,
           "promqlOriginal": "(avg_over_time(sum(cel_energy_kwh{segment=\"total\", direction=\"production\", project=\"cel\"})[$__interval:15m])) * 4"
@@ -1351,7 +1351,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_diff) * 4 AS DOUBLE) AS \"Consumption: E31 - Sum(E66)\"\nFROM (\n  SELECT ts, sum(v) AS slot_diff\n  FROM (\n    SELECT ts, value AS v\n    FROM cel_community_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'consumption'\n    UNION ALL\n    SELECT ts, value * -1 AS v\n    FROM cel_energy\n    WHERE $__timeFilter(ts)\n      AND segment = 'total'\n      AND direction = 'consumption'\n    ORDER BY ts\n  ) timestamp(ts)\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_diff) * 4 AS DOUBLE) AS \"Consumption: E31 - Sum(E66)\"\nFROM (\n  SELECT ts, sum(v) AS slot_diff\n  FROM (\n    SELECT ts, value AS v\n    FROM cel_community_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'consumption'\n    UNION ALL\n    SELECT ts, value * -1 AS v\n    FROM cel_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'consumption'\n    ORDER BY ts\n  ) timestamp(ts)\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
           "selectedFormat": 0,
           "promqlOriginal": "(avg_over_time(sum by() (cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"})[$__interval:15m]) - avg_over_time(sum by() (cel_energy_kwh{segment=\"total\", direction=\"consumption\", project=\"cel\"})[$__interval:15m])) * 4"
@@ -1364,7 +1364,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_diff) * 4 AS DOUBLE) AS \"Production: E31 - Sum(E66)\"\nFROM (\n  SELECT ts, sum(v) AS slot_diff\n  FROM (\n    SELECT ts, value AS v\n    FROM cel_community_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'production'\n    UNION ALL\n    SELECT ts, value * -1 AS v\n    FROM cel_energy\n    WHERE $__timeFilter(ts)\n      AND segment = 'total'\n      AND direction = 'production'\n    ORDER BY ts\n  ) timestamp(ts)\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_diff) * 4 AS DOUBLE) AS \"Production: E31 - Sum(E66)\"\nFROM (\n  SELECT ts, sum(v) AS slot_diff\n  FROM (\n    SELECT ts, value AS v\n    FROM cel_community_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'production'\n    UNION ALL\n    SELECT ts, value * -1 AS v\n    FROM cel_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'production'\n    ORDER BY ts\n  ) timestamp(ts)\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
           "selectedFormat": 0,
           "promqlOriginal": "(avg_over_time(sum by() (cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"})[$__interval:15m]) - avg_over_time(sum by() (cel_energy_kwh{segment=\"total\", direction=\"production\", project=\"cel\"})[$__interval:15m])) * 4"

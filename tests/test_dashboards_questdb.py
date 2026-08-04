@@ -397,6 +397,54 @@ def test_cross_table_queries_are_only_the_validation_panels(port, original):
         assert 'cel_energy' in sql, (panel_id, ref)
 
 
+# The community whose aggregate the E31 dashboard is about. Every cel_energy
+# read on that dashboard must be scoped to it, so the per-meter sum covers the
+# same population as the aggregate it is compared against.
+E31_COMMUNITY = '101110-002726'
+
+
+@pytest.mark.parametrize('port,original', PORTS)
+def test_every_cel_energy_read_is_scoped_to_the_community(port, original):
+    """A cel_energy query with no community_id sums meters outside the community.
+
+    Inherited from the VM original, which wrote
+    `sum(cel_energy_kwh{segment="total", direction="consumption"})` with no
+    community selector. The provider delivers E66 files for 8 meters that carry
+    no <Community> element at all, so their community_id is NULL and they are
+    not in the E31 aggregate -- yet an unscoped sum() picks them up. Measured on
+    70 days of real deliveries that inflated Sum(E66) by +24% for consumption
+    and +27% for production, which is the entire apparent validation gap: with
+    the filter the two sides agree to ~1.5%.
+
+    Nothing errors; the panel just plots a number for a different population
+    than the series beside it, which is the worst kind of wrong for a panel
+    whose whole job is to say "these two should match".
+    """
+    ported = panels_by_id(load(port))
+    if 'e31' not in port:
+        return
+    unscoped = []
+    for panel_id, panel in sorted(ported.items()):
+        for target in panel.get('targets', []):
+            sql = target.get('rawSql', '')
+            # Checked per SELECT block, not per statement: panel 15 UNIONs a
+            # cel_community_energy read with a cel_energy one, and that first
+            # block's filter must not be allowed to stand in for the second's.
+            for block in re.split(r'\bUNION\s+ALL\b|\bFROM\s*\(', sql):
+                if not re.search(r'\bFROM\s+cel_energy\b', block):
+                    continue
+                if not re.search(
+                        rf"community_id\s*=\s*'{re.escape(E31_COMMUNITY)}'",
+                        block):
+                    unscoped.append(
+                        f"{port} panel {panel_id} ({panel['title']!r}) target "
+                        f"{target['refId']}: a cel_energy read with no "
+                        f"community_id filter")
+    assert not unscoped, (
+        'unscoped cel_energy reads (they include meters that are not in the '
+        'E31 aggregate):\n' + '\n'.join(unscoped))
+
+
 def test_time_column_is_aliased_and_ordered(questdb_dashboard):
     """Grafana needs a `time` column; unordered rows render as a scribble."""
     for title, ref, sql in series_targets(questdb_dashboard):

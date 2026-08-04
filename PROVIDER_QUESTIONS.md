@@ -2,7 +2,7 @@
 
 ## Summary
 
-Through extensive analysis of May-June 2026 data files, we've **confirmed** many aspects of the system. This document contains **28 remaining questions** where we need official confirmation or additional information.
+Through extensive analysis of May-June 2026 data files, we've **confirmed** many aspects of the system. This document contains **31 remaining questions** where we need official confirmation or additional information.
 
 ### What We've Confirmed ✓
 
@@ -311,31 +311,76 @@ Physical → Virtual
 
 ---
 
+## 10. Specific Data Anomalies Observed
+
+These three were found by reconciling 4368 delivered files (E66 per-meter sums vs
+the E31 community aggregate). Each is a concrete, dated discrepancy we cannot
+resolve from the data alone.
+
+**Questions:**
+27. **E66 files with no `<Community>` element:** Starting with delivery 20260729
+    we receive E66 files for 8 meters that carry no `Community/CommunityID`, each
+    backfilled to 2026-02-28:
+    `0042214D`, `0042215A`, `0201080P`, `0733915V`, `0854697H`, `0854699B`,
+    `0854701T`, `0856898T` (suffixes of `CH1011101234500000000000000...`).
+    - Are these members of community 101110-002726 whose `<Community>` element is
+      simply missing, or meters genuinely outside the community?
+    - If they are members, will the element be added in future deliveries?
+    - Their consumption is ~24% of the E31 community total and their production
+      ~33%, so the answer changes every aggregate we compute.
+    - Note `0854699B` and `0854697H` report *identical* consumption series
+      (3993.5 kWh each) — is one a duplicate of the other?
+
+28. **E31 consumption is zero for 2026-06-02 to 2026-06-24:** For those 23 days
+    every E31 consumption value (`total`, CEL `2404050010123` and grid
+    `2404050010124`) is `0.000`, while E31 *production* arrives normally and the
+    per-meter E66 files show real consumption throughout.
+    - Is this a known outage in the aggregation?
+    - Can these days be re-delivered with correct values?
+    - Going forward, can an unavailable period be delivered as *absent* rows
+      rather than zeros? We cannot distinguish "no data" from "genuinely zero
+      consumption", so the zeros silently corrupt any average.
+
+29. **Per-meter production falls ~10% short of the E31 aggregate from 2026-07:**
+    For May and June, `sum(E66 production totals)` matches E31 production exactly.
+    From July it is consistently ~10% lower (July −471 kWh, August −102 kWh).
+    - Which meter's production is included in the E31 aggregate but no longer
+      delivered as an E66 file?
+    - Specifically, meter `0046782G` reports `0.000` production in 1057 of 1064
+      July slots and in all 184 August slots, having produced 902.6 kWh in May.
+      Is that meter faulty, decommissioned, or is its production now reported
+      under a different ID?
+
+---
+
 ## Priority Questions
 
 If you need to prioritize, these are most critical:
 
 **HIGH PRIORITY (affects parser implementation):**
-1. **Q2** - Import strategy: process all files or only latest?
-2. **Q5** - Will file count (109 files) change when members join/leave?
-3. **Q6** - Will Condition 21 data become validated in the future?
-4. **Q9** - Confirm our discovered physical→virtual meter mappings are correct
-5. **Q13** - Official VSE code definitions (2404050010123, 2404050010124)
-6. **Q15** - E31 intended use case
-7. **Q16** - Should E31 totals match sum of E66 meters?
+1. **Q27** - Are the 8 E66 meters with no `<Community>` element members or not?
+2. **Q28** - E31 consumption is zero for 2026-06-02..24 — outage, and re-deliverable?
+3. **Q2** - Import strategy: process all files or only latest?
+4. **Q5** - Will file count (109 files) change when members join/leave?
+5. **Q6** - Will Condition 21 data become validated in the future?
+6. **Q9** - Confirm our discovered physical→virtual meter mappings are correct
+7. **Q13** - Official VSE code definitions (2404050010123, 2404050010124)
+8. **Q15** - E31 intended use case
+9. **Q16** - Should E31 totals match sum of E66 meters?
 
 **MEDIUM PRIORITY (operational guidance):**
-8. **Q3** - Guarantee data stability in overlapping days?
-9. **Q5 (estimation)** - What algorithm calculates CEL/Grid split?
-10. **Q7** - Do you have actual VSE metering infrastructure?
-11. **Q12** - How are new members handled? (advance notification, file structure)
-12. **Q19** - How to handle missing files in a delivery?
-13. **Q21** - Advance notice of format changes?
+10. **Q29** - Which meter's production is in E31 but no longer delivered as E66?
+11. **Q3** - Guarantee data stability in overlapping days?
+12. **Q5 (estimation)** - What algorithm calculates CEL/Grid split?
+13. **Q7** - Do you have actual VSE metering infrastructure?
+14. **Q12** - How are new members handled? (advance notification, file structure)
+15. **Q19** - How to handle missing files in a delivery?
+16. **Q21** - Advance notice of format changes?
 
 **LOW PRIORITY (documentation and tooling):**
-14. **Q23** - XSD schema files for validation
-15. **Q24** - Additional documentation on codes and concepts
-16. **Q22** - Future API availability
+17. **Q23** - XSD schema files for validation
+18. **Q24** - Additional documentation on codes and concepts
+19. **Q22** - Future API availability
 
 ---
 

@@ -22,6 +22,13 @@ The provider sends overlapping 5-day files daily, so each 15-min slot arrives
   `(metric, labels, timestamp)`, so a downward revision never lands — totals
   read **+1.1467%** high (+2144.968 kWh on 187063.4 kWh; worst slot +9.383 kWh)
 
+That +1.1467% is a **whole-range aggregate**, and the damage is far from evenly
+spread. Per day, across 257 day-series measured from the source files: **median
+0.0000%, 187 of 257 days exactly 0%, p90 3.84%, worst +31.24%**
+(`cel_energy` production 2026-06-04: VM 107.779 kWh vs 82.124 kWh actual). It is
+not a per-day expectation and must never be used as a validation tolerance — see
+Phase 6.
+
 `scripts/vm_upsert.py` (287 lines + a SQLite side-store) works around this by
 detecting revisions locally, then **deleting the whole series and replaying its
 full history** — VM has no per-timestamp delete. That delete→reimport window is
@@ -327,6 +334,44 @@ Three further notes on the port, each flagged in the panel descriptions too:
   Everywhere else that would double-count, since `cel_community_energy` already
   contains what `cel_energy` sums to; `test_queries_target_the_right_table` holds
   an explicit `(panel, refId)` allow-list.
+- **Panels 13-15 add `community_id = '101110-002726'` to the `cel_energy` side**,
+  which the VM original did **not** have. This is a fixed defect, not a
+  translation — see "The validation gap was the panels, not the data" below.
+
+#### The validation gap was the panels, not the data
+
+The E31 validation panels showed `Sum(E66)` running well above the E31 aggregate
+(consumption 8.14 vs 6.32 kW, production 24.6 vs 20.1). Reproduced on 4368 real
+delivery files through the actual ingestion path (real mappings, `SkippedDocument`
+drops, breakdown attribution, LWW dedup) — the cause is entirely in the query:
+
+The provider delivers E66 files for **8 meters with no `<Community>` element**, so
+`community_id` is NULL on their rows: `0042214D`, `0042215A`, `0201080P`,
+`0733915V`, `0854697H`, `0854699B`, `0854701T`, `0856898T`. They first appear in
+delivery 20260729 and each carries ~5 months of history back to 2026-02-28. The
+E31 aggregate does not include them, but the panel's `sum(cel_energy)` did:
+**+23.8% on consumption, +32.9% on production**, which is the whole gap.
+
+With the filter, on days where E31 has data, the two sides agree to within ~1.5-3%
+— ordinary revision noise, except for two real residuals:
+
+- **Production, 2026-07 onward: E66 reads ~10% *low*** (July −471 kWh, August
+  −102 kWh; May and June match to the decimal). A per-meter production reading
+  stopped being delivered while the E31 aggregate kept counting it. Worth a
+  provider question — it is a data problem, not a query problem.
+- **E31 consumption is all-zero for 2026-06-02..24** (23 days, `cel` and `grid`
+  too, while `production.total` keeps arriving). Confirmed in the raw XML: 960
+  `Volume` elements, none non-zero. A provider-side gap, delivered as zeros rather
+  than as absent rows — so a query cannot distinguish it from genuine zero
+  consumption and it drags any mean over that range down.
+
+The two meters originally suspected, `0046782G` and `08552310`, explain none of
+it. They are **one meter**: `meter_mappings.yaml` maps virtual `08552310` →
+physical `0046782G`, and the ingestion attributes the virtual meter's rows to the
+physical one, so `08552310` has no rows in `cel_energy` at all. `0046782G` does
+report 0.0 production from 2026-07 on (1057/1064 slots zero in July, 184/184 in
+August) — but a zero can only pull `Sum(E66)` *down*, and the gap was upward. It
+is a component of the ~10% production shortfall above, not of the headline gap.
 
 Plugin macros are `$__timeFilter(col)`, `$__sampleByInterval`, `$__fromTime` /
 `$__toTime`, and `$__conditionalAll(cond, $var)`. There is **no** `$__interval`
@@ -346,17 +391,89 @@ reconciliation) becomes a SQL join and can move into a dashboard panel.
 
 ### Phase 6 — validation
 
-QuestDB should read **~1.15% lower** than VM on the same range. That gap is the
-max-dedup inflation being removed: it is the **success signal, not a bug**.
-Confirm per day over 20260430-20260727, and check the known anomalies survive
-(meter `0046782G` producing 0.0 from 2026-06-23; `0858140M` zero on 82/84 days).
-Rewrite `scripts/validate_daily_balance_vm.py` as the QuestDB equivalent.
+**Tooling (done, not yet run against the live databases):**
+
+- `scripts/compare_vm_questdb.py` — the per-day VM-vs-QuestDB comparison.
+  `--anomalies` runs the known-anomaly check on its own.
+- `scripts/validate_daily_balance_questdb.py` — the QuestDB counterpart of
+  `validate_daily_balance_vm.py`, which it replaces in Phase 7.
+- `tests/test_compare_vm_questdb.py` — 26 tests on the verdict logic.
+
+Neither script can run from a dev checkout: both databases are on the NAS. Copy
+both into `/volume1/docker/cel/scripts/`, then run them **inside `cel-parser`** —
+it is on `cel-network`, already has `psycopg` and `VICTORIA_METRICS_URL`, and
+QuestDB's 8812/9000 are deliberately unpublished, so neither database is reachable
+from the NAS host shell:
+
+```bash
+docker exec -it cel-parser python3 /app/scripts/compare_vm_questdb.py \
+    20260430 20260727 --json /app/logs/phase6.json ; echo "exit=$?"
+docker exec -it cel-parser python3 /app/scripts/compare_vm_questdb.py \
+    20260430 20260727 --anomalies
+docker exec -it cel-parser python3 \
+    /app/scripts/validate_daily_balance_questdb.py 20260610
+```
+
+Exit codes: 0 green, 1 a day outside expectation, 2 nothing compared (an empty
+range reads as a clean report otherwise), 3 a query failed.
+
+Read the report rather than only the exit code: `OK_DEEP_REVISION` rows pass by
+design and are the ones worth eyeballing. Then check the `20260803` gap below.
+
+#### There is no expected percentage — this was wrong
+
+This plan said to expect QuestDB **~1.15% lower** than VM per day and to treat a
+larger gap as suspicious. **That is wrong**, and the check built on it would have
+failed ~14 legitimate days. Measured by replaying 4368 real delivery files through
+both dedup rules (`max()` for VM, last-write for QuestDB):
+
+| series | aggregate gap | per-day min | per-day median |
+|---|---|---|---|
+| `cel_energy` consumption | −3.09% | 0.764 | **1.00000** |
+| `cel_energy` production | −0.58% | 0.762 | **1.00000** |
+| `cel_community_energy` consumption | −2.31% | 0.765 | **1.00000** |
+| `cel_community_energy` production | −0.21% | 0.762 | **1.00000** |
+
+The per-day ratio is **bimodal**, not centred on 1.15%: most days are *exactly*
+1.00000, and a minority run as low as 0.762. Revisions are not spread evenly — a
+day is untouched until the provider re-issues it, and then it moves a lot.
+Delivery **20260605 revised 2026-05-27 down 24%**: meter `0050170B`'s evening
+slots went from ~1.77 kWh to ~0.002, nine days after the fact and **outside the
+normal 5-day overlap window**. VM is stuck at 1.77 forever; QuestDB holds 0.002.
+
+So no threshold separates "deep legitimate revision" from "lost data" — they are
+the same number. The comparison therefore judges only what holds regardless of
+revision depth:
+
+1. **QuestDB must never exceed VM.** `max(samples) >= last(sample)` on identical
+   input, so an excess is provably an ingest divergence. No tolerance.
+2. **Both must hold the same slot count.** Exact comparison. This is what catches
+   missing data, and it catches it *without* a value threshold — which is why the
+   magnitude does not need one. A day legitimately 24% lower still has all its
+   slots; a day that lost rows does not.
+
+The magnitude is reported and summed for the record but cannot fail the run. Days
+at or below 0.95 are labelled `OK_DEEP_REVISION` — they pass, and are surfaced so
+they get read rather than buried in ~280 rows.
+
+**This also means the "+1.1467% inflation" figure quoted under "Why" is a range
+aggregate, not a per-day expectation.** Do not use it as a tolerance.
+
+Also confirm the known anomalies survive (`--anomalies`): meter `0046782G`
+producing 0.0 from 2026-06-23, `0858140M` zero on 82/84 days. An anomaly that
+*vanished* is data loss, so the check fails on zero rows as well as on a changed
+value — a sum alone reads 0.0 for both "still zero" and "gone".
+
+Exclude **2026-06-02..24** from any consumption comparison: E31 consumption is
+zero across those days at source (see Phase 5), so both databases will agree on a
+wrong number and the range's mean is not meaningful. The script skips them
+automatically, for consumption only — production over that window is fine and is
+still compared.
 
 Compare **energy panels only**. The four gauges (overview 5-6, E31 4-5) are
-expected to disagree by much more than 1.15%, because dropping `increase()` was a
+expected to disagree for a reason unrelated to dedup: dropping `increase()` was a
 correction rather than a translation — see Phase 5. Comparing them would produce a
-large difference that has nothing to do with dedup and would obscure the signal
-being measured.
+large difference that has nothing to do with what is being measured.
 
 One known gap to check first: `20260803_094734_...E31....xml` failed its QuestDB
 write (a dropped connection, since fixed in `questdb_writer.py`) while VM accepted
@@ -386,6 +503,17 @@ until Phase 7 — deployed and working, not deleted on plan.
 - Whether the four gauges should keep the corrected ratio or reproduce VM's
   `increase()` behaviour for continuity. The correction is live; the VM panels are
   still there to compare against until Phase 7.
+- **Provider questions raised by the validation analysis** (add to
+  `config/provider_questions` work): are the 8 community-less meters
+  (`0042214D`, `0042215A`, `0201080P`, `0733915V`, `0854697H`, `0854699B`,
+  `0854701T`, `0856898T`) members whose `<Community>` element is simply missing,
+  or genuinely outside the CEL? Why is E31 consumption zero for 2026-06-02..24?
+  And why does per-meter production fall ~10% short of the E31 aggregate from
+  2026-07 on?
+- The **VM dashboard `grafana-dashboard-e31-v2.json` still has the unscoped
+  `sum(cel_energy_kwh{...})`** in panels 13-15. Left alone deliberately: it is the
+  comparison baseline until Phase 7, when it is deleted anyway. Its validation
+  panels will keep showing the inflated Sum(E66) until then.
 
 Resolved in Phase 5: the Grafana plugin v0.1.8 is viable — no need for the
 Postgres fallback — subject to the four silent-failure constraints listed under
