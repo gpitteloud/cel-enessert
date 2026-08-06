@@ -13,25 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-# vm_upsert imports `requests`, which the container installs but a bare checkout
-# may not have. Tests never make real HTTP calls (see FakeVictoriaMetrics), so a
-# stub is enough to import the module - and it keeps the vm_upsert tests from
-# silently skipping, which is where a wrong value in VM would slip through.
-try:
-    import requests  # noqa: F401
-except ModuleNotFoundError:
-    import types as _types
-
-    def _no_http(*args, **kwargs):
-        raise AssertionError(
-            'tests must not perform real HTTP requests - use the fake_vm fixture')
-
-    _requests_stub = _types.ModuleType('requests')
-    _requests_stub.post = _no_http
-    _requests_stub.get = _no_http
-    _requests_stub.exceptions = _types.SimpleNamespace(RequestException=Exception)
-    sys.modules['requests'] = _requests_stub
-
 # Directory of real (gitignored) sample files, used by golden-file tests that
 # skip when the data is not present (e.g. clean checkout / CI without data).
 SAMPLE_DIR = REPO_ROOT / "input" / "all"
@@ -242,118 +223,14 @@ def write_xml(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Fake VictoriaMetrics
-# --------------------------------------------------------------------------
-
-class FakeVictoriaMetrics:
-    """In-memory stand-in that reproduces the two VM behaviours that matter.
-
-    1. **No per-timestamp overwrite.** Importing a sample whose
-       ``(metric_name, labels, timestamp)`` already exists keeps the **maximum**
-       of the two values. This is the real behaviour and the reason
-       ``vm_upsert`` exists: a downward revision cannot be applied by writing.
-    2. ``/api/v1/admin/tsdb/delete_series`` drops whole series (VM has no
-       per-timestamp delete), so a revised series must be deleted and replayed.
-
-    Tests assert against ``data``: ``{selector: {timestamp_ms: value}}``.
-    """
-
-    def __init__(self):
-        self.data = {}
-        self.deletes = 0
-        self.imports = 0
-        self.fail_next_import = False
-        self.fail_next_delete = False
-
-    # Mimics requests.post(...) closely enough for vm_upsert.
-    def post(self, url, data=None, headers=None, timeout=None):
-        import json as _json
-        import urllib.parse as _up
-
-        class Response:
-            status_code = 204
-            text = ''
-
-        resp = Response()
-
-        if 'delete_series' in url:
-            if self.fail_next_delete:
-                self.fail_next_delete = False
-                resp.status_code = 500
-                resp.text = 'injected delete failure'
-                return resp
-            query = _up.parse_qs(_up.urlparse(url).query)
-            selectors = query.get('match[]', [])
-            assert selectors, f"delete_series called without match[]: {url}"
-            for selector in selectors:
-                self.data.pop(selector, None)
-            self.deletes += 1
-            return resp
-
-        if self.fail_next_import:
-            self.fail_next_import = False
-            resp.status_code = 503
-            resp.text = 'injected import failure'
-            return resp
-
-        self.imports += 1
-        for line in (data or '').split('\n'):
-            if not line:
-                continue
-            point = _json.loads(line)
-            selector = _selector_for(point['metric'])
-            series = self.data.setdefault(selector, {})
-            for ts, value in zip(point['timestamps'], point['values']):
-                current = series.get(ts)
-                series[ts] = value if current is None else max(current, value)
-        return resp
-
-    def total(self):
-        return sum(sum(series.values()) for series in self.data.values())
-
-    def sample_count(self):
-        return sum(len(series) for series in self.data.values())
-
-
-def _selector_for(metric):
-    # Imported lazily so conftest stays importable without scripts/ deps loaded.
-    from vm_upsert import selector_for
-    return selector_for(metric)
-
-
-@pytest.fixture
-def fake_vm(monkeypatch):
-    """A FakeVictoriaMetrics wired into vm_upsert in place of `requests`."""
-    import types as _types
-    import vm_upsert
-
-    fake = FakeVictoriaMetrics()
-    monkeypatch.setattr(vm_upsert, 'requests', _types.SimpleNamespace(
-        post=fake.post,
-        exceptions=_types.SimpleNamespace(RequestException=Exception),
-    ))
-    return fake
-
-
-@pytest.fixture
-def sample_store(tmp_path):
-    """A SampleStore backed by a throwaway SQLite file."""
-    from vm_upsert import SampleStore
-    store = SampleStore(tmp_path / 'vm_samples.db')
-    yield store
-    store.close()
-
-
-# --------------------------------------------------------------------------
 # Fake QuestDB
 # --------------------------------------------------------------------------
 
 class FakeQuestDB:
     """In-memory stand-in reproducing DEDUP UPSERT KEYS: last write wins.
 
-    The contrast with FakeVictoriaMetrics is the entire point of the migration:
-    VM keeps the MAXIMUM value for a duplicated key, QuestDB *replaces* the row.
-    A downward revision therefore lands here and cannot land there.
+    Last-write-wins is what makes the provider's downward revisions land: a
+    re-delivered slot replaces the stored row instead of being merged with it.
 
     ``rows`` is ``{table: {key_tuple: full_row}}``, so a key collision overwrites
     exactly as the database would. ``inserted`` counts rows sent (including ones

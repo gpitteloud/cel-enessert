@@ -15,6 +15,7 @@
       }
     ]
   },
+  "description": "Per-meter and whole-community energy from cel_energy (E66). 7 panels / 9 SQL expressions against QuestDB. Two conventions the plugin forces and that are easy to break: every output column is cast to DOUBLE (there is no DECIMAL converter), and series are named via byFrameRefID overrides because the plugin prefixes each frame with its refId, which makes byName match nothing. See QUESTDB.md.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -24,9 +25,10 @@
   "panels": [
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
+      "description": "kW from 15-min kWh slots: average per 15-min slot FIRST, and only then scale by 4. sum(value) * 4 over a bucket wider than 15 min would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW). The inner SAMPLE BY 15m is what pins the slot width regardless of the outer bucket.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -77,10 +79,14 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "From CEL"
+              "id": "byFrameRefID",
+              "options": "A"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "From CEL"
+              },
               {
                 "id": "color",
                 "value": {
@@ -92,10 +98,14 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "From Grid"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "From Grid"
+              },
               {
                 "id": "color",
                 "value": {
@@ -133,26 +143,28 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "(avg_over_time(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__interval:15m])) * 4",
-          "legendFormat": "From CEL",
-          "range": true,
-          "refId": "A"
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
         },
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "(avg_over_time(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__interval:15m])) * 4",
+          "format": 0,
           "hide": false,
-          "legendFormat": "From Grid",
-          "range": true,
-          "refId": "B"
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
         }
       ],
       "title": "Daily Consumption - ${meter_id}",
@@ -161,8 +173,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
       "fieldConfig": {
         "defaults": {
@@ -214,10 +226,14 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "To CEL"
+              "id": "byFrameRefID",
+              "options": "A"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "To CEL"
+              },
               {
                 "id": "color",
                 "value": {
@@ -229,10 +245,14 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "To Grid"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "To Grid"
+              },
               {
                 "id": "color",
                 "value": {
@@ -270,26 +290,27 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "(avg_over_time(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__interval:15m])) * 4",
-          "legendFormat": "To CEL",
-          "range": true,
-          "refId": "A"
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'production'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
         },
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "(avg_over_time(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__interval:15m])) * 4",
-          "hide": false,
-          "legendFormat": "To Grid",
-          "range": true,
-          "refId": "B"
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'production'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
         }
       ],
       "title": "Daily Production - ${meter_id}",
@@ -298,8 +319,8 @@
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
       "fieldConfig": {
         "defaults": {
@@ -318,7 +339,20 @@
           },
           "unit": "kwatth"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total Consumption"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -345,23 +379,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "cel_energy_kwh{segment=\"total\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}",
-          "legendFormat": "__auto",
-          "range": true,
-          "refId": "A"
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'consumption'\n  AND meter_id LIKE '%$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
         }
       ],
       "title": "Total Consumption",
-      "type": "stat"
+      "type": "stat",
+      "description": "Returns the per-bucket series and lets the panel's reduceOptions sum it: the stat panel's graphMode:area sparkline needs the series, not a pre-reduced scalar. cast(... AS DOUBLE) on the output column: the Grafana plugin's converter map handles only BOOL/INT2/FLOAT4/FLOAT8/TIMESTAMP, so a DECIMAL column arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
       "fieldConfig": {
         "defaults": {
@@ -380,7 +416,20 @@
           },
           "unit": "kwatth"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total Production"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -407,23 +456,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "cel_energy_kwh{segment=\"total\", direction=\"production\", meter_id=~\".*${meter_id}\"}",
-          "legendFormat": "__auto",
-          "range": true,
-          "refId": "A"
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'production'\n  AND meter_id LIKE '%$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
         }
       ],
       "title": "Total Production",
-      "type": "stat"
+      "type": "stat",
+      "description": "Returns the per-bucket series and lets the panel's reduceOptions sum it: the stat panel's graphMode:area sparkline needs the series, not a pre-reduced scalar. cast(... AS DOUBLE) on the output column: the Grafana plugin's converter map handles only BOOL/INT2/FLOAT4/FLOAT8/TIMESTAMP, so a DECIMAL column arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
       "fieldConfig": {
         "defaults": {
@@ -452,7 +503,20 @@
           },
           "unit": "percent"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CEL % of Consumption"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -477,23 +541,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "(sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
-          "legendFormat": "__auto",
-          "range": true,
-          "refId": "A"
+          "format": 1,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND meter_id LIKE '%$meter_id'\n  AND direction = 'consumption'\n  AND segment in ('cel', 'grid')",
+          "refId": "A",
+          "selectedFormat": 1
         }
       ],
       "title": "CEL % of Consumption",
-      "type": "gauge"
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the dashboard's time range. sum(value) is the plain total: cel_energy holds kWh per 15-min slot, a quantity that falls as well as rises, so it must never be treated as a counter. Gauges need format: TABLE and a query returning exactly one row -- a bucketed query would be reduced with lastNotNull and report the newest bucket instead of the range total."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
       "fieldConfig": {
         "defaults": {
@@ -522,7 +588,20 @@
           },
           "unit": "percent"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CEL % of Production"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -547,23 +626,25 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "(sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__range])) / (sum(increase(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__range])) + sum(increase(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"}[$__range])))) * 100",
-          "legendFormat": "__auto",
-          "range": true,
-          "refId": "A"
+          "format": 1,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND meter_id LIKE '%$meter_id'\n  AND direction = 'production'\n  AND segment in ('cel', 'grid')",
+          "refId": "A",
+          "selectedFormat": 1
         }
       ],
       "title": "CEL % of Production",
-      "type": "gauge"
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the dashboard's time range. sum(value) is the plain total: cel_energy holds kWh per 15-min slot, a quantity that falls as well as rises, so it must never be treated as a counter. Gauges need format: TABLE and a query returning exactly one row -- a bucketed query would be reduced with lastNotNull and report the newest bucket instead of the range total."
     },
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "VictoriaMetrics"
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
       },
       "fieldConfig": {
         "defaults": {
@@ -616,7 +697,20 @@
           },
           "unit": "kwatt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Net Energy (positive = producing more)"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -644,19 +738,21 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "VictoriaMetrics"
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
           },
-          "editorMode": "code",
-          "expr": "((avg_over_time(sum(cel_energy_kwh{segment=\"grid\", direction=\"production\", meter_id=~\".*${meter_id}\"})[$__interval:15m]) + avg_over_time(sum(cel_energy_kwh{segment=\"cel\", direction=\"production\", meter_id=~\".*${meter_id}\"})[$__interval:15m])) - (avg_over_time(sum(cel_energy_kwh{segment=\"grid\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})[$__interval:15m]) + avg_over_time(sum(cel_energy_kwh{segment=\"cel\", direction=\"consumption\", meter_id=~\".*${meter_id}\"})[$__interval:15m]))) * 4",
-          "legendFormat": "Net Energy (positive = producing more)",
-          "range": true,
-          "refId": "A"
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Net Energy (positive = producing more)\"\nFROM (\n  SELECT ts, sum(case when direction = 'production' then value else value * -1 end) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment in ('cel', 'grid')\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
         }
       ],
       "title": "Energy Balance - ${meter_id}",
       "type": "timeseries",
-      "interval": "15m"
+      "interval": "15m",
+      "description": "Net = production - consumption per 15-min slot, as kW. One signed sum rather than four averages: a slot with only consumption rows would make the production term NULL and blank the series. cast(... AS DOUBLE) on the output column: the Grafana plugin's converter map handles only BOOL/INT2/FLOAT4/FLOAT8/TIMESTAMP, so a DECIMAL column arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters."
     }
   ],
   "refresh": "",
@@ -664,7 +760,8 @@
   "style": "dark",
   "tags": [
     "cel",
-    "energy"
+    "energy",
+    "questdb"
   ],
   "templating": {
     "list": [
@@ -675,19 +772,16 @@
           "value": "0217130Y"
         },
         "datasource": {
-          "type": "prometheus",
-          "uid": "VictoriaMetrics"
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
         },
-        "definition": "label_values(cel_energy_kwh{segment=\"total\", direction=\"consumption\"}, meter_id)",
+        "definition": "SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
         "hide": 0,
         "includeAll": false,
         "multi": false,
         "name": "meter_id",
         "options": [],
-        "query": {
-          "query": "label_values(cel_energy_kwh{segment=\"total\", direction=\"consumption\"}, meter_id)",
-          "refId": "StandardVariableQuery"
-        },
+        "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
         "refresh": 1,
         "regex": ".*([0-9A-Z]{8})$",
         "skipUrlSync": false,

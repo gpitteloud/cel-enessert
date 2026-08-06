@@ -15,6 +15,7 @@
       }
     ]
   },
+  "description": "Community-level energy from cel_community_energy (E31), plus panels 13-15 which validate it against the sum of the E66 per-meter table. 15 panels / 18 SQL expressions against QuestDB. Panels key off segment ('cel'/'grid'/'total') rather than product_code: the same distinction under the name the parser stores, so it survives a provider-side encoding change. See QUESTDB.md.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -23,7 +24,10 @@
   "liveNow": false,
   "panels": [
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -35,7 +39,10 @@
       "type": "row"
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -53,7 +60,20 @@
           },
           "unit": "kwatth"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total Consumption"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -79,19 +99,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "editorMode": "code",
-          "expr": "cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"}",
-          "legendFormat": "Total Consumption",
-          "range": true,
-          "refId": "A"
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Consumption\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND segment = 'total'\n  AND direction = 'consumption'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
         }
       ],
       "title": "Total Consumption",
-      "type": "stat"
+      "type": "stat",
+      "description": "Returns the per-bucket series and lets the panel's reduceOptions sum it: the stat panel's graphMode:area sparkline needs the series, not a pre-reduced scalar. Keys off segment ('cel'/'grid'/'total') rather than product_code -- the same distinction under the name the parser stores, so it survives a provider-side encoding change (see classify_metric_type in models.py)."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -109,7 +137,20 @@
           },
           "unit": "kwatth"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total Production"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -135,19 +176,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"}",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Production\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND segment = 'total'\n  AND direction = 'production'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
-          "editorMode": "code",
-          "legendFormat": "Total Production",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Total Production",
-      "type": "stat"
+      "type": "stat",
+      "description": "Returns the per-bucket series and lets the panel's reduceOptions sum it: the stat panel's graphMode:area sparkline needs the series, not a pre-reduced scalar. Keys off segment ('cel'/'grid'/'total') rather than product_code -- the same distinction under the name the parser stores, so it survives a provider-side encoding change (see classify_metric_type in models.py)."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -175,7 +224,20 @@
           },
           "unit": "percent"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Self-Sufficiency Rate (CEL Local %)"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -199,19 +261,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "100 * (sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"}[$__range])) / sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"}[$__range])))",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(case when segment = 'total' then value end) AS DOUBLE) AS \"Self-Sufficiency Rate (CEL Local %)\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND direction = 'consumption'\n  AND segment in ('cel', 'total')",
           "refId": "A",
-          "editorMode": "code",
-          "legendFormat": "Total Consumption",
-          "range": true
+          "selectedFormat": 1
         }
       ],
       "title": "Self-Sufficiency Rate (CEL Local %)",
-      "type": "gauge"
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the dashboard's time range. sum(value) is the plain total: cel_energy holds kWh per 15-min slot, a quantity that falls as well as rises, so it must never be treated as a counter. Gauges need format: TABLE and a query returning exactly one row -- a bucketed query would be reduced with lastNotNull and report the newest bucket instead of the range total. Local consumption over total consumption."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -239,7 +309,20 @@
           },
           "unit": "percent"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Grid Dependency (Grid %)"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 4,
@@ -263,19 +346,27 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "100 * (sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"}[$__range])) / sum(increase(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"}[$__range])))",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 1,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'grid' then value end) AS DOUBLE)\n           / cast(sum(case when segment = 'total' then value end) AS DOUBLE) AS \"Grid Dependency (Grid %)\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND direction = 'consumption'\n  AND segment in ('grid', 'total')",
           "refId": "A",
-          "editorMode": "code",
-          "legendFormat": "Total Consumption",
-          "range": true
+          "selectedFormat": 1
         }
       ],
       "title": "Grid Dependency (Grid %)",
-      "type": "gauge"
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the dashboard's time range. sum(value) is the plain total: cel_energy holds kWh per 15-min slot, a quantity that falls as well as rises, so it must never be treated as a counter. Gauges need format: TABLE and a query returning exactly one row -- a bucketed query would be reduced with lastNotNull and report the newest bucket instead of the range total. Grid consumption over total consumption; the complement of panel 4."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -287,7 +378,11 @@
       "type": "row"
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "description": "kW from 15-min kWh slots, from the E31 community aggregate. Keys off segment ('cel'/'grid') rather than product_code: product_code would work identically, but segment is the name the parser stores and survives a provider-side encoding change (see classify_metric_type in models.py).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -338,10 +433,14 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "From CEL"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "From CEL"
+              },
               {
                 "id": "color",
                 "value": {
@@ -353,10 +452,14 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "From Grid"
+              "id": "byFrameRefID",
+              "options": "C"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "From Grid"
+              },
               {
                 "id": "color",
                 "value": {
@@ -393,20 +496,28 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"}[$__interval:15m])) * 4",
-          "legendFormat": "From CEL",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'cel'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"}[$__interval:15m])) * 4",
-          "legendFormat": "From Grid",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'grid'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "C",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Community Consumption Over Time",
@@ -414,7 +525,10 @@
       "interval": "15m"
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -430,7 +544,32 @@
           "mappings": [],
           "unit": "kwatth"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From CEL"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From Grid"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -470,27 +609,39 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"consumption\"}",
-          "legendFormat": "From CEL",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"From CEL\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND segment = 'cel'\n  AND direction = 'consumption'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"consumption\"}",
-          "legendFormat": "From Grid",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"From Grid\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND segment = 'grid'\n  AND direction = 'consumption'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Consumption Source Distribution",
-      "type": "piechart"
+      "type": "piechart",
+      "description": "Distribution over the range; reduceOptions sums each series. product_code is replaced by segment ('cel'/'grid'/'total'), the same distinction under the name the parser stores; it survives a provider-side encoding change (see classify_metric_type in models.py)."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -502,7 +653,10 @@
       "type": "row"
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -553,10 +707,14 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "To CEL"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "To CEL"
+              },
               {
                 "id": "color",
                 "value": {
@@ -568,10 +726,14 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "To Grid"
+              "id": "byFrameRefID",
+              "options": "C"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "To Grid"
+              },
               {
                 "id": "color",
                 "value": {
@@ -608,28 +770,40 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"production\"}[$__interval:15m])) * 4",
-          "legendFormat": "To CEL",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'cel'\n    AND direction = 'production'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"production\"}[$__interval:15m])) * 4",
-          "legendFormat": "To Grid",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'grid'\n    AND direction = 'production'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "C",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Community Production Over Time",
       "type": "timeseries",
-      "interval": "15m"
+      "interval": "15m",
+      "description": "product_code is replaced by segment ('cel'/'grid'/'total'), the same distinction under the name the parser stores; it survives a provider-side encoding change (see classify_metric_type in models.py)."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -645,7 +819,32 @@
           "mappings": [],
           "unit": "kwatth"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To CEL"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To Grid"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -685,27 +884,39 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010123\", direction=\"production\"}",
-          "legendFormat": "To CEL",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"To CEL\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND segment = 'cel'\n  AND direction = 'production'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"2404050010124\", direction=\"production\"}",
-          "legendFormat": "To Grid",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"To Grid\"\nFROM cel_community_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND segment = 'grid'\n  AND direction = 'production'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Production Usage Distribution",
-      "type": "piechart"
+      "type": "piechart",
+      "description": "Distribution over the range; reduceOptions sums each series. product_code is replaced by segment ('cel'/'grid'/'total'), the same distinction under the name the parser stores; it survives a provider-side encoding change (see classify_metric_type in models.py)."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -717,7 +928,10 @@
       "type": "row"
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -768,44 +982,38 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "E31 Total"
+              "id": "byFrameRefID",
+              "options": "A"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "E31 Total"
+              },
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "blue",
                   "mode": "fixed"
                 }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 3
               }
             ]
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Sum(E66)"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "Sum(E66)"
+              },
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "red",
                   "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
                 }
               }
             ]
@@ -838,28 +1046,40 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"}[$__interval:15m])) * 4",
-          "legendFormat": "E31 Total",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"E31 Total\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'total'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(sum(cel_energy_kwh{segment=\"total\", direction=\"consumption\", project=\"cel\"})[$__interval:15m])) * 4",
-          "legendFormat": "Sum(E66)",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Sum(E66)\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'total'\n    AND direction = 'consumption'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Consumption Validation: E31 vs Sum of E66",
       "type": "timeseries",
-      "interval": "15m"
+      "interval": "15m",
+      "description": "Cross-table by design: the E31 community aggregate against the sum of every E66 meter in the same community. Both sides filter community_id -- 8 delivered meters carry no community at all and are not in the E31 aggregate, so an unscoped sum(cel_energy) overstates this by ~24% (consumption) / ~33% (production). See QUESTDB.md."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -910,44 +1130,38 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "E31 Total"
+              "id": "byFrameRefID",
+              "options": "A"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "E31 Total"
+              },
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "yellow",
                   "mode": "fixed"
                 }
-              },
-              {
-                "id": "custom.lineWidth",
-                "value": 3
               }
             ]
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Sum(E66)"
+              "id": "byFrameRefID",
+              "options": "B"
             },
             "properties": [
+              {
+                "id": "displayName",
+                "value": "Sum(E66)"
+              },
               {
                 "id": "color",
                 "value": {
                   "fixedColor": "orange",
                   "mode": "fixed"
-                }
-              },
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
                 }
               }
             ]
@@ -980,28 +1194,40 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"}[$__interval:15m])) * 4",
-          "legendFormat": "E31 Total",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"E31 Total\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_community_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'total'\n    AND direction = 'production'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(sum(cel_energy_kwh{segment=\"total\", direction=\"production\", project=\"cel\"})[$__interval:15m])) * 4",
-          "legendFormat": "Sum(E66)",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Sum(E66)\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND community_id = '101110-002726'\n    AND segment = 'total'\n    AND direction = 'production'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Production Validation: E31 vs Sum of E66",
       "type": "timeseries",
-      "interval": "15m"
+      "interval": "15m",
+      "description": "Cross-table by design, as panel 13."
     },
     {
-      "datasource": "VictoriaMetrics",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1049,10 +1275,35 @@
           },
           "unit": "kwatt"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Consumption: E31 - Sum(E66)"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Production: E31 - Sum(E66)"
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 6,
+        "h": 7,
         "w": 24,
         "x": 0,
         "y": 32
@@ -1077,35 +1328,44 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(sum by() (cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"consumption\"})[$__interval:15m]) - avg_over_time(sum by() (cel_energy_kwh{segment=\"total\", direction=\"consumption\", project=\"cel\"})[$__interval:15m])) * 4",
-          "legendFormat": "Consumption: E31 - Sum(E66)",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_diff) * 4 AS DOUBLE) AS \"Consumption: E31 - Sum(E66)\"\nFROM (\n  SELECT ts, sum(v) AS slot_diff\n  FROM (\n    SELECT ts, value AS v\n    FROM cel_community_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'consumption'\n    UNION ALL\n    SELECT ts, value * -1 AS v\n    FROM cel_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'consumption'\n    ORDER BY ts\n  ) timestamp(ts)\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         },
         {
-          "datasource": "VictoriaMetrics",
-          "expr": "(avg_over_time(sum by() (cel_community_energy_kwh{project=\"cel\", community_id=\"101110-002726\", product_code=\"8716867000030\", direction=\"production\"})[$__interval:15m]) - avg_over_time(sum by() (cel_energy_kwh{segment=\"total\", direction=\"production\", project=\"cel\"})[$__interval:15m])) * 4",
-          "legendFormat": "Production: E31 - Sum(E66)",
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "queryType": "sql",
+          "meta": {},
+          "rawSql": "SELECT ts AS time, cast(avg(slot_diff) * 4 AS DOUBLE) AS \"Production: E31 - Sum(E66)\"\nFROM (\n  SELECT ts, sum(v) AS slot_diff\n  FROM (\n    SELECT ts, value AS v\n    FROM cel_community_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'production'\n    UNION ALL\n    SELECT ts, value * -1 AS v\n    FROM cel_energy\n    WHERE $__timeFilter(ts)\n      AND community_id = '101110-002726'\n      AND segment = 'total'\n      AND direction = 'production'\n    ORDER BY ts\n  ) timestamp(ts)\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
-          "editorMode": "code",
-          "range": true
+          "selectedFormat": 0
         }
       ],
       "title": "Validation Difference (E31 - E66) - Should be close to zero",
       "type": "timeseries",
-      "interval": "15m"
+      "interval": "15m",
+      "description": "E31 aggregate minus the sum of E66 meters, per 15-min slot. Expressed as one UNION ALL with the E66 side negated so a single sum() per slot gives the difference; ORDER BY ts + timestamp(ts) re-declare the designated timestamp that UNION ALL drops and SAMPLE BY needs."
     }
   ],
   "refresh": "",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [
-    "energy",
-    "community",
+    "cel",
     "e31",
-    "aggregates"
+    "community",
+    "questdb"
   ],
   "templating": {
     "list": []

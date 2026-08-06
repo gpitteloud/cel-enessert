@@ -11,16 +11,23 @@ Ultra-fast deployment guide for Synology NAS + Portainer.
 
 ## 1. Deploy Files (5 minutes)
 
-Run the deployment script from your computer:
+Copy the repo's runtime files to `/volume1/docker/cel/` on the NAS. Replace
+`192.168.1.133` with your NAS IP.
 
 ```bash
 cd cel-community
-./deploy_to_synology.sh admin@192.168.1.133
+NAS=admin@192.168.1.133
+
+ssh $NAS 'sudo mkdir -p /volume1/docker/cel/{scripts,config,logs,archive,questdb-data,grafana-data,grafana-dashboards,grafana-provisioning}'
+
+scp scripts/*.py scripts/questdb_schema.sql   $NAS:/volume1/docker/cel/scripts/
+scp config/api_config.yaml                    $NAS:/volume1/docker/cel/config/
+scp grafana-dashboards/*.json                 $NAS:/volume1/docker/cel/grafana-dashboards/
+scp -r grafana-provisioning/*                 $NAS:/volume1/docker/cel/grafana-provisioning/
 ```
 
-Replace `192.168.1.133` with your NAS IP.
-
-This copies all files to `/volume1/docker/cel/` on your Synology.
+`meter_mappings.yaml` is auto-discovered from the delivered files, so there is
+nothing to copy on a first install.
 
 ## 2. Verify Configuration (1 minute)
 
@@ -40,32 +47,38 @@ Default configuration should work. Meters are identified automatically from SDAT
 1. Open Portainer: `http://192.168.1.133:9000`
 2. Go to: **Stacks** → **Add stack**
 3. Name: `cel` (must match /volume1/docker/cel directory)
-4. Copy the stack configuration:
+4. Create the `cel-network` bridge network first, if it does not exist:
+   **Networks** → **Add network**, name `cel-network`, driver `bridge` (or
+   `docker network create cel-network`). Both this stack and the cloudflared
+   stack attach to it, and neither owns it — if it is missing, both fail loudly
+   with "network not found".
+5. Copy the stack configuration:
 
 **Use the stack configuration from [`docker-compose.yml`](docker-compose.yml)** --
 copy that file's contents verbatim into the Portainer editor.
 
 This guide used to inline its own copy, which silently drifted from the real file
-and is why it is now a pointer: the stale copy was missing
-`--dedup.minScrapeInterval=15m` (without which every 15-min slot is counted 5-7
-times), the `/data/state` mount that `vm_upsert`'s revision store needs, and the
-whole `questdb` service. Deploying it would have quietly reintroduced fixed bugs.
+and was missing services and mounts the running system depends on. Deploying that
+stale copy would have quietly reintroduced fixed bugs, so it is now a pointer.
 
-Two notes when pasting:
+Three notes when pasting:
 
 - There is no `version:` key. Compose v2 ignores it, and the file relies on
   `condition: service_completed_successfully`, which predates the old 3.x schema.
 - Grafana's admin password is **not** set via environment variables. Set it in
   Grafana's UI on first login; see the comment in `docker-compose.yml` for why.
+- Deploy over SSH or the LAN IP, **never through the Cloudflare tunnel**.
+  `questdb-init` pip-installs and verifies the schema before the parser is
+  allowed to start, which can exceed the tunnel's ~100s origin timeout — a 502
+  there is the gateway giving up on a deploy that is still running.
 
-5. Click **Deploy the stack**
-6. Wait 2-3 minutes for containers to start
+6. Click **Deploy the stack**
+7. Wait 2-3 minutes for containers to start
 
 ## 4. Verify (2 minutes)
 
 Check containers in Portainer → **Containers**:
 
-- ✅ `cel-victoriametrics` - running
 - ✅ `cel-questdb` - running
 - ✅ `cel-grafana` - running
 - ✅ `cel-parser` - running
@@ -80,42 +93,36 @@ Open Grafana: `http://192.168.1.133:3000`
 
 ## 5. Test with FTP (5 minutes)
 
-Create test file `test.xml`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<SDAT xmlns="http://www.strom.ch">
-  <Messung>
-    <Zaehler>CH1234567890</Zaehler>
-    <Zeitstempel>2026-05-11T12:00:00</Zeitstempel>
-    <Wert>
-      <OBIS>1.8.0</OBIS>
-      <Wert>0.5</Wert>
-    </Wert>
-    <Wert>
-      <OBIS>2.8.0</OBIS>
-      <Wert>1.2</Wert>
-    </Wert>
-  </Messung>
-</SDAT>
-```
-
-Upload via FTP:
+Use a **real delivered file** rather than a hand-written one: the parser reads
+ValidatedMeteredData_1.6 (E66) / AggregatedMeteredData_1.3 (E31) and rejects
+anything else, and the filename's `YYYYMMDD` prefix is what orders the batches.
+Take one from `input/` or from the archive.
 
 ```bash
 ftp 192.168.1.133
 # Login with Synology credentials
-put test.xml
+put 20260806_094741_..._E66_....xml
 quit
 ```
 
 Check processing in Portainer:
 - **Containers** → `cel-parser` → **Logs**
-- Should see: "Successfully processed test.xml"
+- Should see: `Successfully processed <filename>`
+- `Skipped by design: N` is expected, not an error — a mapped virtual meter's
+  production total duplicates its physical meter's, so ~9 files per delivery are
+  dropped and archived deliberately
 
-Check data in Grafana:
-- **Explore** → Query: `cel_energy_grid_import_kwh`
-- Should show test data
+Check the data landed:
+```bash
+ssh admin@192.168.1.133
+sudo docker exec cel-parser python3 -c \
+  "import os, psycopg; print(psycopg.connect(os.environ['QUESTDB_DSN']).execute(
+      'SELECT count() FROM cel_energy'
+  ).fetchone())"
+```
+
+Then open a dashboard in Grafana — **CEL Energy Overview** is the default home
+dashboard.
 
 ## Done! 🎉
 
@@ -137,8 +144,11 @@ File format: SDAT XML
 Files uploaded via FTP will be automatically:
 1. Detected by cel-parser
 2. Parsed and validated
-3. Sent to VictoriaMetrics
+3. Written to QuestDB
 4. Archived to `/volume1/docker/cel/archive/`
+
+A file whose write fails is **not** archived: it stays in `/volume1/ftproot` and
+is retried, so nothing is filed away having stored no data.
 
 ## Troubleshooting
 
@@ -153,13 +163,28 @@ tail -f /volume1/docker/cel/logs/watcher.log
 Containers → cel-parser → Logs
 ```
 
-### No data in Grafana
+### Parser container will not start
 
-Test VictoriaMetrics:
+It waits for `cel-questdb-init` to exit 0, so check that first:
 ```bash
 ssh admin@192.168.1.133
-curl http://localhost:8428/api/v1/query?query=cel_energy_grid_import_kwh
+sudo docker logs cel-questdb-init
 ```
+A non-zero exit means the live schema does not match `scripts/questdb_schema.sql`.
+The parser refuses to start rather than write into a table without the dedup keys.
+
+### No data in Grafana
+
+QuestDB's ports are deliberately unpublished, so query it from inside the
+network:
+```bash
+ssh admin@192.168.1.133
+sudo docker exec -it cel-parser python3 \
+    /app/scripts/validate_daily_balance_questdb.py 20260610
+```
+
+If rows exist but a panel is blank, the cause is usually the Grafana plugin
+rather than the data — see [QUESTDB.md](QUESTDB.md#grafana).
 
 ### FTP not working
 
@@ -177,6 +202,7 @@ Synology: **Control Panel** → **File Services** → **FTP**
 
 ## Support
 
-- Full setup guide: `SYNOLOGY_SETUP.md`
-- System limitations: `LIMITATIONS.md`
-- Architecture details: `README_SIMPLE.md`
+- Overview and operations: [README.md](README.md)
+- Storage schema and dedup rules: [QUESTDB.md](QUESTDB.md)
+- File types, product codes, data quality: [PARSING_GUIDE.md](PARSING_GUIDE.md)
+- Updating an existing deployment: [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md)

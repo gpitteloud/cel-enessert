@@ -1,31 +1,27 @@
 #!/usr/bin/env python3
 """Write samples to QuestDB. The newest delivered value wins, for free.
 
-Why this is so much smaller than vm_upsert
-------------------------------------------
-VictoriaMetrics has no per-timestamp overwrite: given two samples with the same
-(metric, labels, timestamp) it keeps the MAXIMUM value. Since the provider
-revises ~2.6% of overlapping slots and sometimes revises them *downward*, a plain
-re-import pins a slot to the highest value ever delivered. vm_upsert works around
-that with a local SQLite mirror, revision detection, and a whole-series
-delete-then-replay -- ~290 lines plus a non-atomic rewrite window.
-
-QuestDB's DEDUP UPSERT KEYS is genuine last-write-wins: an INSERT whose key
-matches an existing row replaces it. The entire mechanism is one INSERT, and
-re-delivering a byte-identical row is a no-op QuestDB detects and skips.
+Why there is so little here
+---------------------------
+The provider re-sends each 15-min slot 5-7 times across overlapping 5-day
+deliveries and revises ~2.6% of them, sometimes *downward*. QuestDB's DEDUP
+UPSERT KEYS is genuine last-write-wins: an INSERT whose key matches an existing
+row replaces it. So handling revisions is one INSERT -- no local mirror, no
+revision detection, no delete-then-replay -- and re-delivering a byte-identical
+row is a no-op QuestDB detects and skips.
 
 The one thing that does NOT come for free
 -----------------------------------------
 Last-write-wins has no notion of "newest delivery" -- it is literally whichever
 INSERT ran last. Replaying delivery 20260527 AFTER 20260605 would overwrite 4
-days with stale values. vm_upsert refused that via a stored delivery date;
-QuestDB cannot (there is no conditional upsert, and DEDUP guarantees one row per
-key so there is no second row to compare against).
+days with stale values, and the database cannot even detect it afterwards: there
+is no conditional upsert, and DEDUP guarantees one row per key so there is no
+second row to compare against.
 
 Callers must therefore feed deliveries in chronological order. That already
 holds: the watcher batches per delivery date and flushes on change, and its
 startup rescan sorts by the YYYYMMDD filename prefix. Any new replay tooling
-must sort explicitly -- see MIGRATION_QUESTDB.md.
+must sort explicitly -- see QUESTDB.md.
 
 Values are Decimal end-to-end (never float) so what lands in DECIMAL(12,3) is
 exactly what the provider sent.
@@ -213,8 +209,8 @@ class QuestDBWriter:
         """Insert rows; DEDUP UPSERT KEYS makes the last write win.
 
         Returns the number of rows sent. Raises on failure so the caller can mark
-        the file FAILED and retry it. Unlike the VM path there is no
-        partially-applied state to repair: the insert is one transaction.
+        the file FAILED and retry it. There is no partially-applied state to
+        repair: the insert is one transaction.
 
         Retries ONCE on a dead connection. This writer holds one connection for
         the life of the parser, which runs for weeks and writes in a burst once a

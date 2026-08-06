@@ -1,8 +1,5 @@
 # CEL Community - Python Dependencies
-# Simplified version (direct to VictoriaMetrics, no API server)
-
-# HTTP requests to VictoriaMetrics
-requests==2.31.0
+# The parser writes straight to QuestDB; there is no API server.
 
 # YAML configuration parsing
 pyyaml==6.0.1
@@ -12,7 +9,7 @@ watchdog==4.0.0
 
 # QuestDB over PG-wire (port 8812). The PG-wire path is used instead of ILP
 # because it carries decimal.Decimal natively, which the DECIMAL(12,3) value
-# column depends on -- see MIGRATION_QUESTDB.md.
+# column depends on -- see QUESTDB.md.
 psycopg[binary]==3.2.3
 
 # Testing (dev only)

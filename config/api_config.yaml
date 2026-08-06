@@ -1,18 +1,10 @@
 # Configuration for CEL Community
 
-# VictoriaMetrics connection
-victoriametrics:
-  url: "http://victoriametrics:8428"
-
-# QuestDB - migration target, see MIGRATION_QUESTDB.md.
-# While `enabled` is true the parser writes every file to BOTH stores so they can
-# be compared on real data. QuestDB should read ~1.15% LOWER than VM: that gap is
-# VM's max-value dedup inflation disappearing, and is the success signal.
+# QuestDB - the system of record. See QUESTDB.md.
+# Writes are never optional: a failed write marks the file FAILED so it stays in
+# the incoming folder and is retried, rather than being archived having stored
+# nothing.
 questdb:
-  enabled: false
-  # false: a QuestDB failure is logged but does not fail the file (VM has it).
-  # Flip to true once QuestDB is the system of record, so failures are retried.
-  required: false
   # Defaults to $QUESTDB_DSN, set in docker-compose.yml.
   dsn: ""
 
@@ -20,9 +12,6 @@ questdb:
 project:
   name: "cel"
   community_name: "Coopérative Enessert"
-
-  # Metric prefix (all metrics will start with this)
-  metric_prefix: "cel_energy"
 
   # Note: Meter mappings are auto-discovered from files
   # No manual meter configuration needed
@@ -35,18 +24,9 @@ processing:
   # Skip invalid data points instead of failing
   skip_invalid: true
 
-  # Batch size for VictoriaMetrics requests
-  batch_size: 1000
-
   # Archive processed files
   archive_processed: true
   archive_path: "data/archive"
-
-  # Newest-value-per-slot store used by vm_upsert. Must live on a mounted
-  # volume (docker-compose maps /volume1/docker/cel/state here): if it is lost,
-  # every slot looks new again and revisions can no longer be detected, so
-  # superseded values would stay in VictoriaMetrics.
-  state_db: "/data/state/vm_samples.db"
 
 # Logging
 logging:

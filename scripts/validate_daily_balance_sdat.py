@@ -2,8 +2,8 @@
 """
 Validate the daily CEL energy balance from the SDAT XML files (source data).
 
-See validate_daily_balance_vm.py for the equivalent check against the data
-actually stored in VictoriaMetrics.
+See validate_daily_balance_questdb.py for the equivalent check against the data
+actually stored in QuestDB.
 
 In a closed energy community, the electricity CONSUMED FROM CEL (local import)
 should equal the electricity PRODUCED TO CEL (local export) over the same day,

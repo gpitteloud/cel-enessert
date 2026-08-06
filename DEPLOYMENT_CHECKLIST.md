@@ -1,205 +1,190 @@
-# Deployment Checklist - E31 Integration
+# Deployment Checklist
 
-**Date**: 2026-06-26  
-**Purpose**: Deploy E31 community aggregate support + updated watcher
+**Last updated**: 2026-08-06
+**Purpose**: Deploy code, config or dashboard changes to the Synology NAS
+
+For a first-time install, use [QUICK_START_SYNOLOGY.md](QUICK_START_SYNOLOGY.md)
+instead — this covers updating a stack that is already running.
 
 ---
 
-## Files to Deploy (2 files to Synology)
+## What goes where
 
-### 1. **NEW: E31 Parser**
-```
-Source: cel-community/scripts/parse_sdat_e31_aggregated.py
-Target: synology:/volume1/docker/cel-parser/scripts/parse_sdat_e31_aggregated.py
-```
+| Repo path | NAS target |
+|-----------|------------|
+| `scripts/*.py`, `scripts/questdb_schema.sql` | `/volume1/docker/cel/scripts/` |
+| `config/api_config.yaml`, `config/meter_mappings.yaml` | `/volume1/docker/cel/config/` |
+| `grafana-dashboards/*.json` | `/volume1/docker/cel/grafana-dashboards/` |
+| `grafana-provisioning/**` | `/volume1/docker/cel/grafana-provisioning/` |
+| `docker-compose.yml` | Pasted into the Portainer stack, not copied |
 
-**What it does**: Parses E31 AggregatedMeteredData_1.3 files (community-level data)
-
-### 2. **UPDATED: File Watcher**
-```
-Source: cel-community/scripts/watch_ftproot.py
-Target: synology:/volume1/docker/cel-parser/scripts/watch_ftproot.py
-```
-
-**What changed**: Now detects and processes both E66 and E31 files
+Both `scripts/` and `config/` are bind-mounted into `cel-parser`, so a copied
+file is visible immediately — but the running process has already imported its
+modules, so **a script change needs a container restart** to take effect.
 
 ---
 
 ## Deployment Commands
 
-### Step 1: Copy Files to Synology
+### Step 1: Run the tests first
+
 ```bash
-# From your development machine, in /home/copadev/projects/cel/
-
-# Copy E31 parser (NEW)
-scp cel-community/scripts/parse_sdat_e31_aggregated.py \
-    synology:/volume1/docker/cel-parser/scripts/
-
-# Copy updated watcher (UPDATED)
-scp cel-community/scripts/watch_ftproot.py \
-    synology:/volume1/docker/cel-parser/scripts/
+# From the repo root
+python3 -m pytest tests -q
 ```
 
-### Step 2: Restart Parser Container
+The suite covers the parsers, the writer's last-write-wins semantics, and the
+dashboards' SQL. A dashboard change that breaks a plugin constraint fails here
+rather than rendering an empty panel on the NAS.
+
+### Step 2: Copy the changed files
+
 ```bash
-# SSH to Synology
+# From your development machine, in /home/copadev/projects/cel/cel-community/
+
+scp scripts/*.py scripts/questdb_schema.sql \
+    synology:/volume1/docker/cel/scripts/
+
+scp config/api_config.yaml \
+    synology:/volume1/docker/cel/config/
+
+scp grafana-dashboards/*.json \
+    synology:/volume1/docker/cel/grafana-dashboards/
+```
+
+Copy only what changed. In particular, **check `config/api_config.yaml` against
+the NAS copy before overwriting it** — the NAS copy is the live configuration and
+may have been edited in place.
+
+### Step 3: Restart what needs restarting
+
+```bash
 ssh synology
 
-# Restart the parser container
+# Script or config change:
 docker restart cel-parser
-
-# Watch logs to verify it's working
 docker logs -f cel-parser
+
+# Dashboard JSON change:  nothing. Provisioning re-reads from disk every ~10s.
+
+# docker-compose.yml or grafana-provisioning change:  redeploy the stack in
+# Portainer. Do this over SSH or the LAN IP, never through the Cloudflare
+# tunnel -- questdb-init pip-installs and verifies the schema before the parser
+# is allowed to start, which can exceed the tunnel's ~100s origin timeout. A 502
+# there is the gateway giving up on a deploy that is still running.
 ```
 
-### Step 3: Verify E31 Processing
-```bash
-# After a few minutes, check for E31 data in VictoriaMetrics
-curl 'http://victoriametrics:8428/api/v1/series?match[]=energy_community_aggregate_kwh' | jq
+### Step 4: Schema changes need `questdb-init`
 
-# Should return series with labels:
-# - community_id="101110-002726"
-# - flow_characteristic="E17" or "E18"
-# - product_code="8716867000030", "2404050010123", or "2404050010124"
-```
-
----
-
-## Grafana Dashboard (Optional - Import Manually)
-
-### File: `grafana-dashboard-e31-community.json`
-
-**Location**: `/home/copadev/projects/cel/grafana-dashboard-e31-community.json`
-
-**Import Steps**:
-1. Open Grafana web UI
-2. Go to **Dashboards → Import**
-3. Click **"Upload JSON file"**
-4. Select `grafana-dashboard-e31-community.json`
-5. Choose your **VictoriaMetrics datasource**
-6. Click **Import**
-
-**Dashboard Features**:
-- Community consumption/production totals
-- Self-sufficiency rate gauge
-- Grid dependency gauge
-- Consumption/production breakdown charts
-- E31 vs E66 validation charts
-
----
-
-## What Changes After Deployment
-
-### Before (Current State):
-- ❌ E31 files (6/day) are **ignored** - only E66 files (103/day) processed
-- ❌ No community-level aggregate data in VictoriaMetrics
-- ❌ Can't see community totals in Grafana
-
-### After (New State):
-- ✅ E31 files (6/day) are **processed** - all 109 files/day handled
-- ✅ Community aggregate data available in VictoriaMetrics
-- ✅ New metric: `energy_community_aggregate_kwh`
-- ✅ Can view community totals, self-sufficiency, grid dependency in Grafana
-- ✅ Can validate E31 aggregates vs sum of E66 meters
-
----
-
-## Expected Logs After Deployment
-
-```
-2026-06-26 14:30:01 CEST - __main__ - INFO - Processing 20260626_094741_12X-0000001536-1_E31_12X-00000020FW-5_813bf77c.xml
-2026-06-26 14:30:01 CEST - __main__ - INFO - 20260626_094741_12X-0000001536-1_E31_12X-00000020FW-5_813bf77c.xml: Parsed 480 community aggregate observations
-2026-06-26 14:30:02 CEST - __main__ - INFO - Successfully processed 20260626_094741_12X-0000001536-1_E31_12X-00000020FW-5_813bf77c.xml (480 data points)
-2026-06-26 14:30:02 CEST - __main__ - INFO - Archived 20260626_094741_12X-0000001536-1_E31_12X-00000020FW-5_813bf77c.xml to /data/archive/...
-```
-
-Look for:
-- `Processing` messages for both `E31` and `E66` files
-- `Parsed X community aggregate observations` for E31 files
-- `Successfully processed` with data point counts
-- No errors or warnings
-
----
-
-## Rollback (If Needed)
-
-If something goes wrong:
+`scripts/questdb_schema.sql` is the authoritative DDL and `questdb_init.py`
+verifies the live database against it. If you changed the DDL, redeploy the stack
+so `cel-questdb-init` runs again, and read its log:
 
 ```bash
-# SSH to Synology
+docker logs cel-questdb-init
+```
+
+A non-zero exit means the live schema does not match the DDL, and the parser will
+**refuse to start** rather than write into a table whose dedup keys or decimal
+precision differ. That refusal is the point: an auto-created table has no DEDUP
+and a default `DECIMAL(18,3)`, which silently double-counts overlapping
+deliveries.
+
+Note that `questdb_init.py` applies missing tables but does not migrate an
+existing one. Changing a dedup key or a column type on a populated table means
+dropping and rebuilding it, then replaying the archive **in ascending delivery
+order** — see [QUESTDB.md](QUESTDB.md#chronological-replay-is-a-correctness-requirement).
+
+---
+
+## Verification
+
+```bash
+# Parser is alive and processing
+docker logs --tail 50 cel-parser
+
+# Rows are landing
+docker exec cel-parser python3 -c \
+  "import os, psycopg; print(psycopg.connect(os.environ['QUESTDB_DSN']).execute(
+      'SELECT count() FROM cel_energy'
+  ).fetchone())"
+
+# A day's figures balance, source vs stored
+docker exec -it cel-parser python3 \
+  /app/scripts/validate_daily_balance_questdb.py 20260610
+```
+
+### Checklist
+
+- [ ] `pytest` green locally before copying anything
+- [ ] Only the intended files copied; `api_config.yaml` diffed against the NAS copy
+- [ ] Parser container restarted (if scripts or config changed)
+- [ ] `docker logs cel-questdb-init` exits 0 (if the schema changed)
+- [ ] Logs show both E66 and E31 files being processed, no errors
+- [ ] Nothing left behind in `/data/incoming` that should have been archived
+- [ ] Dashboards render data (a dashboard JSON change appears within ~10s)
+- [ ] Retired or renamed dashboards deleted **by hand in the Grafana UI** —
+      provisioning adds and updates but never deletes
+
+---
+
+## Expected Logs
+
+```
+2026-08-06 14:30:01 CEST - __main__ - INFO - Processing 20260806_094741_..._E31_....xml
+2026-08-06 14:30:01 CEST - __main__ - INFO - 20260806_094741_..._E31_....xml: Parsed 480 community aggregate observations
+2026-08-06 14:30:02 CEST - __main__ - INFO - QuestDB: wrote 480 rows from 20260806_094741_..._E31_....xml
+2026-08-06 14:30:02 CEST - __main__ - INFO - Successfully processed 20260806_094741_..._E31_....xml
+2026-08-06 14:30:02 CEST - __main__ - INFO - Archived 20260806_094741_..._E31_....xml to /data/archive/...
+```
+
+`Skipped by design: 9` in the batch summary is **expected, not an error**: a
+mapped virtual meter's ebIX production total duplicates its physical meter's, so
+the parser drops it (~9 files per delivery). Those files are archived. Only
+genuine failures stay in `/data/incoming`.
+
+---
+
+## Rollback
+
+Scripts are plain files on a bind mount, so rollback is a copy:
+
+```bash
 ssh synology
 
-# Stop the parser
 docker stop cel-parser
-
-# Restore old watcher (if you backed it up)
-cp /volume1/docker/cel-parser/scripts/watch_ftproot.py.backup \
-   /volume1/docker/cel-parser/scripts/watch_ftproot.py
-
-# Remove E31 parser
-rm /volume1/docker/cel-parser/scripts/parse_sdat_e31_aggregated.py
-
-# Restart
+cp /volume1/docker/cel/scripts/watch_ftproot.py.backup \
+   /volume1/docker/cel/scripts/watch_ftproot.py
 docker start cel-parser
 ```
 
-**Note**: E31 parser is standalone - removing it won't affect E66 processing.
-
----
-
-## Verification Checklist
-
-After deployment, verify:
-
-- [ ] Parser container restarted successfully
-- [ ] Logs show both E66 and E31 files being processed
-- [ ] No errors in logs
-- [ ] VictoriaMetrics has `energy_community_aggregate_kwh` metric
-- [ ] Metric has correct labels (community_id, flow_characteristic, product_code)
-- [ ] Grafana dashboard imported (if applicable)
-- [ ] Dashboard shows data (may take 10-15 minutes for first data)
-- [ ] All 109 files/day are processed (103 E66 + 6 E31)
+Data written before the rollback stays written. Because the dedup keys make the
+newest write win, re-running the previous code over the same deliveries simply
+overwrites those slots again — provided the deliveries are replayed in ascending
+date order.
 
 ---
 
 ## Troubleshooting
 
-### Problem: E31 files not processing
-**Check**: 
+### Parser will not start
+It waits on `cel-questdb-init` exiting 0. Check `docker logs cel-questdb-init`
+first; a schema mismatch is the usual cause.
+
+### Files pile up in `/data/incoming`
+A failed write marks the file FAILED and leaves it there deliberately, so it is
+retried rather than archived having stored nothing. Check `docker logs cel-parser`
+for the write error, and confirm QuestDB is up: `docker ps | grep cel-questdb`.
+
+### Import errors in the logs
 ```bash
-docker exec cel-parser ls -la /app/scripts/parse_sdat_e31_aggregated.py
+docker exec cel-parser python3 -c "from parse_sdat import parse_sdat; print('OK')"
+docker exec cel-parser python3 -c "from questdb_writer import QuestDBWriter; print('OK')"
 ```
-Should show the file exists
+A missing module usually means only some of `scripts/` was copied.
 
-### Problem: Import errors in logs
-**Check**: 
-```bash
-docker exec cel-parser python3 -c "from parse_sdat_e31_aggregated import parse_e31_xml; print('OK')"
-```
-Should print "OK"
-
-### Problem: No E31 data in VictoriaMetrics
-**Check**:
-1. Are E31 files in `/data/incoming`?
-2. Are they being archived to `/data/archive`?
-3. Check VictoriaMetrics URL in config: `/app/config/config.yaml`
-
-### Problem: E66 files stopped working
-**Check**: 
-```bash
-# Verify both parsers are importable
-docker exec cel-parser python3 -c "from parse_sdat_e66_individual import parse_sdat_xml; print('E66 OK')"
-docker exec cel-parser python3 -c "from parse_sdat_e31_aggregated import parse_e31_xml; print('E31 OK')"
-```
-
----
-
-## Summary
-
-**Deploy**: 2 files  
-**Restart**: 1 container  
-**Import**: 1 Grafana dashboard (optional)  
-**Result**: Process all 109 files/day (103 E66 + 6 E31)  
-**New metric**: `energy_community_aggregate_kwh`
-
-**Time estimate**: 5 minutes (excluding first data arrival wait)
+### Panels empty after a dashboard change
+Almost always a plugin constraint rather than the data — an un-cast `DECIMAL`
+column, `format` written as a string instead of the numeric enum, or a `byName`
+override on a multi-frame panel. `tests/test_dashboards_sql.py` catches all
+three; see [QUESTDB.md](QUESTDB.md#grafana).

@@ -2,9 +2,6 @@
 import pytest
 
 from parse_sdat import parse_sdat
-from parse_sdat_e31_aggregated import (
-    transform_e31_to_datapoints,
-)
 from models import MetricType
 from conftest import make_e31_xml, real_files
 
@@ -65,17 +62,16 @@ def test_metric_type_none_for_unknown_flow(write_xml):
     assert parse_sdat(f).metric_type is None
 
 
-def test_unknown_flow_omits_direction_segment_labels(write_xml):
-    # No classification -> the shared labels are simply absent (not 'unknown')
+def test_unknown_flow_yields_no_rows(write_xml):
+    # No classification -> no direction/segment to store, so the writer emits
+    # nothing rather than inventing an 'unknown' row that a sum() would pick up.
+    from questdb_writer import rows_from_e31
     f = write_xml(make_e31_xml(flow="E99", product_code="2404050010123"))
-    r = parse_sdat(f)
-    dps = transform_e31_to_datapoints(r)
-    assert "direction" not in dps[0]["metric"]
-    assert "segment" not in dps[0]["metric"]
+    assert rows_from_e31(parse_sdat(f)) == []
 
 
 def test_metric_type_direction_segment_properties():
-    # The enum splits into the two VM labels; 'local' maps to 'cel'
+    # The enum splits into the two stored columns; 'local' maps to 'cel'
     assert MetricType.CONSUMPTION_LOCAL.direction == "consumption"
     assert MetricType.CONSUMPTION_LOCAL.segment == "cel"
     assert MetricType.PRODUCTION_GRID.direction == "production"
@@ -150,54 +146,6 @@ def test_malformed_xml_returns_none(write_xml):
 
 
 # --------------------------------------------------------------------------
-# transform_e31_to_datapoints
-# --------------------------------------------------------------------------
-
-def test_transform_builds_vm_datapoints(write_xml):
-    f = write_xml(make_e31_xml(flow="E17", product_code="2404050010123",
-                               values=(5.0, 6.0)))
-    r = parse_sdat(f)
-    dps = transform_e31_to_datapoints(r)
-    assert len(dps) == 2
-    m = dps[0]["metric"]
-    assert m["__name__"] == "cel_community_energy_kwh"
-    assert m["project"] == "cel"
-    assert m["community_id"] == "101110-002726"
-    assert m["product_code"] == "2404050010123"
-    assert m["code_type"] == "VSENationalCode"
-    # shared direction/segment labels, same scheme as E66
-    assert m["direction"] == "consumption"
-    assert m["segment"] == "cel"
-    # flow_characteristic is redundant with direction; data_source with __name__
-    assert "flow_characteristic" not in m
-    assert "data_source" not in m
-    assert dps[0]["values"] == [5.0]
-    assert isinstance(dps[0]["timestamps"][0], int)
-
-
-def test_transform_omits_condition_label(write_xml):
-    # condition is parsed onto the Observation but NOT emitted as a series
-    # label: the provider revises a slot's condition across deliveries, so a
-    # condition label would split one slot into two series and double-count it.
-    f = write_xml(make_e31_xml(values=(1.0,)))
-    r = parse_sdat(f)
-    dps = transform_e31_to_datapoints(r)
-    assert "condition" not in dps[0]["metric"]
-
-
-def test_transform_empty_input():
-    assert transform_e31_to_datapoints(None) == []
-
-
-def test_transform_project_label_present(write_xml):
-    # Regression: E31 data must carry project=cel to match E66 label scheme
-    f = write_xml(make_e31_xml())
-    r = parse_sdat(f)
-    dps = transform_e31_to_datapoints(r)
-    assert all(dp["metric"]["project"] == "cel" for dp in dps)
-
-
-# --------------------------------------------------------------------------
 # Golden-file tests against real sample data.
 # Skip automatically when input/all/ is absent (gitignored).
 # --------------------------------------------------------------------------
@@ -237,13 +185,12 @@ def test_real_e31_flows_and_codes():
 
 
 @pytest.mark.skipif(not _E31_SAMPLES, reason="no real E31 sample files present")
-def test_real_e31_transforms_to_datapoints():
+def test_real_e31_builds_storable_rows():
+    from questdb_writer import E31_COLUMNS, rows_from_e31
     r = parse_sdat(_E31_SAMPLES[0])
-    dps = transform_e31_to_datapoints(r)
-    assert len(dps) == len(r.observations)
-    m = dps[0]["metric"]
-    assert m["__name__"] == "cel_community_energy_kwh"
-    assert m["project"] == "cel"
-    assert m["community_id"]
-    assert m["direction"] in ("consumption", "production")
-    assert m["segment"] in ("cel", "grid", "total")
+    rows = rows_from_e31(r)
+    assert len(rows) == len(r.observations)
+    row = dict(zip(E31_COLUMNS, rows[0]))
+    assert row["community_id"]
+    assert row["direction"] in ("consumption", "production")
+    assert row["segment"] in ("cel", "grid", "total")

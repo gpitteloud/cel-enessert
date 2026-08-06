@@ -4,55 +4,15 @@
 # `condition: service_completed_successfully`, which the 3.8 schema it claimed to
 # conform to did not support.
 services:
-  victoriametrics:
-    image: victoriametrics/victoria-metrics:latest
-    container_name: cel-victoriametrics
-    restart: unless-stopped
-    ports:
-      - "8428:8428"
-    volumes:
-      - /volume1/docker/cel/victoria-data:/victoria-metrics-data
-    command:
-      - "--storageDataPath=/victoria-metrics-data"
-      - "--httpListenAddr=:8428"
-      # 2 years. An unsuffixed number means MONTHS in VictoriaMetrics, so the
-      # previous "24" was already 2 years, not 24 hours -- spelled as 2y here
-      # because it reads unambiguously. Valid suffixes are h/d/w/y only; there
-      # is no "m" suffix, so "24m" would be rejected.
-      - "--retentionPeriod=20y"
-      # REQUIRED, not an optimisation. The provider delivers overlapping 5-day
-      # files daily, so each 15-min slot is imported 5-7 times. Without this
-      # flag every copy was retained and sum()/increase() counted the slot 5-7
-      # times -- sum(E66) read ~6x E31 for June 2026 consumption.
-      #
-      # VM de-duplicates identical (metric_name, labels, timestamp) on ingestion
-      # regardless of this flag, but on QUERY it only collapses samples within a
-      # discrete interval of -dedup.minScrapeInterval (default 1m). Our slots
-      # are 15 min apart, so at 1m nothing collapsed. 15m == the native
-      # resolution keeps exactly one sample per real slot. Do NOT set it larger:
-      # 30m or 1h would silently drop real distinct slots and halve the energy.
-      #
-      # CAVEAT: ingest dedup keeps the sample with the MAXIMUM value for a given
-      # timestamp, not the most recently written one. The provider revises ~2.6%
-      # of overlapping slots downward, so totals read ~1.15% high (measured over
-      # 2026-04-30..2026-07-22; worst single slot +9.4 kWh). Acceptable versus
-      # the ~500% error it replaces. To be exact you must avoid writing the
-      # superseded values at all -- see PARSING_GUIDE.md "Overlapping deliveries".
-      - "--dedup.minScrapeInterval=15m"
-    networks:
-      - cel-network
-
-  # Migration target, see MIGRATION_QUESTDB.md. Runs alongside VictoriaMetrics
-  # until the dashboards are converted; the parser dual-writes (see the
-  # `questdb.enabled` flag in config/api_config.yaml).
+  # The system of record. See QUESTDB.md.
   questdb:
     image: questdb/questdb:9.4.3
     container_name: cel-questdb
     restart: unless-stopped
     # DELIBERATELY no `ports:` -- QuestDB OSS serves the web console and the
-    # REST API on 9000 with no meaningful auth, so publishing it would be the
-    # same unauthenticated-write exposure VM had. Everything that needs it
-    # (parser, Grafana) is on cel-network. To inspect the console, tunnel it:
+    # REST API on 9000 with no meaningful auth, so publishing it would expose
+    # unauthenticated writes to anyone who can reach the NAS. Everything that
+    # needs it (parser, Grafana) is on cel-network. To inspect the console:
     #   ssh -L 9000:cel-questdb:9000 <nas>     (or `docker exec` + curl)
     volumes:
       - /volume1/docker/cel/questdb-data:/var/lib/questdb
@@ -115,18 +75,16 @@ services:
       # change the live password -- they would just hardcode a stale credential
       # here and silently reset the admin back to it if the volume is ever
       # recreated. Manage the password in Grafana's UI instead.
-      # QuestDB datasource plugin (pre-1.0; see MIGRATION_QUESTDB.md Phase 5).
-      # If it proves unusable, the fallback is Grafana's built-in Postgres
-      # datasource against questdb:8812 -- remove this line in that case.
+      # QuestDB datasource plugin (pre-1.0; its constraints are documented in
+      # QUESTDB.md). If it proves unusable, the fallback is Grafana's built-in
+      # Postgres datasource against questdb:8812 -- remove this line in that case.
       - GF_INSTALL_PLUGINS=questdb-questdb-datasource
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_energy_overview.json
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
       - GF_SERVER_DOMAIN=grafana.oche22.ch
     depends_on:
-      # Both stores: grafana-provisioning/datasources/ now defines a QuestDB
-      # datasource too, and the *-questdb.json dashboards read through it. Only
-      # ordering, not readiness -- Grafana retries a datasource that is not up.
-      - victoriametrics
+      # Ordering only, not readiness -- Grafana retries a datasource that is
+      # not up yet.
       - questdb
     networks:
       - cel-network
@@ -141,27 +99,23 @@ services:
       - /volume1/docker/cel/config:/app/config
       - /volume1/docker/cel/logs:/app/logs
       - /volume1/docker/cel/archive:/data/archive
-      - /volume1/docker/cel/state:/data/state
     working_dir: /app
     command: >
       sh -c "
-        pip install --no-cache-dir requests pyyaml watchdog 'psycopg[binary]' &&
+        pip install --no-cache-dir pyyaml watchdog 'psycopg[binary]' &&
         python scripts/watch_ftproot.py
       "
     environment:
-      - VICTORIA_METRICS_URL=http://victoriametrics:8428
       # PG-wire endpoint. Default OSS credentials are admin/quest and cannot be
       # changed in OSS without server.conf; the port is unpublished (see the
       # questdb service) so it is reachable only from cel-network.
       - QUESTDB_DSN=postgresql://admin:quest@questdb:8812/qdb
     depends_on:
-      victoriametrics:
-        condition: service_started
       questdb-init:
         # Not just `questdb`: wait for the schema to be applied AND verified.
         # Starting sooner risks the first INSERT auto-creating a table without
-        # DEDUP and with a default DECIMAL(18,3) -- silently reintroducing the
-        # duplicate-counting this migration removes.
+        # DEDUP and with a default DECIMAL(18,3), which would silently
+        # reintroduce the duplicate-counting the dedup keys prevent.
         condition: service_completed_successfully
     networks:
       - cel-network

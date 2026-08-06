@@ -1,12 +1,10 @@
 """Tests for questdb_writer - the newest delivered value must win.
 
-The contract differs from vm_upsert in one important way. VM keeps the MAXIMUM
-value for a duplicated key, so vm_upsert needed a local store, revision
-detection, and a whole-series rewrite. QuestDB's DEDUP UPSERT KEYS *replaces* the
-row, so a plain INSERT suffices -- but last-write-wins has no notion of "newest
-delivery", so **replay order becomes a correctness requirement**. Both halves of
-that trade are pinned below, including the regression that out-of-order replay
-now causes (documented, not accidental).
+`DEDUP UPSERT KEYS` *replaces* the row for a duplicated key, so a plain INSERT
+handles the provider's overlapping deliveries and downward revisions -- but
+last-write-wins has no notion of "newest delivery", so **replay order is a
+correctness requirement**. Both halves of that trade are pinned below, including
+the regression that out-of-order replay causes (documented, not accidental).
 
 `FakeQuestDB` (conftest) mirrors the dedup keys from questdb_schema.sql. If those
 keys drift apart, these tests are testing semantics the database does not have --
@@ -75,8 +73,8 @@ def test_dedup_keys_match_schema_file():
     """The fake's dedup keys must match the real DDL.
 
     Without this, every LWW assertion below could be validating behaviour the
-    database does not implement -- the exact class of mistake that let the VM
-    dedup bug hide for so long.
+    database does not implement, and the suite would pass while overlapping
+    deliveries silently double-counted in production.
     """
     import re
     from questdb_init import _split_statements
@@ -229,7 +227,8 @@ def test_new_rows_are_inserted(fake_questdb):
 
 
 def test_downward_revision_wins(fake_questdb):
-    """The case VM cannot express: it would keep 0.003."""
+    """A revision downward must land. Keeping the max per slot would pin this
+    to 0.003 forever, which is exactly what the schema's dedup keys avoid."""
     fake_questdb.writer.write_e66(e66([(TS, '0.003')]))
     fake_questdb.writer.write_e66(e66([(TS, '0.002')]))
 
@@ -257,7 +256,7 @@ def test_condition_revision_updates_in_place(fake_questdb):
     """Estimated -> measured must overwrite, never fork into a second row.
 
     This is the double-count that keeping `condition` out of the dedup key
-    prevents, and it is why VM could not store the grade at all.
+    prevents.
     """
     fake_questdb.writer.write_e66(e66([(TS, '1.000')], condition='21'))
     fake_questdb.writer.write_e66(e66([(TS, '1.000')], condition=None))
@@ -294,12 +293,12 @@ def test_e66_and_e31_land_in_separate_tables(fake_questdb):
 
 
 def test_out_of_order_replay_regresses_documented_limitation(fake_questdb):
-    """QuestDB has NO staleness guard -- unlike vm_upsert, which refused this.
+    """QuestDB has NO staleness guard: nothing refuses an older delivery.
 
     Pinned deliberately: replaying an older delivery last overwrites newer data.
     This is why chronological replay order is a correctness requirement (see the
-    module docstring and MIGRATION_QUESTDB.md). If QuestDB ever gains a
-    conditional upsert, this test should start failing and be replaced.
+    module docstring and QUESTDB.md). If QuestDB ever gains a conditional
+    upsert, this test should start failing and be replaced.
     """
     fake_questdb.writer.write_e66(e66([(TS, '0.002')]))   # newest delivery
     fake_questdb.writer.write_e66(e66([(TS, '0.003')]))   # stale replay, later
@@ -629,7 +628,8 @@ def test_real_deliveries_end_at_newest_value(fake_questdb):
 
 def test_real_deliveries_contain_downward_revisions():
     """Guards the premise: if the corpus stops containing downward revisions,
-    the golden test silently stops covering the case VM gets wrong."""
+    the golden test silently stops covering the case last-write-wins exists
+    for."""
     groups = _real_deliveries()
     if len(groups) < 3:
         pytest.skip('needs >=3 real overlapping deliveries in input/all')

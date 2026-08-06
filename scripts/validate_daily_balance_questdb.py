@@ -2,10 +2,9 @@
 """
 Validate the daily CEL energy balance from QuestDB (stored data).
 
-The QuestDB counterpart of validate_daily_balance_vm.py, which this replaces once
-VM is retired in Phase 7. validate_daily_balance_sdat.py sums the source SDAT XML;
-this one sums what actually landed in the database. Running both confirms the
-ingest pipeline stored the data faithfully.
+validate_daily_balance_sdat.py sums the source SDAT XML; this one sums what
+actually landed in the database. Running both confirms the ingest pipeline stored
+the data faithfully.
 
 In a closed energy community, over any day the electricity CONSUMED FROM CEL
 (local import) equals the electricity PRODUCED TO CEL (local export).
@@ -21,20 +20,19 @@ Checks (for the CEL-local VSE code 2404050010123):
 
   Cross-check: E66 consumption sum == E31 consumption aggregate.
 
-Two differences from the VM version, both deliberate:
+Two things worth knowing about the numbers it prints:
 
-  * Sums are exact. VM's /api/v1/export returns float64, so its sums carry
-    binary rounding; QuestDB's DECIMAL(12,3) comes back through psycopg as
-    decimal.Decimal and stays exact all the way to the printed number. The
-    tolerances survive only because the *provider's* breakdown is estimated
-    (condition 21) -- not because the arithmetic is lossy.
+  * The sums are exact. DECIMAL(12,3) comes back through psycopg as
+    decimal.Decimal and stays exact all the way to the printed number, so no
+    tolerance here exists to absorb binary rounding. The tolerances survive only
+    because the *provider's* breakdown is estimated (condition 21).
 
   * Every cel_energy read is scoped to the community. The provider delivers E66
     files for 8 meters with no <Community> element (community_id NULL) that are
     not in the E31 aggregate, so an unscoped sum() is not comparable to the E31
-    figure beside it -- see MIGRATION_QUESTDB.md. Those 8 carry only the ebIX
-    total and no VSE breakdown, so today they contribute nothing at
-    segment='cel'; the filter is here so that stops being load-bearing.
+    figure beside it -- see QUESTDB.md. Those 8 carry only the ebIX total and no
+    VSE breakdown, so today they contribute nothing at segment='cel'; the filter
+    is here so that stops being load-bearing.
 
 The "day" is a UTC calendar day [YYYYMMDD 00:00:00Z, +24h). Each stored sample is
 a 15-min interval kWh value, so summing the day's samples gives daily kWh.
@@ -60,8 +58,8 @@ CEL_LOCAL = '2404050010123'      # VSE code: energy exchanged within the communi
 DEFAULT_COMMUNITY = '101110-002726'
 
 # Tolerance: breakdown data is estimated (condition 21); allow small rounding
-# drift. Kept identical to the VM and SDAT validators so the three agree on what
-# counts as a pass.
+# drift. Kept identical to the SDAT validator so the two agree on what counts as
+# a pass.
 TOLERANCE_KWH = Decimal('1.0')
 TOLERANCE_PCT = Decimal('0.5')
 

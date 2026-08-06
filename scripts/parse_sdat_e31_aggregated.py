@@ -3,7 +3,7 @@
 Parser for E31 AggregatedMeteredData_1.3 format (community aggregates)
 
 Parses E31 XML files containing community-level aggregated energy data
-and converts to VictoriaMetrics format.
+and decodes them into MeteredData observations.
 """
 
 from datetime import datetime
@@ -101,73 +101,3 @@ def parse_e31(root) -> Optional[MeteredData]:
     except Exception as e:
         logger.error(f"Error decoding E31 document: {e}", exc_info=True)
         return None
-
-
-def transform_e31_to_datapoints(parsed_data: Optional[MeteredData]) -> List[Dict]:
-    """
-    Transform parsed E31 data to VictoriaMetrics data points
-
-    Args:
-        parsed_data: MeteredData from parse_e31()
-
-    Returns:
-        List of data points in VictoriaMetrics NDJSON format
-    """
-    if not parsed_data or not parsed_data.observations:
-        return []
-
-    data_points = []
-
-    # Extract metadata for labels
-    community_id = parsed_data.community_id or 'unknown'
-    community_type = parsed_data.community_type or 'unknown'
-    product_code = parsed_data.product_code or 'unknown'
-    code_type = parsed_data.code_type or 'unknown'
-    grid_area = parsed_data.grid_area or 'unknown'
-    metric_type = parsed_data.metric_type
-
-    # Community aggregate (E31) kept under its own metric name so it never mixes
-    # with the per-meter E66 series (which would double-count on sum()). The two
-    # shared dimensions are exposed as labels, same scheme as E66:
-    #   direction = consumption | production
-    #   segment   = cel | grid | total
-    metric_name = 'cel_community_energy_kwh'
-
-    for obs in parsed_data.observations:
-        timestamp_dt = datetime.fromisoformat(obs.timestamp)
-        timestamp_ms = int(timestamp_dt.timestamp() * 1000)
-
-        # Build labels
-        labels = {
-            'project': 'cel',
-            'community_id': community_id,
-            'community_type': community_type,
-            'product_code': product_code,
-            'code_type': code_type,
-            'grid_area': grid_area,
-        }
-
-        # Shared direction/segment labels (only when the metric type classified;
-        # e.g. an unknown flow leaves them off rather than emitting 'unknown').
-        if metric_type:
-            labels['direction'] = metric_type.direction
-            labels['segment'] = metric_type.segment
-
-        # `condition` (measured vs estimated) is deliberately NOT a label: the
-        # provider revises a slot's condition across overlapping deliveries, so
-        # keeping it in the series identity would split one slot into two
-        # parallel series and double-count it on sum(). See the matching note in
-        # parse_sdat_e66_individual.transform_to_datapoints.
-
-        data_point = {
-            'metric': {
-                '__name__': metric_name,
-                **labels
-            },
-            'values': [obs.value],
-            'timestamps': [timestamp_ms]
-        }
-
-        data_points.append(data_point)
-
-    return data_points

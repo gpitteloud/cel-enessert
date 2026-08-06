@@ -1,8 +1,7 @@
 apiVersion: 1
 
-# QuestDB alongside VictoriaMetrics (MIGRATION_QUESTDB.md Phase 5). Both are
-# provisioned at once on purpose: the *-questdb.json dashboards can be compared
-# against their VM originals panel by panel before VM is retired in Phase 7.
+# The only datasource: QuestDB is the system of record. See QUESTDB.md, which
+# also lists the plugin's silent-failure constraints.
 #
 # uid is pinned to "QuestDB" because the dashboard JSONs reference it by uid.
 # Grafana would otherwise assign a random one and every panel would load with

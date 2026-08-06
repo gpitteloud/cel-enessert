@@ -14,9 +14,9 @@ from typing import List, Optional, Union
 class MetricType(str, Enum):
     """Energy metric types, shared by E66 and E31.
 
-    Each value is a ``direction`` x ``segment`` pair. Both are exposed as
-    VictoriaMetrics labels (see :attr:`direction` / :attr:`segment`) so E66 and
-    E31 series can be queried with one label scheme instead of six metric names.
+    Each value is a ``direction`` x ``segment`` pair. Both are stored as columns
+    (see :attr:`direction` / :attr:`segment`) so E66 and E31 rows share one
+    scheme and can be filtered the same way in either table.
     """
     CONSUMPTION_TOTAL = 'consumption_total'
     CONSUMPTION_GRID = 'consumption_grid'
@@ -27,15 +27,15 @@ class MetricType(str, Enum):
 
     @property
     def direction(self) -> str:
-        """'consumption' | 'production' -> the VM `direction` label."""
+        """'consumption' | 'production' -> the stored `direction` column."""
         return self.value.split('_', 1)[0]
 
     @property
     def segment(self) -> str:
-        """'cel' | 'grid' | 'total' -> the VM `segment` label.
+        """'cel' | 'grid' | 'total' -> the stored `segment` column.
 
-        The enum uses 'local' internally (VSE terminology); the label uses 'cel'
-        to match how the community refers to its local exchange.
+        The enum uses 'local' internally (VSE terminology); the stored value uses
+        'cel' to match how the community refers to its local exchange.
         """
         part = self.value.split('_', 1)[1]
         return 'cel' if part == 'local' else part

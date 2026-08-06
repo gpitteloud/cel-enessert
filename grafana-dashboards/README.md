@@ -1,58 +1,89 @@
 # CEL Grafana Dashboards
 
-Production dashboards for CEL community energy monitoring.
+Production dashboards for CEL community energy monitoring. Both read SQL from
+QuestDB through the `questdb-questdb-datasource` plugin.
 
-## Metric & label schema
+## Table & column schema
 
-Both dashboards use two energy metrics, each split by orthogonal labels rather
-than baked-into-the-name variants:
+Two tables, each split by orthogonal columns rather than baked-into-the-name
+variants:
 
-| Metric | Source | Meaning |
-|--------|--------|---------|
-| `cel_energy_kwh` | E66 | Per-meter energy, kWh per 15-min interval |
-| `cel_community_energy_kwh` | E31 | Community aggregate, kWh per 15-min interval |
+| Table | Source | Meaning |
+|-------|--------|---------|
+| `cel_energy` | E66 | Per-meter energy, kWh per 15-min interval |
+| `cel_community_energy` | E31 | Community aggregate, kWh per 15-min interval |
 
-Shared labels:
+Shared columns:
 
 - `direction` = `consumption` \| `production`
 - `segment` = `cel` \| `grid` \| `total`  (total = cel + grid)
 - `product_code` (`8716867000030` = total, `2404050010123` = CEL, `2404050010124` = grid), `code_type`, `community_id`
 - E66 also: `meter_id`; E31 also: `community_type`, `grid_area`
+- `value` is `DECIMAL(12,3)`
 
-> **`condition` is NOT a label.** The provider marks each reading measured or
-> estimated (`21`) and *revises that grade across overlapping deliveries* — the
-> same 15-min slot can arrive estimated one day and measured the next. If
-> `condition` were part of the series identity, that slot would land in two
-> parallel series and every `sum()` would double-count it. So the parser drops
-> `condition` on ingest: each `(meter, segment, direction)` is a single series
-> and a later delivery overwrites the earlier value in place. Queries therefore
-> use bare selectors — no `sum without(condition)` wrapper is needed anywhere.
+> **Panels filter on `segment`, not `product_code`.** They are the same
+> distinction, but `segment` is the name the parser derives and stores, so a
+> provider-side change of encoding does not silently empty a panel.
 
-> Two distinct metric names are kept deliberately so `sum()` over per-meter data
-> is never confused with the community aggregate.
+> **`condition` is stored but is never part of a row's identity.** The provider
+> marks each reading measured or estimated (`21`) and *revises that grade across
+> overlapping deliveries* — the same slot can arrive estimated one day and
+> measured the next. If `condition` were a dedup key, that slot would become two
+> rows and every `sum()` would double-count it. It is payload, so each
+> `(ts, meter, segment, direction, product_code, community_id)` is one row and a
+> later delivery overwrites it in place.
+
+> Two tables are kept deliberately so `sum()` over per-meter data cannot be
+> confused with the community aggregate that already contains it.
+
+## Two plugin rules every query obeys
+
+Both fail **silently** — the panel renders empty or as a string, with nothing in
+the Grafana log. Full list in [../QUESTDB.md](../QUESTDB.md#four-plugin-traps-each-of-which-fails-silently).
+
+1. **Every output column is `cast(... AS DOUBLE)`.** The plugin has no `DECIMAL`
+   converter, so an un-cast `value` arrives as a string and the panel reports
+   "Data is missing a number field". Cast the **outer** expression only, so the
+   inner `sum()` stays exact.
+2. **Series are named with `byFrameRefID` overrides, never `byName`.** The plugin
+   names each frame after its refId and Grafana prefixes multi-frame panels with
+   it ("A From CEL"), which makes a `byName` matcher match nothing — taking the
+   panel's colours down with it.
 
 ## Power vs energy on line charts
 
-Stored samples are **energy per 15-min interval** (kWh/15min), which is additive.
-If plotted raw, Grafana's downsampling picks one sample per step instead of
-summing, so a zoomed-out chart under-reads by up to ~4×.
+Stored values are **energy per 15-min interval** (kWh/15min), which is additive.
+Plotted raw, Grafana's downsampling picks one sample per step instead of summing,
+so a zoomed-out chart under-reads by up to ~4×.
 
-The timeseries (line) panels therefore display **average power in kW** instead:
+The timeseries (line) panels therefore display **average power in kW**:
 
-```promql
-(avg_over_time(<selector>[$__interval:15m])) * 4
+```sql
+SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS "..."
+FROM (
+  SELECT ts, sum(value) AS slot_kwh
+  FROM cel_energy
+  WHERE $__timeFilter(ts) AND ...
+  SAMPLE BY 15m           -- pins the slot width, whatever the outer bucket is
+)
+SAMPLE BY $__sampleByInterval FILL(NULL)
+ORDER BY time
 ```
 
-- `avg_over_time(...[$__interval:15m])` averages every 15-min sample inside the
-  step bucket, so energy is conserved at any zoom level.
-- `* 4` converts kWh per 15-min (0.25 h) to kW.
-- The `:15m` subquery step floors the resolution at the native 15 min so
-  `$__interval` never drops below it (no empty buckets / gaps).
+- The inner `SAMPLE BY 15m` sums across meters within one native slot; the outer
+  `avg` then averages slots inside the display bucket, so energy is conserved at
+  any zoom level.
+- `* 4` converts kWh per 15-min (0.25 h) to kW. Note this multiplies by an
+  **integer** literal, never `4.000m`: decimal × decimal sums precision and would
+  push the column out of the DECIMAL64 fast path.
+- **`sum(value) * 4` is wrong** for any bucket wider than 15 min — a 1h bucket of
+  4×1 kWh gives 16, not 4 kW. Average first, then scale.
 - Unit is `kwatt` (kW).
 
-Stat and pie panels don't need the power conversion — their panel-level reduce
-`sum` totals energy over the range correctly — so they use bare selectors.
-Gauge panels use `sum(increase(<selector>[$__range]))`.
+Stat and pie panels don't need the conversion — their panel-level reduce `sum`
+totals energy over the range correctly. Gauges use plain `sum(value)` ratios and
+`format: TABLE`, because a bucketed query would be reduced with `lastNotNull` and
+report the newest bucket instead of the range total.
 
 ### Legend calcs on power charts — `Mean` and `Max`
 
@@ -71,24 +102,31 @@ Energy (kWh) is not mixed into these legends either. Read it from the panels
 built for it: the **stat** panels (Total Consumption / Total Production) and the
 **pie** panels, whose panel-level reduce `sum` totals true energy over the range.
 
-> An earlier version added a hidden `... (kWh)` companion series (a
-> `sum_over_time(...)` target pinned to `unit: kwatth` + `hideFrom.viz`) so the
-> legend could carry real energy. It was removed: two entries per segment made
-> the legend harder to read for a number already available elsewhere. Don't
-> reintroduce it — if a query or override mentions `(kWh)`, it's a leftover.
+> An earlier version added a hidden `... (kWh)` companion series pinned to
+> `unit: kwatth` + `hideFrom.viz` so the legend could carry real energy. It was
+> removed: two entries per segment made the legend harder to read for a number
+> already available elsewhere. Don't reintroduce it — if a query or override
+> mentions `(kWh)`, it's a leftover.
 
 ## Available Dashboards
 
 ### 1. cel_energy_overview.json
-**Individual meter dashboard** — per-meter consumption and production.
+**Individual meter dashboard** — per-meter consumption and production. This is
+the default home dashboard.
 
-- Meter selector dropdown (auto-populated from `label_values(cel_energy_kwh{segment="total", direction="consumption"}, meter_id)`)
+- Meter selector dropdown, populated by
+  `SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id`,
+  with `regex: .*([0-9A-Z]{8})$` reducing each ID to its 8-char suffix
 - Daily consumption / production charts, CEL + Grid split (kW)
 - Total consumption / production stats (kWh)
 - CEL % gauges (share of consumption / production from CEL)
 - Energy balance line chart (net production − consumption, kW)
 
-Metric: `cel_energy_kwh`, filtered by `segment` / `direction` / `meter_id`.
+Reads `cel_energy`, filtered by `segment` / `direction` / `meter_id`. The meter
+filter is `meter_id LIKE '%$meter_id'`, matching the variable's 8-char suffix
+against the full ID. If the variable is ever switched to `includeAll`, change
+these to `$__conditionalAll` at the same time — not before, since `LIKE` is what
+matches today's single-select behaviour exactly.
 
 ### 2. grafana-dashboard-e31-v2.json
 **Community aggregate dashboard** — community-level totals and statistics.
@@ -97,49 +135,55 @@ Metric: `cel_energy_kwh`, filtered by `segment` / `direction` / `meter_id`.
 - Self-sufficiency rate (CEL %) and grid dependency (%) gauges
 - Consumption / production over time — **CEL + Grid only** (total omitted for clarity), kW
 - Consumption / production source distribution (pie, CEL vs Grid)
-- Validation: E31 aggregate vs sum of E66 `segment="total"` meters (measured-vs-measured), plus a difference panel that should sit near zero
+- Validation: E31 aggregate vs sum of E66 `segment = 'total'` meters
+  (measured-vs-measured), plus a difference panel that should sit near zero
 
-Metric: `cel_community_energy_kwh`, filtered by `direction` / `product_code`.
+Reads `cel_community_energy`, filtered by `direction` / `segment`.
 
 #### What the validation panels should show
 
-The E66 side sums `segment="total"` across all meters. This is a clean
-measured-vs-measured comparison **only because production totals are
-single-sourced** — see below.
+Panels 13-15 read **both tables on purpose** — comparing them is the point.
+Everywhere else that would double-count, so
+`test_queries_target_the_right_table` holds an explicit `(panel, refId)`
+allow-list.
 
-- **Production:** the difference panel sits at **≈ 0 up to data date
-  2026-06-30** (E31 total == sum of E66 physical production totals, exact to
-  rounding, e.g. both 2558.6 kWh on 2026-06-15). A gap of the *wrong sign* —
-  sum(E66) ≈ 1.6× E31 — means an ingest regression: an old parser storing
-  `condition` as a label (revised slots double-counted) or duplicate
-  virtual-meter totals creeping back in, see below. Both are fixed at ingest, so
-  a stale gap is cured by a full re-replay through the current parser.
-- **Production from 2026-07-01:** sum(E66) is a steady **0.89–0.94 × E31**
-  (30–60 kWh/day short) for a provider-side reason, not a bug. Meter `0046782G`
-  delivers production `0.000` for every interval from data date 2026-06-23
-  onward — on its physical ebIX total *and* on virtual twin `08552310`'s
-  CEL/Grid breakdown — yet E31 started including it again on 2026-07-01. The
-  missing energy has the shape of one meter's daily solar profile. See
+**Both sides filter `community_id = '101110-002726'`, and that filter is
+load-bearing.** The provider delivers E66 files for 8 meters with no `<Community>`
+element, so their `community_id` is NULL and they are absent from the E31
+aggregate. An unscoped `sum(cel_energy)` includes them and overstates the E66
+side by **~24% on consumption and ~33% on production** — which looks exactly like
+a validation failure and is not one.
+
+Panel 15 computes the difference with one `UNION ALL` and the E66 side negated,
+so a single `sum()` per slot yields `E31 − Sum(E66)`. `UNION ALL` drops the
+designated timestamp that `SAMPLE BY` needs, hence the subquery's `ORDER BY ts` +
+`timestamp(ts)`.
+
+With the community filter in place, on days where E31 has data the two sides
+agree to within ~1.5-3% — ordinary revision noise — except for these known
+provider-side residuals:
+
+- **Production from 2026-07 onward: E66 reads ~10% low** (July −471 kWh, August
+  −102 kWh; May and June match to the decimal). A per-meter production reading
+  stopped being delivered while the E31 aggregate kept counting it. Meter
+  `0046782G` reports `0.000` production from 2026-07 (1057/1064 slots zero in
+  July, 184/184 in August) and is a component of this. See
   `PROVIDER_QUESTIONS.md` Q16c.
-- **Consumption:** small and positive — sum(E66) runs **1.00–1.09 × E31**
-  throughout (E66 slightly above E31, no sign flip). A monthly E31 file also
-  injects consumption from 2026-04-30 where no E66 exists — that day alone reads
-  as a large negative difference. See `PROVIDER_QUESTIONS.md` Q16a/Q16b.
+- **E31 consumption is all-zero for 2026-06-02..24** — 23 days, `cel` and `grid`
+  alike, while `production.total` keeps arriving. Confirmed in the raw XML: 960
+  `Volume` elements, none non-zero. Delivered as zeros rather than as absent
+  rows, so no query can tell it from genuine zero consumption; it simply drags
+  any mean over that window down. The difference panel will show a large gap
+  there and it is not an ingest problem.
+- A monthly E31 file injects consumption for 2026-04-30 where no E66 exists, so
+  that day alone reads as a large negative difference. See
+  `PROVIDER_QUESTIONS.md` Q16a/Q16b.
 
-> **If June consumption shows E31 ≈ 0 (sum(E66) > 2× E31), the monthly backfill
-> lost the overwrite race.** June 2026 E31 consumption exists in exactly **one
-> place**: six monthly E31 files (2880 observations each, covering
-> 2026-05-31..2026-06-30) delivered on **2026-07-07** at `1047xx`. Every June
-> *daily* delivery (20260603..20260625) carries `0.000` for all consumption
-> intervals. The backfill and the dailies produce **identical label sets**, so
-> they are the same VM series and the **last write wins**. Replayed in ascending
-> delivery order the backfill lands last and June reads 1.02–1.09; if those six
-> files are re-ingested *before* the June dailies — or never ingested at all
-> (e.g. dedup skipped them because they were already listed in an archive zip) —
-> June collapses to E31 = 0 for 22 days.
->
-> Fix without a full re-replay: re-ingest just those six files **after**
-> everything else, then confirm June ratios return to ~1.03.
+A gap of the *wrong sign* on production — sum(E66) ≈ 1.6× E31 — would instead
+mean an ingest regression: `condition` promoted to a dedup key (revised slots
+forking into two rows) or duplicate virtual-meter totals creeping back in. Both
+are prevented at ingest, so a stale gap is cured by a full re-replay through the
+current parser — **in ascending delivery order**, since the last write wins.
 
 #### Meter attribution — why production totals aren't double-counted
 
@@ -149,18 +193,15 @@ virtual meter reports a production **total identical** to the physical meter's
 **drops the virtual meter's total on ingest** and keeps only the physical one,
 while re-attributing the virtual meter's CEL/Grid **breakdown** to the physical
 `meter_id`. Net effect: every producer's consumption *and* production live under
-one physical ID, and `sum(cel_energy_kwh{segment="total", direction="production"})`
-counts each producer once. (The self-contained meter `0134575W` carries its own
-total + breakdown and is exempt from this drop.)
+one physical ID, and `sum(value)` over
+`segment = 'total' AND direction = 'production'` counts each producer once. (The
+self-contained meter `0134575W` carries its own total + breakdown and is exempt
+from this drop.)
 
 Those ~9 dropped files per delivery are an expected outcome, not failures: the
 parser returns a `SkippedDocument`, the watcher logs it at INFO and archives the
 file (`Skipped by design:` / `Skipped by design: 9` in the batch summary). Only
 genuine failures stay in `/data/incoming`.
-
-> If the production validation panel ever shows sum(E66) ≈ 1.6× E31, the fix is
-> either a stale replay (run `scripts/cleanup_virtual_production_totals.py`) or a
-> regression in the `parse_e66` virtual-total drop.
 
 ## Installation
 
@@ -184,6 +225,10 @@ scp cel_energy_overview.json grafana-dashboard-e31-v2.json \
     <nas>:/volume1/docker/cel/grafana-dashboards/
 ```
 
+> Provisioning adds and updates dashboards but does **not** delete ones removed
+> from disk. A dashboard that has been renamed or retired must be deleted by hand
+> in the Grafana UI, or it lingers as a stale copy.
+
 > The default home dashboard is set in docker-compose via
 > `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` → `cel_energy_overview.json`.
 > That env var is read only at container start, so changing it needs a Grafana
@@ -192,43 +237,95 @@ scp cel_energy_overview.json grafana-dashboard-e31-v2.json \
 ### Manual import
 
 1. Open Grafana: https://grafana.oche22.ch (or `http://<synology-ip>:3000`)
-2. Login: admin/admin
+2. Log in
 3. Dashboards → Import → upload JSON
-4. Select datasource: **VictoriaMetrics**
+4. Select datasource: **QuestDB**
 
 ## Queries
 
-All queries use the VictoriaMetrics datasource at `http://victoriametrics:8428`.
+All queries use the QuestDB datasource, provisioned in
+`grafana-provisioning/datasources/questdb.yaml` against `questdb:8812` (PG-wire).
+Available macros: `$__timeFilter(col)`, `$__sampleByInterval`, `$__fromTime` /
+`$__toTime`, `$__conditionalAll(cond, $var)`. There is **no** `$__interval` or
+`$__range` on this datasource.
 
-```promql
-# Per-meter consumption as power (kW)
-(avg_over_time(cel_energy_kwh{segment="total", direction="consumption", meter_id=~".*${meter_id}"}[$__interval])) * 4
+```sql
+-- Per-meter consumption as power (kW)
+SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS "From CEL"
+FROM (
+  SELECT ts, sum(value) AS slot_kwh
+  FROM cel_energy
+  WHERE $__timeFilter(ts) AND segment = 'cel' AND direction = 'consumption'
+    AND meter_id LIKE '%$meter_id'
+  SAMPLE BY 15m
+)
+SAMPLE BY $__sampleByInterval FILL(NULL)
+ORDER BY time;
 
-# Community CEL-local consumption as power (kW)
-(avg_over_time(cel_community_energy_kwh{community_id="101110-002726", product_code="2404050010123", direction="consumption"}[$__interval])) * 4
+-- Community CEL-local consumption as power (kW)
+SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS "From CEL"
+FROM (
+  SELECT ts, sum(value) AS slot_kwh
+  FROM cel_community_energy
+  WHERE $__timeFilter(ts) AND community_id = '101110-002726'
+    AND segment = 'cel' AND direction = 'consumption'
+  SAMPLE BY 15m
+)
+SAMPLE BY $__sampleByInterval FILL(NULL)
+ORDER BY time;
 
-# Total energy over a range (kWh) — stat/gauge style
-sum(increase(cel_energy_kwh{segment="total", direction="consumption"}[$__range]))
+-- Share of consumption from CEL over the range (%) -- gauge, format: TABLE
+SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)
+           / cast(sum(value) AS DOUBLE) AS "CEL % of Consumption"
+FROM cel_energy
+WHERE $__timeFilter(ts) AND direction = 'consumption'
+  AND segment in ('cel', 'grid');
 ```
+
+`case when ... then value end` with no `else` yields NULL, which `sum()` skips —
+so no `0m` literal is needed. Note that a bare `0.5` would **not** compare
+against a `DECIMAL(12,3)` column the way you expect: QuestDB does not implicitly
+convert double → decimal, so decimal literals need the `m` suffix (`0.5m`).
 
 ## Troubleshooting
 
+QuestDB's ports are not published, so every check below runs from inside a
+container on `cel-network`.
+
 **No data displayed:**
-1. Check VictoriaMetrics: `curl http://localhost:8428/health`
-2. Verify series exist: `curl 'http://localhost:8428/api/v1/series?match[]=cel_energy_kwh'`
-3. Check parser logs: `docker logs cel-parser`
+1. Check the parser is ingesting: `docker logs cel-parser`
+2. Verify rows exist:
+   `docker exec cel-parser python3 -c "import psycopg,os; print(psycopg.connect(os.environ['QUESTDB_DSN']).execute('SELECT count() FROM cel_energy').fetchone())"`
+3. Check the schema was applied: `docker logs cel-questdb-init`
 
-**Meter selector empty:** no `cel_energy_kwh` data in VictoriaMetrics yet — process/replay files first.
+**Panel says "Data is missing a number field":** a `DECIMAL` column reached
+Grafana un-cast. Wrap the output column in `cast(... AS DOUBLE)`.
 
-**Wrong datasource:** Connections → Data sources → verify VictoriaMetrics URL `http://victoriametrics:8428`.
+**Panel renders empty with no error:** most often `format` was written as a
+string. It is a numeric enum — `0` for timeseries, `1` for table — and both
+`format` and `selectedFormat` must be set.
+
+**Legend shows "A <name>" and the colours are gone:** the panel has more than one
+frame and its overrides use `byName`. Switch them to `byFrameRefID`.
+
+**Meter selector empty:** no `cel_energy` rows yet — process or replay files
+first (in ascending delivery order).
+
+**Wrong datasource:** Connections → Data sources → verify **QuestDB** points at
+`questdb:8812`.
 
 ## Adding new dashboards
 
 1. Create the dashboard JSON.
-2. Copy it to `/volume1/docker/cel/grafana-dashboards/`.
-3. It auto-loads into the "CEL" folder within ~10s (no restart).
+2. Add its filename to `DASHBOARD_FILES` in `tests/test_dashboards_sql.py` — the
+   suite asserts every JSON in this folder is listed, so an unlisted one fails
+   rather than going untested.
+3. Copy it to `/volume1/docker/cel/grafana-dashboards/`.
+4. It auto-loads into the "CEL" folder within ~10s (no restart).
 
 ## More information
 
 See **[PARSING_GUIDE.md](../PARSING_GUIDE.md)** for metric definitions, product
-codes (ebIX, VSE), E66 vs E31 file types, and data quality (Condition 21).
+codes (ebIX, VSE), E66 vs E31 file types, and data quality (Condition 21), and
+**[QUESTDB.md](../QUESTDB.md)** for the schema, the dedup rules and the full list
+of plugin constraints.

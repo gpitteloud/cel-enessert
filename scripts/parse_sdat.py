@@ -53,10 +53,13 @@ def parse_sdat_bytes(data: bytes, name: str, meter_mappings: dict = None,
                      physical_production_meters: set = None) -> ParseResult:
     """Same as parse_sdat, but from bytes already in memory.
 
-    Exists so the archive replay (questdb_replay.py) can parse zip members
-    without extracting them to disk. `name` is only used for log messages.
-    Keeping the E66/E31 dispatch here means replay routes documents exactly the
-    way live ingestion does -- a second copy of this logic could drift.
+    For XML that is not a file on disk -- an archive zip member read with
+    `ZipFile.read()`, most usefully -- so it can be parsed without extracting it
+    first. `name` is only used for log messages. Nothing in the pipeline calls
+    this today (parse_sdat is the live entry point and replay works by extracting
+    zips back into the incoming folder); it is kept because routing through this
+    one dispatch is what stops a zip-reading caller from growing its own copy of
+    the E66/E31 decision.
     """
     try:
         root = ET.fromstring(data)

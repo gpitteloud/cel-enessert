@@ -20,18 +20,25 @@ This document provides E31-specific Grafana queries and integration details. For
 - Handles both ebIX codes (8716867000030) and VSE codes (2404050010123, 2404050010124)
 - Extracts community metadata (ID, type, grid area)
 - Parses 480 observations per file (5 days × 96 intervals)
-- Transforms to VictoriaMetrics format with community-level labels
+- Classifies each file into `direction` + `segment` (see `classify_metric_type`
+  in `models.py`), which is what the dashboards filter on
 
-**Metric name**: `energy_community_aggregate_kwh`
+**Table**: `cel_community_energy` (E66 goes to `cel_energy`; two tables so a
+`sum()` cannot mix per-meter readings with the aggregate that contains them)
 
-**Labels**:
+**Columns**:
+- `ts`: interval start, the designated timestamp
 - `community_id`: "101110-002726" (CEL community ID)
 - `community_type`: "CT01"
 - `product_code`: ebIX or VSE code
-- `flow_characteristic`: E17 (consumption) or E18 (production)
+- `direction`: `consumption` (flow E17) or `production` (flow E18)
+- `segment`: `total` (ebIX) / `cel` (VSE ...123) / `grid` (VSE ...124)
 - `grid_area`: "12Y-0000000719-J"
-- `data_source`: "E31_AggregatedMeteredData"
-- `condition`: "21" (all E31 data is estimated)
+- `value`: `DECIMAL(12,3)`, kWh for the 15-min interval
+- `condition`: "21" — payload, **never** a dedup key, because the provider
+  revises the grade across deliveries (see [QUESTDB.md](QUESTDB.md))
+
+Dedup keys: `(ts, direction, segment, product_code, community_id)`.
 
 ### Updated: `watch_ftproot.py`
 
@@ -77,49 +84,46 @@ This is consistent with E66 VSE breakdown data - the provider uses estimation al
 
 ### Query Examples
 
-**Community total consumption**:
-```promql
-energy_community_aggregate_kwh{
-  community_id="101110-002726",
-  product_code="8716867000030",
-  flow_characteristic="E17"
-}
+Panels filter on `segment` rather than `product_code`: the same distinction,
+under the name the parser derives, so a provider-side encoding change cannot
+silently empty a panel. Every output column is `cast(... AS DOUBLE)` because the
+Grafana plugin has no `DECIMAL` converter — cast the outer expression only, so
+the inner `sum()` stays exact.
+
+**Community total consumption** (energy per bucket, kWh):
+```sql
+SELECT ts AS time, cast(sum(value) AS DOUBLE) AS "Total Consumption"
+FROM cel_community_energy
+WHERE $__timeFilter(ts)
+  AND community_id = '101110-002726'
+  AND segment = 'total'
+  AND direction = 'consumption'
+SAMPLE BY $__sampleByInterval FILL(NULL)
+ORDER BY time;
 ```
 
-**Community CEL local consumption** (energy consumed from within community):
-```promql
-energy_community_aggregate_kwh{
-  community_id="101110-002726",
-  product_code="2404050010123",
-  flow_characteristic="E17"
-}
-```
+**Community CEL local vs grid consumption** — same query with
+`segment = 'cel'` (consumed from within the community) or `segment = 'grid'`
+(consumed from the external grid).
 
-**Community grid consumption** (energy consumed from external grid):
-```promql
-energy_community_aggregate_kwh{
-  community_id="101110-002726",
-  product_code="2404050010124",
-  flow_characteristic="E17"
-}
-```
+**Community production** — same again with `direction = 'production'`.
 
-**Community total production**:
-```promql
-energy_community_aggregate_kwh{
-  community_id="101110-002726",
-  product_code="8716867000030",
-  flow_characteristic="E18"
-}
-```
-
-**Community CEL local production** (energy produced and consumed within community):
-```promql
-energy_community_aggregate_kwh{
-  community_id="101110-002726",
-  product_code="2404050010123",
-  flow_characteristic="E18"
-}
+**As average power (kW)** instead of energy per bucket: average per 15-min slot
+first, and only then scale by the integer `4`. `sum(value) * 4` is 4× wrong at a
+1h bucket.
+```sql
+SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS "From CEL"
+FROM (
+  SELECT ts, sum(value) AS slot_kwh
+  FROM cel_community_energy
+  WHERE $__timeFilter(ts)
+    AND community_id = '101110-002726'
+    AND segment = 'cel'
+    AND direction = 'consumption'
+  SAMPLE BY 15m
+)
+SAMPLE BY $__sampleByInterval FILL(NULL)
+ORDER BY time;
 ```
 
 ### Dashboard Ideas
@@ -130,25 +134,33 @@ energy_community_aggregate_kwh{
 - Grid dependency: Grid consumption / Total consumption
 - Compare aggregate vs sum of individual meters
 
-**Validation Dashboard**:
-```promql
-# Compare community aggregate vs sum of individual meters
-# Should be approximately equal (differences due to estimation)
+**Validation Dashboard** — both are live in
+`grafana-dashboards/grafana-dashboard-e31-v2.json`, panels 13-15:
+```sql
+-- Community aggregate
+SELECT ts AS time, cast(sum(value) AS DOUBLE) AS "E31 Total"
+FROM cel_community_energy
+WHERE $__timeFilter(ts)
+  AND community_id = '101110-002726'
+  AND segment = 'total' AND direction = 'consumption'
+SAMPLE BY $__sampleByInterval FILL(NULL) ORDER BY time;
 
-# Community aggregate
-energy_community_aggregate_kwh{
-  product_code="8716867000030",
-  flow_characteristic="E17"
-}
-
-# vs
-
-# Sum of individual meters
-sum(energy_kwh{
-  product_code="8716867000030",
-  data_type="consumption"
-})
+-- vs the sum of the individual meters
+SELECT ts AS time, cast(sum(value) AS DOUBLE) AS "Sum(E66)"
+FROM cel_energy
+WHERE $__timeFilter(ts)
+  AND community_id = '101110-002726'      -- load-bearing, see below
+  AND segment = 'total' AND direction = 'consumption'
+SAMPLE BY $__sampleByInterval FILL(NULL) ORDER BY time;
 ```
+
+**The `community_id` filter on the E66 side is not cosmetic.** The provider
+delivers E66 files for 8 meters with no `<Community>` element, so their
+`community_id` is NULL and they are absent from the E31 aggregate. Without the
+filter the E66 side is overstated by ~24% (consumption) / ~33% (production),
+which looks exactly like a validation failure and is not one. See
+[QUESTDB.md](QUESTDB.md#known-data-anomalies) for the meter list and the other
+known residuals.
 
 ## Deployment
 
@@ -159,8 +171,8 @@ sum(energy_kwh{
 ### Steps:
 ```bash
 # On development machine
-scp cel-community/scripts/parse_sdat_e31_aggregated.py synology:/volume1/docker/cel-parser/scripts/
-scp cel-community/scripts/watch_ftproot.py synology:/volume1/docker/cel-parser/scripts/
+scp cel-community/scripts/parse_sdat_e31_aggregated.py synology:/volume1/docker/cel/scripts/
+scp cel-community/scripts/watch_ftproot.py synology:/volume1/docker/cel/scripts/
 
 # On Synology
 docker restart cel-parser
@@ -175,8 +187,16 @@ docker logs -f cel-parser
 docker exec cel-parser python3 /app/scripts/parse_sdat_e31_aggregated.py \
   /data/incoming/20260528_094741_12X-0000001536-1_E31_12X-00000020FW-5_813bf77c-5a69-11f1-b257-00000084413a.xml
 
-# Check VictoriaMetrics for E31 data
-curl 'http://victoriametrics:8428/api/v1/series?match[]=energy_community_aggregate_kwh'
+# Check QuestDB for E31 data. Its ports are unpublished, so run from a
+# container on cel-network.
+docker exec cel-parser python3 -c \
+  "import os, psycopg; print(psycopg.connect(os.environ['QUESTDB_DSN']).execute(
+      'SELECT segment, direction, count() FROM cel_community_energy'
+  ).fetchall())"
+
+# Or check the day's balance end to end
+docker exec -it cel-parser python3 \
+  /app/scripts/validate_daily_balance_questdb.py 20260610
 ```
 
 ## Benefits
@@ -189,7 +209,9 @@ curl 'http://victoriametrics:8428/api/v1/series?match[]=energy_community_aggrega
 ## Notes
 
 - E31 files have same 5-day overlapping pattern as E66 files
-- VictoriaMetrics will overwrite duplicate timestamps (same behavior as E66)
+- `DEDUP UPSERT KEYS` makes the newest write win for a repeated slot (same
+  behaviour as E66), so overlapping deliveries need no special handling — but
+  replay must run in ascending delivery order
 - All E31 data marked as estimated (Condition 21)
 - No meter IDs in E31 - community-level only
 - Same resolution: 15 minutes, 480 observations per file
@@ -197,5 +219,5 @@ curl 'http://victoriametrics:8428/api/v1/series?match[]=energy_community_aggrega
 ## Related Documentation
 
 - `FILE_BREAKDOWN_ANALYSIS.md` - Daily file delivery breakdown
-- `PARSER_MULTI_MEMBER_UPDATE.md` - E66 multi-member support
-- Memory: `reference_e66_e31_file_types.md` - E66 vs E31 differences
+- `QUESTDB.md` - Schema, dedup rules, Grafana plugin constraints, data anomalies
+- `grafana-dashboards/README.md` - Dashboard queries and panel conventions

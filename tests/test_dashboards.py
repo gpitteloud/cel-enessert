@@ -1,15 +1,15 @@
-"""Tests for the Grafana dashboards themselves, VM and QuestDB alike.
+"""Tests for dashboard structure, independent of the datasource.
 
-Separate from test_dashboards_questdb.py, which is about the *migration* (do the
-ports match their originals). This file is about defects a dashboard can carry
-without anyone noticing, because Grafana does not complain:
+Separate from test_dashboards_sql.py, which covers the QuestDB SQL and the plugin
+query contract. This file is about defects a dashboard can carry without anyone
+noticing, because Grafana does not complain:
 
 A `byName` field override whose name matches no series is silently ignored. Every
-timeseries panel in grafana-dashboard-e31-v2.json had this -- panel 7 coloured
-'CEL Local'/'Grid'/'Total' while its series were 'From CEL'/'From Grid', so the
-panel had been rendering on palette-classic defaults, not its intended colours,
-since it was written. Nothing logs a warning; the only symptom is the wrong
-colour, which looks like a choice rather than a bug.
+timeseries panel in grafana-dashboard-e31-v2.json once had this -- panel 7
+coloured 'CEL Local'/'Grid'/'Total' while its series were 'From CEL'/'From Grid',
+so the panel had been rendering on palette-classic defaults, not its intended
+colours, since it was written. Nothing logs a warning; the only symptom is the
+wrong colour, which looks like a choice rather than a bug.
 """
 import json
 import re
@@ -29,8 +29,10 @@ def load(name):
 def series_names(panel):
     """Names Grafana will label this panel's series with.
 
-    PromQL targets carry `legendFormat`; SQL targets have none, so the column
-    alias becomes the series name. A dashboard may hold either kind.
+    SQL targets have no `legendFormat`, so the column alias becomes the series
+    name. `legendFormat` is still read: it is what a panel added through the UI
+    against a non-SQL datasource would carry, and such a panel must not slip
+    past these checks unexamined.
     """
     names = set()
     for target in panel.get('targets', []):
@@ -58,13 +60,13 @@ def dashboard(request):
 
 def test_at_least_one_dashboard_is_checked():
     """Guards the glob: an empty parametrize list would pass everything."""
-    assert len(ALL_DASHBOARDS) >= 4, ALL_DASHBOARDS
+    assert len(ALL_DASHBOARDS) >= 2, ALL_DASHBOARDS
 
 
 def test_every_byname_override_matches_a_real_series(dashboard):
     """A `byName` override naming no series is dead config, silently ignored.
 
-    `__auto` and `legendFormat` templates are exempt: the series name is only
+    Templated legends (`{{...}}`, `__auto`) are exempt: the series name is only
     known at query time, so a literal override name cannot be checked against
     them and may legitimately match.
     """
@@ -89,9 +91,10 @@ def test_every_byname_override_matches_a_real_series(dashboard):
 def test_every_frame_ref_id_override_matches_a_real_target(dashboard):
     """A byFrameRefID override pointing at no target is dead, exactly as byName is.
 
-    The QuestDB ports match this way because the plugin prefixes each frame with
-    its refId, so byName has nothing to match. Same silent failure, different
-    matcher -- a typo'd refId costs the panel its colours and its legend names.
+    These dashboards match this way because the QuestDB plugin prefixes each
+    frame with its refId, so byName has nothing to match. Same silent failure,
+    different matcher -- a typo'd refId costs the panel its colours and its
+    legend names.
     """
     name, data = dashboard
     for panel in data['panels']:

@@ -462,7 +462,7 @@ This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 
 | Parser return | Meaning | Watcher behaviour |
 |---------------|---------|-------------------|
-| `MeteredData` | parsed | send to VM, archive (`FileOutcome.INGESTED`) |
+| `MeteredData` | parsed | write to QuestDB, archive (`FileOutcome.INGESTED`) |
 | `SkippedDocument` | valid, deliberately not ingested | log at **INFO**, archive (`FileOutcome.SKIPPED`) |
 | `None` | genuine failure (malformed, unknown meter, missing fields) | log at WARNING/ERROR, **keep in incoming** for retry (`FileOutcome.FAILED`) |
 
@@ -590,13 +590,14 @@ meter_mappings:
 │  ├─ E31 parser (parse_sdat_e31_aggregated.py)                    │
 │  └─ Batch processor (watch_ftproot.py)                      │
 └────────────────┬────────────────────────────────────────────┘
-                 │ VictoriaMetrics NDJSON format
+                 │ INSERT over PG-wire (psycopg), Decimal values
                  ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  VictoriaMetrics (Time-series database)                     │
-│  Stores all energy data with labels                         │
+│  QuestDB (Time-series database, system of record)            │
+│  cel_energy (E66) / cel_community_energy (E31)              │
+│  DEDUP UPSERT KEYS -- the newest delivered value wins       │
 └────────────────┬────────────────────────────────────────────┘
-                 │ PromQL queries
+                 │ SQL queries
                  ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  Grafana (Visualization)                                    │
@@ -632,8 +633,8 @@ meter_mappings:
 4. Batch processing:
    ├─ Refresh meter mappings (discovery from incoming + archive)
    ├─ Process all files with updated mappings
-   ├─ Send to VictoriaMetrics
-   └─ Archive processed files
+   ├─ Write rows to QuestDB
+   └─ Archive processed files (a failed write keeps the file for retry)
 
 5. Ready for next batch
 ```
@@ -643,6 +644,12 @@ meter_mappings:
 - Handles any file count (109, 115, 200...) automatically
 - No hardcoded file count limits
 
+**Batch order is load-bearing.** Because storage is last-write-wins, batches must
+reach the database in ascending delivery order. Live ingestion and the startup
+rescan (`sorted(glob)`) already satisfy this; any manual replay must sort by the
+`YYYYMMDD` prefix explicitly, or an older delivery will overwrite newer values.
+See [QUESTDB.md](QUESTDB.md#chronological-replay-is-a-correctness-requirement).
+
 ### Parsing Steps
 
 **For each E66 file**:
@@ -650,52 +657,40 @@ meter_mappings:
 1. **Parse XML** → Extract meter ID, product code, observations
 2. **Determine type** → Physical or virtual meter?
 3. **Apply mapping** → If virtual, attribute to physical meter
-4. **Transform** → Convert to VictoriaMetrics format
-5. **Send** → Import to time-series database
+4. **Classify** → `product_code` + metering point → `direction` + `segment`
+5. **Write** → `INSERT` into `cel_energy`
 6. **Archive** → Move file to `/data/archive`
 
 **For each E31 file**:
 
 1. **Parse XML** → Extract community ID, flow type, product code, observations
-2. **Transform** → Convert to VictoriaMetrics format with community labels
-3. **Send** → Import to time-series database
+2. **Classify** → flow E17/E18 + `product_code` → `direction` + `segment`
+3. **Write** → `INSERT` into `cel_community_energy`
 4. **Archive** → Move file to `/data/archive`
 
-### VictoriaMetrics Format
+### Stored Rows
 
-**E66 Individual Meter Data**:
-```json
-{
-  "metric": {
-    "__name__": "cel_energy_consumed_kwh",
-    "project": "cel",
-    "meter_id": "CH101110123450000000000000217130Y",
-    "product_code": "8716867000030",
-    "code_type": "ebIXCode",
-    "data_type": "consumption"
-  },
-  "values": [1.234],
-  "timestamps": [1779487200000]
-}
-```
+Values are `decimal.Decimal` end to end, never `float`: they are parsed from the
+XML text straight into a `DECIMAL(12,3)` column, so what is stored is exactly what
+the provider sent. Full schema in [QUESTDB.md](QUESTDB.md#schema).
 
-**E31 Community Aggregate Data**:
-```json
-{
-  "metric": {
-    "__name__": "energy_community_aggregate_kwh",
-    "community_id": "101110-002726",
-    "community_type": "CT01",
-    "product_code": "8716867000030",
-    "flow_characteristic": "E17",
-    "grid_area": "12Y-0000000719-J",
-    "data_source": "E31_AggregatedMeteredData",
-    "condition": "21"
-  },
-  "values": [1.93],
-  "timestamps": [1779487200000]
-}
-```
+**E66 Individual Meter Data** → `cel_energy`:
+
+| ts | meter_id | direction | segment | product_code | community_id | value | code_type | condition |
+|----|----------|-----------|---------|--------------|--------------|-------|-----------|-----------|
+| 2026-05-22T00:00:00Z | CH101110123450000000000000217130Y | consumption | total | 8716867000030 | 101110-002726 | 1.234 | ebIXCode | |
+
+**E31 Community Aggregate Data** → `cel_community_energy`:
+
+| ts | direction | segment | product_code | community_id | value | code_type | community_type | grid_area | condition |
+|----|-----------|---------|--------------|--------------|-------|-----------|----------------|-----------|-----------|
+| 2026-05-22T00:00:00Z | consumption | total | 8716867000030 | 101110-002726 | 1.930 | ebIXCode | CT01 | 12Y-0000000719-J | 21 |
+
+`direction` and `segment` replace the old flow/product encoding in queries:
+`E17 → consumption`, `E18 → production`; `8716867000030 → total`,
+`2404050010123 → cel`, `2404050010124 → grid`. The `product_code` is still stored,
+but panels filter on `segment` because it is derived and so survives a
+provider-side encoding change.
 
 ### Deduplication
 
@@ -704,34 +699,29 @@ meter_mappings:
 - If file already in archive: Add timestamp suffix to avoid overwriting
 - Example: `file_20260626_174530.xml` (timestamped duplicate)
 
-**Data-level** — requires `--dedup.minScrapeInterval=15m` on VictoriaMetrics:
+**Data-level** — handled by the tables' `DEDUP UPSERT KEYS`:
 
-- A point's identity is `metric_name + labels + timestamp`.
-- **Ingesting the same point twice does NOT simply overwrite it.** VM collapses
-  identical `(metric_name, labels, timestamp)` on ingestion by keeping the
-  **maximum** value — but on *query* it only collapses samples that fall within
-  one discrete `-dedup.minScrapeInterval` window, which defaults to **1 minute**.
-  Our slots are 15 min apart, so at the default nothing collapsed and every
-  delivery's copy was counted.
-- The provider sends **overlapping 5-day files daily**, so each slot is ingested
-  5-7 times. Symptom of the missing flag: `sum(E66)` reads ~6x the E31 aggregate
-  (measured: June 2026 consumption, ratio 2.0-6.5). Production still read 1.000
-  because both sides inflate by the same factor and it cancels in the ratio —
-  **a correct-looking production panel does not prove dedup is working.**
-- Setting `--dedup.minScrapeInterval=15m` (== native resolution) keeps one sample
-  per real slot. Never set it higher: 30m/1h would drop genuine distinct slots.
+- A row's identity is its key tuple:
+  `(ts, meter_id, direction, segment, product_code, community_id)` for E66,
+  `(ts, direction, segment, product_code, community_id)` for E31.
+- The provider sends **overlapping 5-day files daily**, so each slot is written
+  5-7 times, and ~2.6% of overlapping slots are **revised** — sometimes downward
+  (meter `0050170B`, 2026-05-22T00:00: `0.003` on delivery 20260527 → `0.002` on
+  20260605). `DEDUP UPSERT KEYS` is genuine last-write-wins, so the newest
+  delivered value replaces the stored row and revisions land in both directions.
+- Re-writing a byte-identical row is a no-op QuestDB detects and skips.
+- `condition` and `code_type` are deliberately **not** keys. The provider revises
+  a slot's condition (estimated → measured) across deliveries; as a key, that
+  slot would become two rows and every `sum()` would double-count it.
 
-> **Residual 1.15% overstatement.** Ingest dedup keeps the **maximum** value for
-> a timestamp, not the newest. The provider revises ~2.6% of overlapping slots
-> *downward* (e.g. meter `0050170B`, 2026-05-22T00:00: `0.003` on delivery
-> 20260527 → `0.002` on 20260605), and those revisions are lost. Measured over
-> 2026-04-30..2026-07-22: +2145 kWh on 187063 kWh = **+1.1467%**, worst single
-> slot +9.4 kWh. To be exact, superseded values must not be written at all —
-> i.e. skip re-ingesting slots an earlier delivery already covered, rather than
-> relying on the store to pick a winner.
+> **The cost of last-write-wins: replay order.** Nothing consults a delivery date
+> — whichever `INSERT` runs last wins. Replaying delivery `20260527` after
+> `20260605` silently regresses 4 days, and the database cannot detect it
+> afterwards, since there is only ever one row per key. Always replay in ascending
+> delivery order.
 
-**Result**: reprocessing files is safe *for series identity* (no new series are
-created), but it is **not** value-idempotent without the dedup flag.
+**Result**: reprocessing files **is** value-idempotent, provided deliveries are
+fed in chronological order.
 
 ---
 
@@ -801,7 +791,7 @@ Physical Meter 0217130Y:
    - Is advance notification provided for membership changes?
 
 2. **Import strategy**: With 5-day overlapping files, should we:
-   - Process all files (current approach - VictoriaMetrics overwrites duplicates)
+   - Process all files (current approach — the newest write wins per slot)
    - Skip overlapping days from older files
    - Process only the newest day from each delivery
    - **Our testing**: May 27 vs May 28 data for same meter/date = 0/96 values differ (100% identical)
@@ -894,7 +884,9 @@ Physical Meter 0217130Y:
 
 **Flow Characteristic**: E31 classification - E17 (consumption) or E18 (production)
 
-**NDJSON**: Newline-Delimited JSON - VictoriaMetrics import format
+**DEDUP UPSERT KEYS**: QuestDB clause making an `INSERT` whose key matches an
+existing row *replace* it — last-write-wins, which is what lets the provider's
+revisions land
 
 ---
 
@@ -963,7 +955,7 @@ File 7: Production Total (Virtual meter)
   → Used for mapping discovery
 ```
 
-**Final data in VictoriaMetrics** (all attributed to physical meter `0217130Y`):
+**Final data in QuestDB** (all attributed to physical meter `0217130Y`):
 
 ```
 Consumption:

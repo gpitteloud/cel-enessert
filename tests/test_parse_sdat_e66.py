@@ -3,10 +3,7 @@ import pytest
 
 from models import MeteredData, SkippedDocument
 from parse_sdat import parse_sdat
-from parse_sdat_e66_individual import (
-    transform_to_datapoints,
-    MetricType,
-)
+from parse_sdat_e66_individual import MetricType
 from conftest import (
     make_e66_xml,
     real_files,
@@ -200,70 +197,6 @@ def test_no_product_code_still_parses_observations(write_xml):
 
 
 # --------------------------------------------------------------------------
-# transform_to_datapoints
-# --------------------------------------------------------------------------
-
-def test_transform_builds_vm_datapoints(write_xml):
-    f = write_xml(make_e66_xml(point="consumption",
-                               product_code="2404050010123",
-                               values=(1.0, 2.0)))
-    r = parse_sdat(f)
-    dps = transform_to_datapoints(r)
-    assert len(dps) == 2
-    m = dps[0]["metric"]
-    assert m["__name__"] == "cel_energy_kwh"
-    assert m["project"] == "cel"
-    assert m["direction"] == "consumption"
-    assert m["segment"] == "cel"
-    assert m["meter_id"] == "CH101110123450000000000000020576V"
-    # community_id emitted for E66 too (shared with E31)
-    assert m["community_id"] == "101110-002726"
-    # condition is NOT a label: the provider revises a slot's condition across
-    # deliveries, so keeping it in series identity would double-count on sum().
-    assert "condition" not in m
-    assert dps[0]["values"] == [1.0]
-    # timestamp converted to epoch millis (int)
-    assert isinstance(dps[0]["timestamps"][0], int)
-
-
-def test_transform_production_data_type(write_xml):
-    f = write_xml(make_e66_xml(point="production",
-                               product_code="8716867000030",
-                               code_type="ebIXCode"))
-    r = parse_sdat(f)
-    dps = transform_to_datapoints(r)
-    assert dps[0]["metric"]["__name__"] == "cel_energy_kwh"
-    assert dps[0]["metric"]["direction"] == "production"
-    assert dps[0]["metric"]["segment"] == "total"
-
-
-def test_transform_breakdown_uses_attributed_meter_id(write_xml):
-    virt = "CH1011101234500000000000000855229G"
-    f = write_xml(make_e66_xml(point="production", meter_id=virt,
-                               product_code="2404050010123"))
-    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
-    physical_meter = "CH101110123450000000000000020576V"
-    dps = transform_to_datapoints(r, attributed_meter_id=physical_meter)
-    assert all(dp["metric"]["meter_id"] == physical_meter for dp in dps)
-
-
-def test_transform_empty_when_no_observations():
-    assert transform_to_datapoints(None) == []
-
-
-def test_transform_empty_for_skipped_document():
-    # A SkippedDocument has no observations, so it yields no datapoints instead
-    # of raising (the watcher returns before this, but keep it defensive).
-    assert transform_to_datapoints(SkippedDocument(reason="dup total")) == []
-
-
-def test_transform_empty_when_no_metric_type(write_xml):
-    f = write_xml(make_e66_xml(product_code=None))
-    r = parse_sdat(f)
-    assert transform_to_datapoints(r) == []
-
-
-# --------------------------------------------------------------------------
 # Golden-file tests against real sample data.
 # These skip automatically when input/all/ is absent (gitignored), so they
 # run on machines/CI that have the real deliveries but never break elsewhere.
@@ -317,15 +250,15 @@ def test_real_e66_product_codes_are_known():
 
 
 @pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
-def test_real_e66_transforms_to_datapoints():
-    """A real file must produce one VM datapoint per observation with expected labels."""
+def test_real_e66_builds_storable_rows():
+    """A real file must produce one storable row per observation."""
+    from questdb_writer import E66_COLUMNS, rows_from_e66
     f = _E66_SAMPLES[0]
     r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                        physical_production_meters=SAMPLE_PHYSICAL_METERS)
-    dps = transform_to_datapoints(r)
-    assert len(dps) == len(r.observations)
-    m = dps[0]["metric"]
-    assert m["project"] == "cel"
-    assert m["__name__"] == "cel_energy_kwh"
-    assert m["direction"] in ("consumption", "production")
-    assert m["segment"] in ("cel", "grid", "total")
+    rows = rows_from_e66(r)
+    assert len(rows) == len(r.observations)
+    row = dict(zip(E66_COLUMNS, rows[0]))
+    assert row["meter_id"]
+    assert row["direction"] in ("consumption", "production")
+    assert row["segment"] in ("cel", "grid", "total")

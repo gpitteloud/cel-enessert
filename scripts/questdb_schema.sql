@@ -1,4 +1,4 @@
--- QuestDB schema for the CEL energy pipeline. See MIGRATION_QUESTDB.md.
+-- QuestDB schema for the CEL energy pipeline. See QUESTDB.md.
 --
 -- Run with:  python3 scripts/questdb_init.py
 -- Idempotent: every statement is IF NOT EXISTS, so re-running is a no-op.
@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS cel_energy (
   community_id SYMBOL,
   value        DECIMAL(12, 3),  -- exact fixed point; source is always 3 dp
   code_type    SYMBOL,          -- payload: derivable from product_code
-  condition    SYMBOL           -- payload: revised by provider, NEVER a key
+  -- Payload, NEVER a dedup key. The provider revises a slot's condition across
+  -- overlapping deliveries (estimated one day, measured the next). As a key,
+  -- that slot would become TWO rows and every sum() would double-count it.
+  condition    SYMBOL
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, meter_id, direction, segment, product_code, community_id);
 
@@ -35,12 +38,12 @@ CREATE TABLE IF NOT EXISTS cel_community_energy (
   code_type      SYMBOL,
   community_type SYMBOL,
   grid_area      SYMBOL,
-  condition      SYMBOL
+  condition      SYMBOL           -- payload, never a key -- as in cel_energy
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, direction, segment, product_code, community_id);
 
--- Provenance: ~1 row per file, replacing the per-sample `delivery` column that
--- VM's upsert logic needed. Answers "did delivery 20260722 land?" and "which
+-- Provenance: ~1 row per file, rather than a `delivery` column repeated on every
+-- sample. Answers "did delivery 20260722 land?" and "which
 -- files failed?" without duplicating the delivery date across ~25M rows.
 -- No DEDUP: reprocessing a file is a genuinely new ingestion event.
 CREATE TABLE IF NOT EXISTS cel_ingest_log (

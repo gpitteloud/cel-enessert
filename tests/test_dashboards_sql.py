@@ -1,14 +1,23 @@
-"""Tests for the QuestDB dashboard ports (MIGRATION_QUESTDB.md Phase 5).
+"""Tests for the Grafana dashboards' QuestDB queries.
 
-The point of these dashboards is to be comparable against their VM originals
-panel by panel, so the thing worth pinning is that *only* the datasource and the
-queries changed. A stray fieldConfig or gridPos difference would make a visual
-comparison meaningless -- two panels that look different because of styling, not
-because of the data, is exactly the false signal Phase 6 must not get.
+These catch the mistakes that produce a plausible-looking but wrong number, which
+Grafana will render without complaint:
 
-They also catch the SQL mistakes that would silently produce plausible-looking
-but wrong numbers: `sum(value) * 4` without the inner 15m slot average, or a
-leftover PromQL macro that the QuestDB plugin does not implement.
+  * `sum(value) * 4` without an inner 15-min slot average -- correct only when the
+    bucket happens to be 15 min, 4x wrong at 1h.
+  * a DECIMAL column returned un-cast, which the plugin has no converter for, so
+    the panel reports "Data is missing a number field".
+  * a bare `0.5` compared against DECIMAL(12,3), which QuestDB does not implicitly
+    convert.
+  * an unscoped `cel_energy` read, which sums 8 meters that carry no community at
+    all and are absent from the E31 aggregate they are being compared against.
+
+Plugin-contract expectations are pinned against questdb-questdb-datasource v0.1.8
+and explained where they are asserted; several of them cost real debugging time
+because the failure mode is an empty panel rather than an error. See QUESTDB.md.
+
+test_dashboards.py covers what is datasource-independent (override matchers, uid
+uniqueness); this file covers the SQL and the plugin wiring.
 """
 import json
 import re
@@ -18,10 +27,9 @@ import pytest
 
 DASHBOARDS = Path(__file__).resolve().parent.parent / 'grafana-dashboards'
 
-# (questdb port, vm original)
-PORTS = [
-    ('cel_energy_overview_questdb.json', 'cel_energy_overview.json'),
-    ('grafana-dashboard-e31-v2-questdb.json', 'grafana-dashboard-e31-v2.json'),
+DASHBOARD_FILES = [
+    'cel_energy_overview.json',
+    'grafana-dashboard-e31-v2.json',
 ]
 
 QUESTDB_TYPE = 'questdb-questdb-datasource'
@@ -70,114 +78,46 @@ def series_targets(dashboard):
             yield title, ref, sql
 
 
-@pytest.fixture(params=[p[0] for p in PORTS])
+@pytest.fixture(params=DASHBOARD_FILES)
 def questdb_dashboard(request):
     return load(request.param)
 
 
+def test_every_dashboard_file_is_covered():
+    """A dashboard added to the folder but not to DASHBOARD_FILES is untested."""
+    on_disk = {p.name for p in DASHBOARDS.glob('*.json')}
+    assert on_disk == set(DASHBOARD_FILES), (
+        f"untested: {sorted(on_disk - set(DASHBOARD_FILES))}, "
+        f"missing from disk: {sorted(set(DASHBOARD_FILES) - on_disk)}")
+
+
 # --------------------------------------------------------------------------
-# Structure preserved from the VM original
+# Layout
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize('port,original', PORTS)
-def test_every_panel_and_expression_is_ported(port, original):
-    """The port must be complete: same panel ids, same refIds per panel.
-
-    Phase 5 was done incrementally (one panel first, to settle the query shape),
-    so "the dashboard renders" was never evidence that all of it had been
-    converted -- a missing panel just is not there, and a missing target is a
-    legend entry nobody counts. This is the check that the migration finished.
-    """
-    ported, source = panels_by_id(load(port)), panels_by_id(load(original))
-    assert set(ported) == set(source), (
-        f"panel ids differ: missing {sorted(set(source) - set(ported))}, "
-        f"extra {sorted(set(ported) - set(source))}")
-
-    for panel_id, panel in ported.items():
-        want = {t['refId'] for t in source[panel_id].get('targets', [])}
-        got = {t['refId'] for t in panel.get('targets', [])}
-        assert got == want, (
-            f"panel {panel_id} ({panel.get('title')}): refIds {sorted(got)} "
-            f"!= original {sorted(want)}")
-
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_panels_are_ordered_by_layout(port, original):
+@pytest.mark.parametrize('dashboard_name', DASHBOARD_FILES)
+def test_panels_are_ordered_by_layout(dashboard_name):
     """Grafana renders by gridPos, but the JSON order is what a human reads.
 
-    Appending ported panels leaves the file in conversion order rather than
-    layout order, so the next person editing it reads the panels in a different
-    sequence from the one on screen.
+    A panel appended to the end of the file rather than inserted at its position
+    leaves the JSON in a different sequence from the one on screen, so the next
+    person editing it reads the panels out of order.
     """
     positions = [(p['gridPos']['y'], p['gridPos']['x'])
-                 for p in load(port)['panels']]
+                 for p in load(dashboard_name)['panels']]
     assert positions == sorted(positions), 'panels are not in layout order'
-
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_ported_panels_keep_the_original_structure(port, original):
-    """Everything except datasource/targets/description must be identical.
-
-    This is what makes the two dashboards comparable. `targets` differ by design
-    (PromQL -> SQL) and `description` is added to explain the conversion; any
-    other drift -- unit, gridPos, stacking, legend calcs -- means the panels no
-    longer render the same way and a side-by-side check proves nothing.
-
-    `fieldConfig.overrides` is also exempt, and that exemption is narrow on
-    purpose: `fieldConfig.defaults` (unit, colour mode, axis, stacking) is still
-    compared key-for-key below, because that is the styling a visual comparison
-    depends on. Overrides have to differ because the two datasources name their
-    series differently -- see test_series_is_renamed_by_frame_ref_id.
-    """
-    ported = panels_by_id(load(port))
-    source = panels_by_id(load(original))
-
-    ignored = {'datasource', 'targets', 'description', 'fieldConfig'}
-    for panel_id, panel in ported.items():
-        assert panel_id in source, f"panel {panel_id} does not exist in {original}"
-        want = {k: v for k, v in source[panel_id].items() if k not in ignored}
-        got = {k: v for k, v in panel.items() if k not in ignored}
-        assert got == want, f"panel {panel_id} ({panel.get('title')}) drifted"
-
-        # fieldConfig minus overrides: everything that styles the panel itself.
-        assert panel.get('fieldConfig', {}).get('defaults') \
-            == source[panel_id].get('fieldConfig', {}).get('defaults'), \
-            f"panel {panel_id} ({panel.get('title')}): fieldConfig.defaults drifted"
-        assert set(panel.get('fieldConfig', {})) \
-            == set(source[panel_id].get('fieldConfig', {})), \
-            f"panel {panel_id}: unexpected fieldConfig keys"
-
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_dashboard_scaffolding_matches(port, original):
-    """Time range, tooltip mode, schemaVersion etc. carry over unchanged."""
-    ported, source = load(port), load(original)
-
-    for key in ('schemaVersion', 'graphTooltip', 'time', 'style', 'editable',
-                'fiscalYearStartMonth', 'liveNow', 'refresh', 'timezone',
-                'weekStart', 'annotations'):
-        assert ported[key] == source[key], key
-
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_uid_and_title_are_distinct_from_the_original(port, original):
-    """Both dashboards are provisioned at once; a shared uid would overwrite."""
-    ported, source = load(port), load(original)
-    assert ported['uid'] != source['uid']
-    assert ported['title'] != source['title']
-    assert 'questdb' in ported['tags']
-
 
 # --------------------------------------------------------------------------
 # Datasource wiring
 # --------------------------------------------------------------------------
+def test_no_panel_points_at_a_prometheus_datasource(questdb_dashboard):
+    """These read SQL from QuestDB; a prometheus-typed datasource cannot work.
 
-def test_no_panel_still_points_at_victoriametrics(questdb_dashboard):
-    """A missed datasource silently keeps reading VM and the port looks fine."""
+    Kept as an explicit assertion because the symptom is not obvious: the panel
+    renders empty rather than reporting a type error.
+    """
     blob = json.dumps(questdb_dashboard)
-    assert 'VictoriaMetrics' not in blob
     assert '"prometheus"' not in blob
-
 
 def test_every_datasource_reference_uses_the_provisioned_uid(questdb_dashboard):
     """uid must match grafana-provisioning/datasources/questdb.yaml."""
@@ -188,7 +128,6 @@ def test_every_datasource_reference_uses_the_provisioned_uid(questdb_dashboard):
         for target in panel.get('targets', []):
             assert target['datasource'] == {'type': QUESTDB_TYPE,
                                             'uid': 'QuestDB'}
-
 
 def test_datasource_uid_matches_provisioning_file():
     """Pins the JSON against the YAML rather than trusting they agree."""
@@ -202,7 +141,6 @@ def test_datasource_uid_matches_provisioning_file():
 # --------------------------------------------------------------------------
 # SQL correctness
 # --------------------------------------------------------------------------
-
 def test_every_target_has_sql(questdb_dashboard):
     for panel in questdb_dashboard['panels']:
         if panel['type'] == 'row':
@@ -210,14 +148,13 @@ def test_every_target_has_sql(questdb_dashboard):
         assert panel.get('targets'), panel.get('title')
         for target in panel['targets']:
             assert target.get('rawSql'), (panel.get('title'), target.get('refId'))
-            assert 'expr' not in target, 'leftover PromQL expression'
 
-
-def test_no_promql_macros_survive(questdb_dashboard):
+def test_no_prometheus_macros_survive(questdb_dashboard):
     """$__interval and $__range are Prometheus macros the plugin does not have.
 
-    Left in place they do not error loudly -- they reach QuestDB as literal text
-    and the query fails or, worse, the panel just shows nothing.
+    The QuestDB plugin implements $__timeFilter and $__sampleByInterval. An
+    unimplemented macro is not rejected -- it reaches QuestDB as literal text, so
+    the query fails or the panel simply shows nothing.
     """
     for title, ref, sql in sql_targets(questdb_dashboard):
         assert '$__interval' not in sql, (title, ref)
@@ -235,44 +172,17 @@ def test_no_promql_macros_survive(questdb_dashboard):
         # last bucket instead of the range total.
         assert 'SAMPLE BY' not in sql, (title, ref)
 
+@pytest.mark.parametrize('dashboard_name', DASHBOARD_FILES)
+def test_kw_scaling_agrees_with_the_panel_unit(dashboard_name):
+    """A *4 turns a 15-min kWh slot into kW, so the unit must say so.
 
-@pytest.mark.parametrize('port,original', PORTS)
-def test_kw_scaling_matches_the_original_per_target(port, original):
-    """The *4 must be present exactly where the PromQL had it.
-
-    Caught a real slip: panel 11 (a kWh piechart) was generated from panel 10's
-    kW template, so every slice was 4x too large. Both panels show production
-    split cel/grid and differ only in unit, which is exactly the pair a
-    copy-paste conflates -- and a pie chart of proportions looks correct while
-    every absolute value is wrong.
-
-    Pinned per target against the original expression rather than against the
-    panel's unit: the unit says what the number means, the original says what it
-    was, and only the latter can catch a panel whose unit is also wrong.
+    Caught a real slip: panel 11 (a kWh piechart) was built from panel 10's kW
+    template, so every slice was 4x too large. Both panels show production split
+    cel/grid and differ only in unit, which is exactly the pair a copy-paste
+    conflates -- and a pie chart of proportions looks right while every absolute
+    value is wrong.
     """
-    source = panels_by_id(load(original))
-    for panel in load(port)['panels']:
-        for target in panel.get('targets', []):
-            expr = next(t.get('expr', '') or ''
-                        for t in source[panel['id']]['targets']
-                        if t['refId'] == target['refId'])
-            want = '*4' in expr.replace(' ', '')
-            got = '* 4' in target['rawSql']
-            assert got == want, (
-                f"panel {panel['id']} ({panel.get('title')}) refId "
-                f"{target['refId']}: kW scaling {'added' if got else 'dropped'}; "
-                f"original {'has' if want else 'has no'} *4")
-
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_kw_scaling_agrees_with_the_panel_unit(port, original):
-    """A *4 turns kWh into kW, so the unit must say so.
-
-    Independent of the test above: that one pins the port against the original,
-    this one pins the original's own internal consistency. A panel labelled
-    kwatth whose query scales by 4 is wrong no matter which side introduced it.
-    """
-    for panel in load(port)['panels']:
+    for panel in load(dashboard_name)['panels']:
         unit = panel.get('fieldConfig', {}).get('defaults', {}).get('unit')
         if unit not in ('kwatt', 'kwatth'):
             continue
@@ -282,7 +192,6 @@ def test_kw_scaling_agrees_with_the_panel_unit(port, original):
                 f"panel {panel['id']} ({panel.get('title')}) refId "
                 f"{target['refId']}: unit {unit!r} but query "
                 f"{'scales' if scaled else 'does not scale'} by 4")
-
 
 def test_kw_conversion_averages_before_scaling(questdb_dashboard):
     """The *4 must apply to a 15-min slot average, not to a bucket sum.
@@ -298,7 +207,6 @@ def test_kw_conversion_averages_before_scaling(questdb_dashboard):
         assert re.search(r'avg\(\w+\)\s*\*\s*4', sql), (title, ref)
         assert not re.search(r'sum\(value\)\s*\*\s*4', sql), (
             f"{title}/{ref}: sums the bucket then scales -- wrong above 15m")
-
 
 def test_value_columns_are_cast_to_double(questdb_dashboard):
     """The Grafana plugin has no DECIMAL converter, so a raw DECIMAL is a string.
@@ -329,7 +237,6 @@ def test_value_columns_are_cast_to_double(questdb_dashboard):
                 f"{title}/{ref}: {alias_expr.strip()!r} returns DECIMAL "
                 f"un-cast; the plugin has no DECIMAL converter")
 
-
 def test_the_inner_slot_sum_stays_decimal(questdb_dashboard):
     """Casting inside the subquery would make the slot sums float arithmetic.
 
@@ -342,7 +249,6 @@ def test_the_inner_slot_sum_stays_decimal(questdb_dashboard):
         inner = sql.split('FROM (', 1)[1]
         assert not re.search(r'cast\(\s*sum\(value\)', inner, re.I), (
             f"{title}/{ref}: cast the outer average, not the inner slot sum")
-
 
 # The validation panels exist precisely to compare the two tables against each
 # other, so they are the one place a cross-table query is correct. Listed by
@@ -376,26 +282,24 @@ def test_queries_target_the_right_table(questdb_dashboard):
             else:
                 assert tables == {expected}, where
 
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_cross_table_queries_are_only_the_validation_panels(port, original):
+@pytest.mark.parametrize('dashboard_name', DASHBOARD_FILES)
+def test_cross_table_queries_are_only_the_validation_panels(dashboard_name):
     """Guards the allow-list against drift in both directions.
 
     A stale entry would silently license a double-counting query on a panel that
     no longer needs it; a missing one would have been caught by the test above.
     Also pins that these panels really are the validation ones, by title.
     """
-    ported = panels_by_id(load(port))
+    panels = panels_by_id(load(dashboard_name))
     for panel_id, ref in CROSS_TABLE_TARGETS:
-        if panel_id not in ported:
+        if panel_id not in panels:
             continue
-        assert 'Validation' in ported[panel_id]['title'], (
-            f"panel {panel_id} ({ported[panel_id]['title']!r}) is allow-listed "
+        assert 'Validation' in panels[panel_id]['title'], (
+            f"panel {panel_id} ({panels[panel_id]['title']!r}) is allow-listed "
             f"for cross-table reads but is not a validation panel")
-        sql = next(t['rawSql'] for t in ported[panel_id]['targets']
+        sql = next(t['rawSql'] for t in panels[panel_id]['targets']
                    if t['refId'] == ref)
         assert 'cel_energy' in sql, (panel_id, ref)
-
 
 # The community whose aggregate the E31 dashboard is about. Every cel_energy
 # read on that dashboard must be scoped to it, so the per-meter sum covers the
@@ -403,28 +307,26 @@ def test_cross_table_queries_are_only_the_validation_panels(port, original):
 E31_COMMUNITY = '101110-002726'
 
 
-@pytest.mark.parametrize('port,original', PORTS)
-def test_every_cel_energy_read_is_scoped_to_the_community(port, original):
+@pytest.mark.parametrize('dashboard_name', DASHBOARD_FILES)
+def test_every_cel_energy_read_is_scoped_to_the_community(dashboard_name):
     """A cel_energy query with no community_id sums meters outside the community.
 
-    Inherited from the VM original, which wrote
-    `sum(cel_energy_kwh{segment="total", direction="consumption"})` with no
-    community selector. The provider delivers E66 files for 8 meters that carry
-    no <Community> element at all, so their community_id is NULL and they are
-    not in the E31 aggregate -- yet an unscoped sum() picks them up. Measured on
-    70 days of real deliveries that inflated Sum(E66) by +24% for consumption
-    and +27% for production, which is the entire apparent validation gap: with
-    the filter the two sides agree to ~1.5%.
+    The provider delivers E66 files for 8 meters that carry no <Community>
+    element at all, so their community_id is NULL and they are not in the E31
+    aggregate -- yet an unscoped sum() picks them up. Measured on 70 days of real
+    deliveries that inflated Sum(E66) by +24% for consumption and +27% for
+    production, which was the entire apparent validation gap: with the filter the
+    two sides agree to ~1.5%. See QUESTDB.md.
 
     Nothing errors; the panel just plots a number for a different population
     than the series beside it, which is the worst kind of wrong for a panel
     whose whole job is to say "these two should match".
     """
-    ported = panels_by_id(load(port))
-    if 'e31' not in port:
+    if 'e31' not in dashboard_name:
         return
+    panels = panels_by_id(load(dashboard_name))
     unscoped = []
-    for panel_id, panel in sorted(ported.items()):
+    for panel_id, panel in sorted(panels.items()):
         for target in panel.get('targets', []):
             sql = target.get('rawSql', '')
             # Checked per SELECT block, not per statement: panel 15 UNIONs a
@@ -437,20 +339,18 @@ def test_every_cel_energy_read_is_scoped_to_the_community(port, original):
                         rf"community_id\s*=\s*'{re.escape(E31_COMMUNITY)}'",
                         block):
                     unscoped.append(
-                        f"{port} panel {panel_id} ({panel['title']!r}) target "
+                        f"{dashboard_name} panel {panel_id} ({panel['title']!r}) target "
                         f"{target['refId']}: a cel_energy read with no "
                         f"community_id filter")
     assert not unscoped, (
         'unscoped cel_energy reads (they include meters that are not in the '
         'E31 aggregate):\n' + '\n'.join(unscoped))
 
-
 def test_time_column_is_aliased_and_ordered(questdb_dashboard):
     """Grafana needs a `time` column; unordered rows render as a scribble."""
     for title, ref, sql in series_targets(questdb_dashboard):
         assert re.search(r'\bts\s+AS\s+time\b', sql), (title, ref)
         assert 'ORDER BY time' in sql, (title, ref)
-
 
 def test_scalar_queries_return_one_row(questdb_dashboard):
     """A gauge query must reduce, not bucket -- and so must not select `ts`.
@@ -464,47 +364,31 @@ def test_scalar_queries_return_one_row(questdb_dashboard):
         assert 'ORDER BY' not in sql, (title, ref)
         assert re.match(r'\s*SELECT\s', sql), (title, ref)
 
+def test_no_project_label_filter_remains(questdb_dashboard):
+    """There is no `project` column; the table itself is the namespace.
 
-@pytest.mark.parametrize('port,original', PORTS)
-def test_series_name_matches_the_original_legend(port, original):
-    """SQL has no legendFormat: the column alias becomes the series name.
-
-    Pinned against the ORIGINAL's legendFormat, per refId, not against the
-    panel's `byName` overrides. Matching the legend is what keeps the two
-    dashboards comparable -- same series names, same colour assignment, so a
-    side-by-side difference can only come from the data.
-
-    Deliberately not asserting that the ORIGINAL's overrides match: in
-    grafana-dashboard-e31-v2.json they did not, in *any* of its four timeseries
-    panels (panel 7 coloured 'CEL Local'/'Grid'/'Total' while its series were
-    'From CEL'/'From Grid'). Those were fixed in the VM dashboards separately;
-    what this test pins is the alias, which is the series name Grafana starts
-    from before displayName renames it.
+    A leftover `project` predicate would be a query error, not a filter.
     """
-    source = panels_by_id(load(original))
-    for panel in load(port)['panels']:
-        for target in panel.get('targets', []):
-            aliases = re.findall(r'AS\s+"([^"]+)"', target['rawSql'])
-            assert len(aliases) == 1, (panel.get('title'), target['refId'])
-            want = next(t.get('legendFormat')
-                        for t in source[panel['id']]['targets']
-                        if t.get('refId') == target['refId'])
-            if want == '__auto':
-                # PromQL's '__auto' means "name it from the metric and labels",
-                # which has no SQL equivalent -- and on a single-series stat or
-                # gauge it rendered as the whole label set. The panel title is
-                # what the reader actually sees, so the alias uses that; assert
-                # it is deliberate rather than accidentally the refId.
-                assert aliases[0] == panel['title'], (
-                    f"panel {panel['id']} refId {target['refId']}: alias "
-                    f"{aliases[0]!r} should be the panel title for a "
-                    f"'__auto' legend")
-                continue
-            assert aliases[0] == want, (
-                f"panel {panel['id']} refId {target['refId']}: alias "
-                f"{aliases[0]!r} != original legend {want!r}")
+    for title, ref, sql in sql_targets(questdb_dashboard):
+        assert 'project' not in sql, (title, ref)
+
+def test_decimal_literals_use_the_m_suffix(questdb_dashboard):
+    """QuestDB does not implicitly convert double -> decimal.
+
+    `value > 0.5` and `value > 0.5m` are different comparisons against a
+    DECIMAL(12,3) column, so a bare float literal is a silent wrong answer.
+    Integer literals (like the *4 scaling) are fine and must stay integers --
+    4.000m would promote DECIMAL(12,3) to DECIMAL128 and lose the fast path.
+    """
+    for title, ref, sql in sql_targets(questdb_dashboard):
+        for literal in re.findall(r'(?<![\w.])(\d+\.\d+)(?!m)', sql):
+            pytest.fail(f"{title}/{ref}: bare decimal literal {literal} "
+                        f"(needs an 'm' suffix against a DECIMAL column)")
 
 
+# --------------------------------------------------------------------------
+# Legend and series naming
+# --------------------------------------------------------------------------
 def test_series_is_renamed_by_frame_ref_id(questdb_dashboard):
     """Each target needs a byFrameRefID displayName override, or the legend
     reads "A From CEL" instead of "From CEL".
@@ -543,8 +427,7 @@ def test_series_is_renamed_by_frame_ref_id(questdb_dashboard):
                 f"panel {panel['id']} refId {ref}: renamed to "
                 f"{renamed[ref]!r} but the SQL alias is {alias!r}")
 
-
-def test_no_byname_override_survives_the_port(questdb_dashboard):
+def test_no_byname_override_is_used(questdb_dashboard):
     """byName cannot work here: the name it matches carries the refId prefix.
 
     Left in place it is not an error, just dead config -- the panel silently
@@ -556,61 +439,6 @@ def test_no_byname_override_survives_the_port(questdb_dashboard):
                 f"panel {panel['id']}: byName override "
                 f"{o['matcher']['options']!r} is dead once frames are "
                 f"refId-prefixed; match byFrameRefID instead")
-
-
-@pytest.mark.parametrize('port,original', PORTS)
-def test_colours_survive_the_override_rewrite(port, original):
-    """Swapping byName for byFrameRefID must not drop the colour assignment.
-
-    The rename and the colour ride on the same override, so it is easy to port
-    the displayName and silently lose the fixedColor -- which looks like a
-    working panel with the wrong colours.
-    """
-    source = panels_by_id(load(original))
-    for panel in load(port)['panels']:
-        if panel['type'] == 'row':
-            continue
-        want = {}
-        for o in source[panel['id']]['fieldConfig']['overrides']:
-            if o['matcher']['id'] == 'byName':
-                for prop in o['properties']:
-                    if prop['id'] == 'color':
-                        want[o['matcher']['options']] = prop['value']
-
-        got = {}
-        for o in panel['fieldConfig']['overrides']:
-            props = {p['id']: p['value'] for p in o['properties']}
-            if 'color' in props:
-                got[props['displayName']] = props['color']
-
-        assert got == want, (
-            f"panel {panel['id']} ({panel.get('title')}): colour assignment "
-            f"changed; {got} != {want}")
-
-
-def test_no_project_label_filter_remains(questdb_dashboard):
-    """`project="cel"` was a VM-namespace workaround; the table scopes it now.
-
-    Scoped to the SQL only. The recorded `promqlOriginal` is the original
-    expression verbatim and must keep its project filter -- scanning the whole
-    JSON would fail on the provenance note it is supposed to preserve.
-    """
-    for title, ref, sql in sql_targets(questdb_dashboard):
-        assert 'project' not in sql, (title, ref)
-
-
-def test_decimal_literals_use_the_m_suffix(questdb_dashboard):
-    """QuestDB does not implicitly convert double -> decimal.
-
-    `value > 0.5` and `value > 0.5m` are different comparisons against a
-    DECIMAL(12,3) column, so a bare float literal is a silent wrong answer.
-    Integer literals (like the *4 scaling) are fine and must stay integers --
-    4.000m would promote DECIMAL(12,3) to DECIMAL128 and lose the fast path.
-    """
-    for title, ref, sql in sql_targets(questdb_dashboard):
-        for literal in re.findall(r'(?<![\w.])(\d+\.\d+)(?!m)', sql):
-            pytest.fail(f"{title}/{ref}: bare decimal literal {literal} "
-                        f"(needs an 'm' suffix against a DECIMAL column)")
 
 
 # --------------------------------------------------------------------------
@@ -660,9 +488,6 @@ def test_targets_declare_the_plugin_query_shape(questdb_dashboard):
                 assert value == want and isinstance(value, int) \
                     and not isinstance(value, bool), \
                     f"{where}: {key}={value!r}, want {want}"
-            assert 'editorMode' not in target, (
-                f"{where}: editorMode is not a QuestDBSQLQuery field")
-
 
 def test_meta_carries_only_fields_the_plugin_declares(questdb_dashboard):
     """An unknown key in `meta` is round-tripped through the query builder."""
@@ -675,42 +500,86 @@ def test_meta_carries_only_fields_the_plugin_declares(questdb_dashboard):
             assert not extra, (panel.get('title'), target.get('refId'), extra)
 
 
-# --------------------------------------------------------------------------
-# Provenance
-# --------------------------------------------------------------------------
+def test_targets_carry_no_undeclared_fields(questdb_dashboard):
+    """A key the plugin does not declare is dead weight the JSON cannot police.
 
-def test_original_promql_is_recorded_next_to_each_query(questdb_dashboard):
-    """Each target keeps the PromQL it replaced, for the Phase 6 comparison.
+    Two kinds accumulate. Fields from *another* datasource's query model
+    (`editorMode`, `expr`, `legendFormat`) read as if they were doing something
+    while the plugin ignores them entirely. Scratch notes recording where a query
+    came from are worse: nothing consumes them, nothing validates them, and they
+    go stale invisibly when the SQL beside them is edited.
+    """
+    allowed = {'datasource', 'format', 'selectedFormat', 'queryType', 'rawSql',
+               'refId', 'hide', 'meta', 'expand'}
+    for panel in questdb_dashboard['panels']:
+        if panel['type'] == 'row':
+            continue
+        for target in panel['targets']:
+            extra = set(target) - allowed
+            assert not extra, (panel.get('title'), target.get('refId'), extra)
 
-    Stored as a top-level `promqlOriginal`, NOT under `meta`. The plugin's
-    QuestDBSQLQuery declares `meta` as `{timezone?, builderOptions?}`, and it
-    round-trips whatever it finds there through its query builder -- an unknown
-    key inside `meta` is not a safe place to park a note. Unknown top-level keys
-    are ignored, so they survive an edit-and-save in the UI.
+
+def test_every_target_has_exactly_one_aliased_column(questdb_dashboard):
+    """The column alias IS the series name -- SQL has no legendFormat.
+
+    Two aliased columns in one target would return two fields in one frame and
+    the displayName override below could only rename one of them; none would
+    leave the series called after its refId.
+    """
+    for title, ref, sql in sql_targets(questdb_dashboard):
+        aliases = [a for a in re.findall(r'AS\s+"([^"]+)"', sql) if a != 'time']
+        assert len(aliases) == 1, (title, ref, aliases)
+
+
+def test_gauge_series_are_named_after_their_panel(questdb_dashboard):
+    """A gauge shows one number, so its series name must read as a label.
+
+    The panel title is what the reader actually sees, so the alias uses it --
+    asserted so it stays deliberate rather than drifting to the refId or to a
+    column expression.
     """
     for panel in questdb_dashboard['panels']:
-        for target in panel.get('targets', []):
-            if panel['type'] == 'row':
-                continue
-            assert target.get('promqlOriginal'), (panel.get('title'),
-                                                  target.get('refId'))
-            assert 'promql' not in target.get('meta', {}), (
-                'meta is a typed plugin field; keep provenance top-level')
+        if panel['type'] not in SCALAR_PANEL_TYPES:
+            continue
+        for target in panel['targets']:
+            alias = re.findall(r'AS\s+"([^"]+)"', target['rawSql'])[0]
+            assert alias == panel['title'], (
+                f"panel {panel['id']} refId {target['refId']}: alias {alias!r} "
+                f"should be the panel title {panel['title']!r}")
 
 
-@pytest.mark.parametrize('port,original', PORTS)
-def test_recorded_promql_matches_the_original_dashboard(port, original):
-    """The recorded PromQL must be the real expression, not a paraphrase.
+# Panels that assign explicit series colours, and the colour each refId must get.
+# Pinned by value because the colour and the displayName ride on the SAME
+# override object: editing the rename is how the fixedColor gets dropped, and a
+# panel that silently falls back to palette-classic looks like a choice rather
+# than a bug.
+EXPECTED_COLOURS = {
+    'cel_energy_overview.json': {
+        1: {'A': 'green', 'B': 'orange'},
+        2: {'A': 'blue', 'B': 'yellow'},
+    },
+    'grafana-dashboard-e31-v2.json': {
+        7: {'B': 'green', 'C': 'orange'},
+        10: {'B': 'green', 'C': 'purple'},
+        13: {'A': 'blue', 'B': 'red'},
+        14: {'A': 'yellow', 'B': 'orange'},
+    },
+}
 
-    Otherwise the provenance note drifts from the query it claims to document and
-    the Phase 6 comparison is checking the wrong pair.
-    """
-    source = panels_by_id(load(original))
-    for panel in load(port)['panels']:
-        for target in panel.get('targets', []):
-            promql = target['promqlOriginal']
-            source_exprs = {t.get('expr')
-                            for t in source[panel['id']].get('targets', [])}
-            assert promql in source_exprs, (
-                f"panel {panel['id']} refId {target['refId']}: recorded PromQL "
-                f"is not among the original's expressions")
+
+@pytest.mark.parametrize('dashboard_name', DASHBOARD_FILES)
+def test_series_colours_are_assigned_by_frame_ref_id(dashboard_name):
+    """Colours must survive edits to the overrides they share with displayName."""
+    want = EXPECTED_COLOURS[dashboard_name]
+    for panel_id, panel in sorted(panels_by_id(load(dashboard_name)).items()):
+        got = {}
+        for o in panel.get('fieldConfig', {}).get('overrides', []):
+            props = {p['id']: p['value'] for p in o['properties']}
+            if 'color' in props:
+                assert o['matcher']['id'] == 'byFrameRefID', (
+                    f"panel {panel_id}: colour matched by "
+                    f"{o['matcher']['id']!r}, which does not match a "
+                    f"refId-prefixed frame name")
+                got[o['matcher']['options']] = props['color'].get('fixedColor')
+        assert got == want.get(panel_id, {}), (
+            f"panel {panel_id} ({panel.get('title')}): colours {got} != {want.get(panel_id, {})}")
