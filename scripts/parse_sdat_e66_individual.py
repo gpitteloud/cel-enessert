@@ -58,6 +58,12 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
 
         result = MeteredData(document_type='E66')
 
+        # Is it part of RCP
+        receiver_role = root.find('.//rsm:Receiver/rsm:Role', ns)
+        if receiver_role is not None:
+            role = receiver_role.text
+            result.rcp = True if role == 'DEC' else False
+
         # Extract meter ID
         meter_id = None
 

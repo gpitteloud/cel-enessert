@@ -132,6 +132,7 @@ class MeteredData:
     metering_point_type: Optional[str] = None    # 'consumption' | 'production'
     is_production_breakdown: bool = False
     attributed_physical_meter: Optional[str] = None
+    rcp: bool = False  # is the meter a member of a RCP
 
     # --- E31 only ---
     flow_characteristic: Optional[str] = None    # 'E17' consumption | 'E18' production

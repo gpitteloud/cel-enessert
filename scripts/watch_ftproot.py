@@ -19,6 +19,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import zipfile
 
+from scripts.models import MeteredData
+
+
 # Custom formatter for CET/CEST timezone (Europe/Zurich)
 class CETFormatter(logging.Formatter):
     """Format log timestamps in CET/CEST timezone with automatic daylight saving"""
@@ -316,7 +319,7 @@ class SDATFileHandler(FileSystemEventHandler):
         # This prevents duplicate processing when FTP triggers both created and modified events
         pass
 
-    def _write_questdb(self, parsed_data, file_path: Path, delivery: str,
+    def _write_questdb(self, parsed_data: MeteredData, file_path: Path, delivery: str,
                        attributed_meter_id) -> bool:
         """Write one parsed document to QuestDB. Returns True if it FAILED.
 
@@ -334,10 +337,8 @@ class SDATFileHandler(FileSystemEventHandler):
 
             if not rows:
                 # A parsed document with observations that yields no rows means
-                # the writer rejected all of them (no metric_type, say). Under
-                # the old dual-write this was caught as "no data points
-                # generated"; keep failing it, or the file would be archived
-                # having written nothing.
+                # the writer rejected all of them (no metric_type, say). Fail otherwise
+                # the file would be archived having written nothing.
                 logger.warning(f"QuestDB: no rows generated from {file_path.name}")
                 self.questdb.log_ingest(
                     delivery=delivery, file_name=file_path.name,
@@ -441,8 +442,6 @@ class SDATFileHandler(FileSystemEventHandler):
                 # write.
                 delivery = '99999999'
 
-            # Written from the parsed document, so the provider's exact Decimal
-            # reaches the DECIMAL(12,3) column.
             questdb_failed = self._write_questdb(
                 parsed_data, file_path, delivery, attributed_meter_id)
 
