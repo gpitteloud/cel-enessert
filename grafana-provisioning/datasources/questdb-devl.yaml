@@ -1,0 +1,29 @@
+apiVersion: 1
+
+# The only datasource: QuestDB is the system of record. See QUESTDB.md, which
+# also lists the plugin's silent-failure constraints.
+#
+# uid is pinned to "QuestDB" because the dashboard JSONs reference it by uid.
+# Grafana would otherwise assign a random one and every panel would load with
+# "datasource not found".
+datasources:
+  - name: QuestDB
+    type: questdb-questdb-datasource
+    uid: QuestDB
+    access: proxy
+    # PG-wire, not the 9000 REST/console port.
+    url: questdb-devl:8812
+    user: $__env{QDB_USER}
+    isDefault: false
+    editable: false
+    jsonData:
+      server: questdb-devl
+      port: 8812
+      username: $__env{QDB_USER}
+      # QuestDB OSS PG-wire does not offer TLS; the traffic never leaves the
+      # docker network.
+      tlsMode: disable
+      # QuestDB has a single database, `qdb`.
+      database: qdb
+    secureJsonData:
+      password: $__env{QDB_PASSWORD}
