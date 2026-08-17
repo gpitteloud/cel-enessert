@@ -3,9 +3,6 @@
 **Last updated**: 2026-08-06
 **Purpose**: Deploy code, config or dashboard changes to the Synology NAS
 
-For a first-time install, use [QUICK_START_SYNOLOGY.md](QUICK_START_SYNOLOGY.md)
-instead — this covers updating a stack that is already running.
-
 ---
 
 ## What goes where

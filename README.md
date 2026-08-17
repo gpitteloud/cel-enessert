@@ -19,12 +19,11 @@ Monitors Swiss local energy communities (CEL) using provider XML files (Validate
 
 ## Quick Start
 
-### 1. Deploy Files to Synology
+### 1. Deploy Files
 
 Copy the scripts to `/volume1/docker/cel/scripts/`, the config to
 `/volume1/docker/cel/config/`, and the dashboards to
-`/volume1/docker/cel/grafana-dashboards/`. See
-**[QUICK_START_SYNOLOGY.md](QUICK_START_SYNOLOGY.md)** for the detailed steps.
+`/volume1/docker/cel/grafana-dashboards/`.
 
 ### 2. Configure System
 
@@ -309,15 +308,14 @@ find /volume1/docker/cel/archive -name "*.xml" -mtime +180 -delete
 
 **What do you want to do?**
 
-| Task | Document |
-|------|----------|
-| 🎓 **Understand the system** | [PARSING_GUIDE.md](PARSING_GUIDE.md) - Complete technical reference |
-| 🗄️ **Understand the database** | [QUESTDB.md](QUESTDB.md) - Schema, dedup rules, Grafana plugin traps |
-| 🚀 **Deploy to Synology** | [QUICK_START_SYNOLOGY.md](QUICK_START_SYNOLOGY.md) - Deployment guide |
+| Task                          | Document |
+|-------------------------------|----------|
+| 🎓 **Understand the system**  | [PARSING_GUIDE.md](PARSING_GUIDE.md) - Complete technical reference |
+| 🗄️**Understand the database** | [QUESTDB.md](QUESTDB.md) - Schema, dedup rules, Grafana plugin traps |
 | 📊 **Understand daily files** | [FILE_BREAKDOWN_ANALYSIS.md](FILE_BREAKDOWN_ANALYSIS.md) - Daily file breakdown |
-| 📈 **Query community data** | [E31_INTEGRATION.md](E31_INTEGRATION.md) - E31 Grafana queries |
-| ❓ **Talk to provider** | [PROVIDER_QUESTIONS.md](PROVIDER_QUESTIONS.md) - Questions to validate |
-| ✅ **Deploy updates** | [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) - Deployment steps |
+| 📈 **Query community data**   | [E31_INTEGRATION.md](E31_INTEGRATION.md) - E31 Grafana queries |
+| ❓ **Talk to provider**       | [PROVIDER_QUESTIONS.md](PROVIDER_QUESTIONS.md) - Questions to validate |
+| ✅ **Deploy updates**         | [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) - Deployment steps |
 
 ### Core Documentation
 
@@ -334,7 +332,6 @@ find /volume1/docker/cel/archive -name "*.xml" -mtime +180 -delete
    - `DECIMAL(12,3)` and its consequences in queries
    - Grafana plugin constraints that fail silently
    - Known provider-side data anomalies
-4. **[QUICK_START_SYNOLOGY.md](QUICK_START_SYNOLOGY.md)** 🚀 - Deployment instructions
 
 ### Reference Documents
 
