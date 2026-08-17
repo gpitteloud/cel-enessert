@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS cel_energy (
   -- Payload, NEVER a dedup key. The provider revises a slot's condition across
   -- overlapping deliveries (estimated one day, measured the next). As a key,
   -- that slot would become TWO rows and every sum() would double-count it.
-  condition    SYMBOL
+  condition    SYMBOL,
+  source_file  SYMBOL,
+  rcp          BOOLEAN
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, meter_id, direction, segment, product_code, community_id);
 
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS cel_community_energy (
   code_type      SYMBOL,
   community_type SYMBOL,
   grid_area      SYMBOL,
-  condition      SYMBOL           -- payload, never a key -- as in cel_energy
+  condition      SYMBOL,          -- payload, never a key -- as in cel_energy
+  source_file    SYMBOL
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, direction, segment, product_code, community_id);
 

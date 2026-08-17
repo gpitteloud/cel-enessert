@@ -6,17 +6,16 @@ Parses E31 XML files containing community-level aggregated energy data
 and decodes them into MeteredData observations.
 """
 
-from datetime import datetime
-from typing import Dict, List, Optional
 import logging
+from typing import Optional
 
-from models import MeteredData, classify_metric_type, flow_to_direction
-from sdat_xml import extract_product_code, extract_resolution_minutes, parse_observations
+from scripts.models import MeteredData, classify_metric_type, flow_to_direction
+from scripts.sdat_xml import NS, extract_product_code, extract_resolution_minutes, parse_observations
 
 logger = logging.getLogger(__name__)
 
 
-def parse_e31(root) -> Optional[MeteredData]:
+def parse_e31(root, filename: str) -> Optional[MeteredData]:
     """
     Decode an E31 AggregatedMeteredData_1.3 document.
 
@@ -25,60 +24,58 @@ def parse_e31(root) -> Optional[MeteredData]:
 
     Args:
         root: parsed XML root Element of an E31 document
+        filename: same of currently processed SDAT file
 
     Returns:
         MeteredData with document_type='E31' populated, or None if the document
         has no MeteringData section.
     """
     try:
-        # Namespace
-        ns = {'rsm': 'http://www.strom.ch'}
-
-        result = MeteredData(document_type='E31')
+        result = MeteredData(document_type='E31', filename=filename)
 
         # Find MeteringData section
-        metering_data = root.find('.//rsm:MeteringData', ns)
+        metering_data = root.find('.//rsm:MeteringData', NS)
         if metering_data is None:
             logger.warning("E31: No MeteringData section found")
             return None
 
         # Extract interval start (base timestamp for observations)
-        interval = metering_data.find('rsm:Interval', ns)
+        interval = metering_data.find('rsm:Interval', NS)
         if interval is not None:
-            start_dt = interval.find('rsm:StartDateTime', ns)
+            start_dt = interval.find('rsm:StartDateTime', NS)
             if start_dt is not None:
                 result.start = start_dt.text
 
         # Extract resolution (missing resolution is fatal)
-        resolution_minutes = extract_resolution_minutes(metering_data, ns)
+        resolution_minutes = extract_resolution_minutes(metering_data, NS)
         if resolution_minutes is None:
             logger.error("E31: Resolution not found")
             return None
         result.resolution_minutes = resolution_minutes
 
         # Extract grid area
-        grid_area = metering_data.find('rsm:MeteringGridArea/rsm:EICID', ns)
+        grid_area = metering_data.find('rsm:MeteringGridArea/rsm:EICID', NS)
         if grid_area is not None:
             result.grid_area = grid_area.text
 
         # Extract product code (can be ebIX or VSE)
-        result.product_code, result.code_type = extract_product_code(metering_data, ns)
+        result.product_code, result.code_type = extract_product_code(metering_data, NS)
 
         # Extract aggregation criteria
-        agg_criteria = metering_data.find('rsm:AggregationCriteria', ns)
+        agg_criteria = metering_data.find('rsm:AggregationCriteria', NS)
         if agg_criteria is not None:
-            flow = agg_criteria.find('rsm:FlowCharacteristic', ns)
+            flow = agg_criteria.find('rsm:FlowCharacteristic', NS)
             if flow is not None:
                 result.flow_characteristic = flow.text
 
         # Extract community info
-        community = metering_data.find('rsm:Community', ns)
+        community = metering_data.find('rsm:Community', NS)
         if community is not None:
-            comm_id = community.find('rsm:CommunityID', ns)
+            comm_id = community.find('rsm:CommunityID', NS)
             if comm_id is not None:
                 result.community_id = comm_id.text
 
-            comm_type = community.find('rsm:CommunityType/rsm:VSENationalCode', ns)
+            comm_type = community.find('rsm:CommunityType/rsm:VSENationalCode', NS)
             if comm_type is not None:
                 result.community_type = comm_type.text
 
@@ -94,7 +91,7 @@ def parse_e31(root) -> Optional[MeteredData]:
             return None
 
         result.observations = parse_observations(
-            metering_data, ns, result.start, resolution_minutes)
+            metering_data, NS, result.start, resolution_minutes)
         logger.info(f"E31: Parsed {len(result.observations)} community aggregate observations")
         return result
 

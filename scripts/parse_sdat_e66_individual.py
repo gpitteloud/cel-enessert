@@ -9,17 +9,15 @@ Schema location: http://www.strom.ch ValidatedMeteredData_1p6.xsd
 # mais plutôt de vérifier la valeur de rsm:ValidatedMeteredData_HeaderInformation/rsm:InstanceDocument/rsm:DocumentType au moment de la lecture du fichier 
 
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Optional
 
-from models import (
-    MetricType, MeteredData, ParseResult, SkippedDocument, classify_metric_type)
-from sdat_xml import extract_product_code, extract_resolution_minutes, parse_observations
+from scripts.models import MetricType, MeteredData, ParseResult, SkippedDocument, classify_metric_type
+from scripts.sdat_xml import NS, extract_product_code, extract_resolution_minutes, parse_observations
 
 logger = logging.getLogger(__name__)
 
 
-def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set = None) -> ParseResult:
+def parse_e66(root, filename: str, meter_mappings: dict = None, physical_production_meters: set = None) -> ParseResult:
     """
     Decode a ValidatedMeteredData_1.6 (E66) document.
 
@@ -33,6 +31,7 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
 
     Args:
         root: parsed XML root Element of an E66 document
+        filename: name of current SDAT file
         meter_mappings: Dict mapping virtual_meter_id -> physical_meter_id (optional)
         physical_production_meters: Set of meter suffixes that report an ebIX
             production total. Used to detect self-contained meters that carry
@@ -47,19 +46,17 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
         meter_id, or resolution) or cannot be attributed.
     """
     try:
-        # Namespace
-        ns = {'rsm': 'http://www.strom.ch'}
 
         # Find MeteringData element
-        metering_data = root.find('.//rsm:MeteringData', ns)
+        metering_data = root.find('.//rsm:MeteringData', NS)
         if metering_data is None:
             logger.error("No MeteringData element found")
             return None
 
-        result = MeteredData(document_type='E66')
+        result = MeteredData(document_type='E66', filename=filename)
 
         # Is it part of RCP
-        receiver_role = root.find('.//rsm:Receiver/rsm:Role', ns)
+        receiver_role = root.find('.//rsm:Receiver/rsm:Role', NS)
         if receiver_role is not None:
             role = receiver_role.text
             result.rcp = True if role == 'DEC' else False
@@ -68,14 +65,14 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
         meter_id = None
 
         # Try ConsumptionMeteringPoint
-        consumption_point = metering_data.find('.//rsm:ConsumptionMeteringPoint/rsm:VSENationalID', ns)
+        consumption_point = metering_data.find('.//rsm:ConsumptionMeteringPoint/rsm:VSENationalID', NS)
         if consumption_point is not None:
             meter_id = consumption_point.text
             result.metering_point_type = 'consumption'
 
         # Try ProductionMeteringPoint
         if meter_id is None:
-            production_point = metering_data.find('.//rsm:ProductionMeteringPoint/rsm:VSENationalID', ns)
+            production_point = metering_data.find('.//rsm:ProductionMeteringPoint/rsm:VSENationalID', NS)
             if production_point is not None:
                 meter_id = production_point.text
                 result.metering_point_type = 'production'
@@ -88,21 +85,21 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
             return None
 
         # Extract interval start (base timestamp for observations)
-        interval = metering_data.find('.//rsm:Interval', ns)
+        interval = metering_data.find('.//rsm:Interval', NS)
         if interval is not None:
-            start_elem = interval.find('rsm:StartDateTime', ns)
+            start_elem = interval.find('rsm:StartDateTime', NS)
             if start_elem is not None:
                 result.start = start_elem.text
 
         # Extract resolution (missing resolution is fatal)
-        resolution_minutes = extract_resolution_minutes(metering_data, ns)
+        resolution_minutes = extract_resolution_minutes(metering_data, NS)
         if resolution_minutes is None:
             logger.error("Resolution not found")
             return None
         result.resolution_minutes = resolution_minutes
 
         # Extract product code - try both formats
-        product_code, code_type = extract_product_code(metering_data, ns)
+        product_code, code_type = extract_product_code(metering_data, NS)
 
         if product_code:
             metric_type = determine_metric_type(product_code, result)
@@ -145,9 +142,8 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
                 elif meter_suffix and physical_production_meters and meter_suffix in physical_production_meters:
                     # Self-contained meter: the production breakdown is on the same meter ID
                     # that also reports the ebIX production total. Attribute to itself.
-                    # As of 2026-07, meter 0134575W (not linked to RCP) is the only
-                    # such meter -- the sole breakdown attributed to itself rather
-                    # than to a separate 085-prefixed virtual meter.
+                    # As of 2026-07, meter 0134575W is the only such meter -- the sole breakdown attributed to itself
+                    # rather than to a separate 085-prefixed virtual meter.
                     is_production_breakdown = True
                     attributed_physical_meter = meter_suffix
                     logger.info(f"Self-contained meter {meter_suffix} -> attributing production breakdown to itself")
@@ -171,7 +167,7 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
             logger.warning("No product code found")
 
         # Extract community info
-        community_elem = metering_data.find('.//rsm:Community/rsm:CommunityID', ns)
+        community_elem = metering_data.find('.//rsm:Community/rsm:CommunityID', NS)
         if community_elem is not None:
             result.community_id = community_elem.text
 
@@ -180,10 +176,9 @@ def parse_e66(root, meter_mappings: dict = None, physical_production_meters: set
             logger.error("No start datetime found")
             return None
 
-        # ~480 observations/file, ~103 files/day, parsed in <1s total.
-        # Sequential is fast enough; no need for pandas/parallelism.
+        # ~480 observations/file
         result.observations = parse_observations(
-            metering_data, ns, result.start, resolution_minutes)
+            metering_data, NS, result.start, resolution_minutes)
         logger.info(f"Parsed {len(result.observations)} observations")
 
         return result

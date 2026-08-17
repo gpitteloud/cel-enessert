@@ -13,14 +13,16 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import List, Optional, Tuple
 
-from models import Observation
+from scripts.models import Observation
 
 # Scale of the DECIMAL(12,3) column the values land in. Every observation in the
-# 3297-file sample corpus has exactly 3 decimal places, so this is lossless --
+# files sample corpus has exactly 3 decimal places, so this is lossless --
 # but a 4-dp value would be rounded silently by the database, so reject it here
 # instead. If the provider ever changes resolution this fires loudly and the
 # column scale must be widened before ingesting.
 VALUE_SCALE = 3
+
+NS = {'rsm': 'http://www.strom.ch'}
 
 
 def extract_product_code(metering_data, ns) -> Tuple[Optional[str], Optional[str]]:

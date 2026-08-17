@@ -40,16 +40,15 @@ class MetricType(str, Enum):
         part = self.value.split('_', 1)[1]
         return 'cel' if part == 'local' else part
 
-
 # Product codes shared across document types.
 #   VSE local exchange (CEL) / VSE grid residual / ebIX total (grid + local)
 _PRODUCT_METRIC = {
     ('consumption', '2404050010123'): MetricType.CONSUMPTION_LOCAL,
-    ('production', '2404050010123'): MetricType.PRODUCTION_LOCAL,
+    ('production',  '2404050010123'): MetricType.PRODUCTION_LOCAL,
     ('consumption', '2404050010124'): MetricType.CONSUMPTION_GRID,
-    ('production', '2404050010124'): MetricType.PRODUCTION_GRID,
+    ('production',  '2404050010124'): MetricType.PRODUCTION_GRID,
     ('consumption', '8716867000030'): MetricType.CONSUMPTION_TOTAL,
-    ('production', '8716867000030'): MetricType.PRODUCTION_TOTAL,
+    ('production',  '8716867000030'): MetricType.PRODUCTION_TOTAL,
 }
 
 # E31 encodes direction as a flow characteristic rather than a metering point type.
@@ -113,6 +112,7 @@ class MeteredData:
     depending on document_type and default to None otherwise.
     """
     document_type: str                       # 'E66' | 'E31'
+    filename: str
     observations: List[Observation] = field(default_factory=list)
 
     # --- common ---

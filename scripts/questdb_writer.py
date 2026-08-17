@@ -30,15 +30,13 @@ exactly what the provider sent.
 import logging
 import os
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import List, Optional, Sequence
 
 from scripts.models import MeteredData
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DSN = os.environ.get(
-    'QUESTDB_DSN', 'postgresql://admin:quest@questdb:8812/qdb')
+DEFAULT_DSN = os.environ.get('QUESTDB_DSN')
 
 E66_TABLE = 'cel_energy'
 E31_TABLE = 'cel_community_energy'
@@ -47,9 +45,9 @@ LOG_TABLE = 'cel_ingest_log'
 # Column order per table; must match questdb_schema.sql. The designated
 # timestamp comes first, as in the schema.
 E66_COLUMNS = ('ts', 'meter_id', 'direction', 'segment', 'product_code',
-               'community_id', 'value', 'code_type', 'condition')
+               'community_id', 'value', 'code_type', 'condition', 'source_file', 'rcp')
 E31_COLUMNS = ('ts', 'direction', 'segment', 'product_code', 'community_id',
-               'value', 'code_type', 'community_type', 'grid_area', 'condition')
+               'value', 'code_type', 'community_type', 'grid_area', 'condition', 'source_file')
 LOG_COLUMNS = ('ts', 'delivery', 'file_name', 'document_type', 'rows_written',
                'outcome')
 
@@ -83,7 +81,7 @@ def rows_from_e66(parsed: MeteredData, attributed_meter_id: Optional[str] = None
     return [
         (_ts(obs.timestamp), meter_id, parsed.metric_type.direction,
          parsed.metric_type.segment, parsed.product_code, parsed.community_id,
-         obs.value, parsed.code_type, obs.condition)
+         obs.value, parsed.code_type, obs.condition, parsed.filename, parsed.rcp)
         for obs in parsed.observations
     ]
 
@@ -97,7 +95,7 @@ def rows_from_e31(parsed: MeteredData) -> List[tuple]:
         (_ts(obs.timestamp), parsed.metric_type.direction,
          parsed.metric_type.segment, parsed.product_code, parsed.community_id,
          obs.value, parsed.code_type, parsed.community_type, parsed.grid_area,
-         obs.condition)
+         obs.condition, parsed.filename)
         for obs in parsed.observations
     ]
 

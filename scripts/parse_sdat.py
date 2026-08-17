@@ -11,9 +11,9 @@ import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from models import ParseResult
-from parse_sdat_e66_individual import parse_e66
-from parse_sdat_e31_aggregated import parse_e31
+from scripts.models import ParseResult
+from scripts.parse_sdat_e66_individual import parse_e66
+from scripts.parse_sdat_e31_aggregated import parse_e31
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def parse_sdat(xml_file: Path, meter_mappings: dict = None,
         physical_production_meters=physical_production_meters)
 
 
-def parse_sdat_bytes(data: bytes, name: str, meter_mappings: dict = None,
+def parse_sdat_bytes(data: bytes, filename: str, meter_mappings: dict = None,
                      physical_production_meters: set = None) -> ParseResult:
     """Same as parse_sdat, but from bytes already in memory.
 
@@ -64,21 +64,21 @@ def parse_sdat_bytes(data: bytes, name: str, meter_mappings: dict = None,
     try:
         root = ET.fromstring(data)
     except ET.ParseError as e:
-        logger.error(f"{name}: XML parse error: {e}")
+        logger.error(f"{filename}: XML parse error: {e}")
         return None
-    return _dispatch(root, name, meter_mappings, physical_production_meters)
+    return _dispatch(root, filename, meter_mappings, physical_production_meters)
 
 
-def _dispatch(root, name: str, meter_mappings, physical_production_meters):
+def _dispatch(root, filename: str, meter_mappings, physical_production_meters):
     doc_type_elem = root.find(_DOC_TYPE_PATH)
     doc_type = doc_type_elem.text if doc_type_elem is not None else None
 
     if doc_type == 'E66':
-        return parse_e66(root, meter_mappings=meter_mappings,
+        return parse_e66(root, filename, meter_mappings=meter_mappings,
                          physical_production_meters=physical_production_meters)
     elif doc_type == 'E31':
-        return parse_e31(root)
+        return parse_e31(root, filename)
     else:
-        logger.error(f"{name}: unsupported or missing DocumentType "
+        logger.error(f"{filename}: unsupported or missing DocumentType "
                      f"(ebIXCode={doc_type!r})")
         return None

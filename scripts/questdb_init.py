@@ -22,8 +22,7 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).with_name('questdb_schema.sql')
 
-DEFAULT_DSN = os.environ.get(
-    'QUESTDB_DSN', 'postgresql://admin:quest@questdb:8812/qdb')
+DEFAULT_DSN = os.environ.get('QUESTDB_DSN')
 
 # What the schema must look like once applied. Checked, not assumed.
 EXPECTED_DEDUP_KEYS = {
