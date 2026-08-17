@@ -15,17 +15,17 @@ datasources:
     # admin/quest and cannot be changed in OSS without server.conf; neither port
     # is published outside cel-network (see docker-compose.yml).
     url: questdb:8812
-    user: admin
+    user: $__env{QDB_USER}
     isDefault: false
     editable: false
     jsonData:
       server: questdb
       port: 8812
-      username: admin
+      username: $__env{QDB_USER}
       # QuestDB OSS PG-wire does not offer TLS; the traffic never leaves the
       # docker network.
       tlsMode: disable
       # QuestDB has a single database, `qdb`.
       database: qdb
     secureJsonData:
-      password: quest
+      password: $__env{QDB_PASSWORD}

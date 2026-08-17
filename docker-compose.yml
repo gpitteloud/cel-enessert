@@ -53,7 +53,7 @@ services:
         python scripts/questdb_init.py --wait 60
       "
     environment:
-      - QUESTDB_DSN=postgresql://admin:quest@questdb:8812/qdb
+      - QUESTDB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@questdb:8812/qdb
     depends_on:
       - questdb
     networks:
@@ -109,7 +109,7 @@ services:
       # PG-wire endpoint. Default OSS credentials are admin/quest and cannot be
       # changed in OSS without server.conf; the port is unpublished (see the
       # questdb service) so it is reachable only from cel-network.
-      - QUESTDB_DSN=postgresql://admin:quest@questdb:8812/qdb
+      - QUESTDB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@questdb:8812/qdb
     depends_on:
       questdb-init:
         # Not just `questdb`: wait for the schema to be applied AND verified.
