@@ -9,13 +9,15 @@ Analyzes XML files to find matching production totals between:
 Mappings are discovered by matching production total values.
 """
 
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from collections import defaultdict
-from typing import Dict, Tuple
 import logging
+import xml.etree.ElementTree as ET
 import zipfile
+from pathlib import Path
+from typing import Dict, Tuple
+
 import yaml
+
+from scripts.sdat_xml import NS
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ def _production_total_from_root(root) -> Tuple[str, float, str]:
     """
     try:
         # Get meter ID
-        meter_elem = root.find('.//{http://www.strom.ch}VSENationalID')
+        meter_elem = root.find('.//rsm:VSENationalID', NS)
         if meter_elem is None:
             return None
 
@@ -50,24 +52,24 @@ def _production_total_from_root(root) -> Tuple[str, float, str]:
         meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else meter_id
 
         # Check if this is production
-        is_production = root.find('.//{http://www.strom.ch}ProductionMeteringPoint') is not None
+        is_production = root.find('.//rsm:ProductionMeteringPoint', NS) is not None
         if not is_production:
             return None
 
         # Get product code - must be ebIX Total (8716867000030)
-        product = root.find('.//{http://www.strom.ch}Product')
+        product = root.find('.//rsm:Product', NS)
         if product is None:
             return None
 
-        ebix_elem = product.find('.//{http://www.strom.ch}ID/{http://www.strom.ch}ebIXCode')
+        ebix_elem = product.find('.//rsm:ID/rsm:ebIXCode', NS)
         if ebix_elem is None or ebix_elem.text != '8716867000030':
             return None
 
         # Sum all observations to get total
         total = 0.0
-        observations = root.findall('.//{http://www.strom.ch}Observation')
+        observations = root.findall('.//rsm:Observation', NS)
         for obs in observations:
-            vol_elem = obs.find('.//{http://www.strom.ch}Volume')
+            vol_elem = obs.find('.//rsm:Volume', NS)
             if vol_elem is not None:
                 total += float(vol_elem.text)
 
@@ -77,7 +79,7 @@ def _production_total_from_root(root) -> Tuple[str, float, str]:
         is_virtual = meter_suffix.startswith('085')
         metering_type = 'virtual' if is_virtual else 'physical'
 
-        return (meter_suffix, round(total, 3), metering_type)
+        return meter_suffix, round(total, 3), metering_type
 
     except Exception as e:
         logger.debug(f"Could not extract production total: {e}")
@@ -208,7 +210,7 @@ def get_virtual_meters_from_files(data_dir: Path, sample_size: int = 50) -> set:
             tree = ET.parse(xml_file)
             root = tree.getroot()
 
-            meter_elem = root.find('.//{http://www.strom.ch}VSENationalID')
+            meter_elem = root.find('.//rsm:VSENationalID', NS)
             if meter_elem is None:
                 continue
 
@@ -218,10 +220,10 @@ def get_virtual_meters_from_files(data_dir: Path, sample_size: int = 50) -> set:
             # Check if virtual meter (starts with "085")
             if meter_suffix.startswith('085'):
                 # Verify it has VSE production codes
-                is_production = root.find('.//{http://www.strom.ch}ProductionMeteringPoint') is not None
-                product = root.find('.//{http://www.strom.ch}Product')
+                is_production = root.find('.//rsm:ProductionMeteringPoint', NS) is not None
+                product = root.find('.//rsm:Product', NS)
                 if is_production and product is not None:
-                    vse_elem = product.find('.//{http://www.strom.ch}ID/{http://www.strom.ch}VSENationalCode')
+                    vse_elem = product.find('.//rsm:ID/rsm:VSENationalCode', NS)
                     if vse_elem is not None:
                         virtual_meters.add(meter_suffix)
         except:
@@ -233,19 +235,19 @@ def get_virtual_meters_from_files(data_dir: Path, sample_size: int = 50) -> set:
 def _physical_meter_suffix_from_root(root) -> str:
     """Return the meter suffix if this XML is a production file reporting an
     ebIX production total (8716867000030), else None."""
-    meter_elem = root.find('.//{http://www.strom.ch}VSENationalID')
+    meter_elem = root.find('.//rsm:VSENationalID', NS)
     if meter_elem is None or meter_elem.text is None:
         return None
 
     # Must be a production metering point
-    if root.find('.//{http://www.strom.ch}ProductionMeteringPoint') is None:
+    if root.find('.//rsm:ProductionMeteringPoint', NS) is None:
         return None
 
     # Must have ebIX production total code
-    product = root.find('.//{http://www.strom.ch}Product')
+    product = root.find('.//rsm:Product', NS)
     if product is None:
         return None
-    ebix_elem = product.find('.//{http://www.strom.ch}ID/{http://www.strom.ch}ebIXCode')
+    ebix_elem = product.find('.//rsm:ID/rsm:ebIXCode', NS)
     if ebix_elem is None or ebix_elem.text != '8716867000030':
         return None
 
@@ -306,7 +308,7 @@ def get_physical_production_meters(data_dir: Path, archive_dir: Path = None) -> 
     return physical_meters
 
 
-def load_or_discover_mappings(data_dir: Path, cache_file: Path) -> Dict[str, str]:
+def load_or_discover_mappings(data_dir: Path, archive_dir: Path, cache_file: Path) -> Dict[str, str]:
     """
     Load mappings from cache, or discover if cache doesn't exist or new meters detected
 
@@ -338,6 +340,8 @@ def load_or_discover_mappings(data_dir: Path, cache_file: Path) -> Dict[str, str
                     needs_rediscovery = True
                 else:
                     logger.info("No new meters detected - using cached mappings")
+            else:
+                needs_rediscovery = True
         except Exception as e:
             logger.warning(f"Failed to load cache: {e}")
             needs_rediscovery = True
@@ -348,7 +352,6 @@ def load_or_discover_mappings(data_dir: Path, cache_file: Path) -> Dict[str, str
     # Re-discover if needed
     if needs_rediscovery:
         # Try to discover from data_dir, also check archive if needed
-        archive_dir = data_dir.parent / "archive" if data_dir.parent else None
         mappings = discover_mappings(data_dir, archive_dir)
         if mappings:
             save_mappings(mappings, cache_file)

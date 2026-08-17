@@ -13,20 +13,11 @@ project:
   name: "cel"
   community_name: "Coopérative Enessert"
 
-  # Note: Meter mappings are auto-discovered from files
-  # No manual meter configuration needed
-
 # Data processing
 processing:
-  # Validate data before sending
-  validate: true
-
-  # Skip invalid data points instead of failing
-  skip_invalid: true
-
-  # Archive processed files
-  archive_processed: true
-  archive_path: "data/archive"
+  incoming_path: "/data/incoming"
+  meter_mapping_file: "/app/config/meter_mappings.yaml"
+  archive_path: "/data/archive"
 
 # Logging
 logging:
