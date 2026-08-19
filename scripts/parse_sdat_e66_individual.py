@@ -107,7 +107,7 @@ def parse_e66(root, filename: str, meter_mappings: dict = None, physical_product
             # A mapped virtual meter also reports an ebIX production TOTAL that is
             # identical to its physical meter's production total -- that equality
             # is exactly how auto-discovery pairs them. Storing both would double
-            # the community production total, so drop the virtual copy: the
+            # the meter production total, so drop the virtual copy: the
             # physical meter's total is kept, and the virtual meter's VSE
             # breakdown (handled below) is re-attributed to that same physical
             # meter. The self-contained meter (e.g. 0134575W) is in

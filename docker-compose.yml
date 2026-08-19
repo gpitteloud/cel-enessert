@@ -20,6 +20,8 @@ services:
       # Pin the version so a silent `latest` bump can't change dedup or decimal
       # behaviour under us. Both are load-bearing here.
       - QDB_TELEMETRY_ENABLED=false
+      - QDB_PG_USER=${DB_USER}
+      - QDB_PG_PASSWORD=${DB_PASSWORD}
     networks:
       - cel-network
 
@@ -82,6 +84,8 @@ services:
       - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_energy_overview.json
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
       - GF_SERVER_DOMAIN=grafana.oche22.ch
+      - QDB_USER=${DB_USER}
+      - QDB_PASSWORD=${DB_PASSWORD}
     depends_on:
       # Ordering only, not readiness -- Grafana retries a datasource that is
       # not up yet.
@@ -89,34 +93,45 @@ services:
     networks:
       - cel-network
 
-  cel-parser:
-    image: python:3.11-slim
-    container_name: cel-parser
-    restart: unless-stopped
+  cel-parser-job:
+    build: .
+    container_name: cel-parser-job
+    restart: "no"
+    command: ["sleep", "infinity"] # real command in ofelia command label
     volumes:
       - /volume1/ftproot:/data/incoming
       - /volume1/docker/cel/scripts:/app/scripts
       - /volume1/docker/cel/config:/app/config
       - /volume1/docker/cel/logs:/app/logs
       - /volume1/docker/cel/archive:/data/archive
-    working_dir: /app
-    command: >
-      sh -c "
-        pip install --no-cache-dir pyyaml watchdog 'psycopg[binary]' &&
-        python scripts/watch_ftproot.py
-      "
     environment:
       # PG-wire endpoint. Default OSS credentials are admin/quest and cannot be
       # changed in OSS without server.conf; the port is unpublished (see the
       # questdb service) so it is reachable only from cel-network.
       - QUESTDB_DSN=postgresql://${DB_USER}:${DB_PASSWORD}@questdb:8812/qdb
+      - SFTP_HOST=1o9p0.ftp.infomaniak.com
+      - SFTP_PORT=21
+    networks:
+      - cel-network
+    secrets:
+      - sftp_user
+      - sftp_password
+    labels:
+      ofelia.enabled: "true"
+      ofelia.job-exec.parserjob.schedule: "0 0 10 * * *"
+      ofelia.job-exec.parserjob.command: "python -m scripts.sftp_download_and_process"
+
+  scheduler:
+    image: mcuadros/ofelia:latest
     depends_on:
       questdb-init:
-        # Not just `questdb`: wait for the schema to be applied AND verified.
-        # Starting sooner risks the first INSERT auto-creating a table without
-        # DEDUP and with a default DECIMAL(18,3), which would silently
-        # reintroduce the duplicate-counting the dedup keys prevent.
         condition: service_completed_successfully
+    command: daemon --docker
+    environment:
+      - TZ=Europe/Zurich
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
     networks:
       - cel-network
 
@@ -137,3 +152,9 @@ networks:
     # If it is missing, both stacks fail loudly with "network not found".
     external: true
     name: cel-network
+
+secrets:
+  sftp_user:
+    file: ./secrets/sftp_user.txt
+  sftp_password:
+    file: ./secrets/sftp_password.txt
