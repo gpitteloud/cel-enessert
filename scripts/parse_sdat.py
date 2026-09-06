@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Single entry point for parsing SDAT XML files.
+Single entry point for turning an SDAT file into storable rows.
 
-Owns the XML parsing and the E66/E31 decision, then dispatches to the
-format-specific decoder. The document type is determined from the file's
+Reading the XML lives in sdat_header; this owns the E66/E31 decision and hands
+the FileHeader to the matching decoder. The document type comes from the file's
 content (InstanceDocument/DocumentType/ebIXCode), NOT from the filename, so a
 mis-named or renamed file is still routed correctly.
 """
@@ -12,31 +12,39 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from scripts.models import ParseResult
-from scripts.parse_sdat_e66_individual import parse_e66
 from scripts.parse_sdat_e31_aggregated import parse_e31
+from scripts.parse_sdat_e66_individual import parse_e66
+from scripts.sdat_header import FileHeader, parse_header
 
 logger = logging.getLogger(__name__)
 
-# DocumentType/ebIXCode lives in the header of both formats
-_DOC_TYPE_PATH = ('.//{http://www.strom.ch}DocumentType'
-                  '/{http://www.strom.ch}ebIXCode')
 
+def metered_data_from_header(header: FileHeader, meter_mappings: dict = None,
+                             self_contained_meters: set = None) -> ParseResult:
+    """Dispatch an already-read file to the E66 or E31 decoder.
 
-def parse_sdat(xml_file: Path, meter_mappings: dict = None,
-               physical_production_meters: set = None) -> ParseResult:
+    The batch path uses this directly: it has read every header once already, and
+    reading a delivery twice is the cost this split exists to avoid.
     """
-    Parse an SDAT XML file, dispatching to the E66 or E31 decoder by content.
+    if header.document_type == 'E66':
+        return parse_e66(header, meter_mappings=meter_mappings,
+                         self_contained_meters=self_contained_meters)
+    if header.document_type == 'E31':
+        return parse_e31(header)
+    logger.error(f"{header.file_name}: unsupported or missing DocumentType "
+                 f"(ebIXCode={header.document_type!r})")
+    return None
 
-    Args:
-        xml_file: Path to the SDAT XML file
-        meter_mappings: virtual->physical meter map (E66 only, optional)
-        physical_production_meters: self-contained meter suffixes (E66 only, optional)
+
+def parse_sdat(xml_file, meter_mappings: dict = None,
+               self_contained_meters: set = None) -> ParseResult:
+    """Read one SDAT file and decode it, for a caller holding only a path.
 
     Returns:
         MeteredData (document_type 'E66' or 'E31'); a SkippedDocument when the
         file is valid but deliberately not ingested (see parse_e66); or None if
-        the file cannot be parsed, has no DocumentType, or is an unsupported
-        document type.
+        the file cannot be read, is an unsupported document type, or cannot be
+        attributed.
     """
     xml_file = Path(xml_file)
     try:
@@ -46,39 +54,25 @@ def parse_sdat(xml_file: Path, meter_mappings: dict = None,
         return None
     return parse_sdat_bytes(
         data, xml_file.name, meter_mappings=meter_mappings,
-        physical_production_meters=physical_production_meters)
+        self_contained_meters=self_contained_meters)
 
 
 def parse_sdat_bytes(data: bytes, filename: str, meter_mappings: dict = None,
-                     physical_production_meters: set = None) -> ParseResult:
+                     self_contained_meters: set = None) -> ParseResult:
     """Same as parse_sdat, but from bytes already in memory.
 
     For XML that is not a file on disk -- an archive zip member read with
     `ZipFile.read()`, most usefully -- so it can be parsed without extracting it
-    first. `name` is only used for log messages. Nothing in the pipeline calls
-    this today (parse_sdat is the live entry point and replay works by extracting
-    zips back into the incoming folder); it is kept because routing through this
-    one dispatch is what stops a zip-reading caller from growing its own copy of
-    the E66/E31 decision.
+    first.
     """
     try:
-        root = ET.fromstring(data)
+        header = parse_header(ET.fromstring(data), filename)
     except ET.ParseError as e:
         logger.error(f"{filename}: XML parse error: {e}")
         return None
-    return _dispatch(root, filename, meter_mappings, physical_production_meters)
-
-
-def _dispatch(root, filename: str, meter_mappings, physical_production_meters):
-    doc_type_elem = root.find(_DOC_TYPE_PATH)
-    doc_type = doc_type_elem.text if doc_type_elem is not None else None
-
-    if doc_type == 'E66':
-        return parse_e66(root, filename, meter_mappings=meter_mappings,
-                         physical_production_meters=physical_production_meters)
-    elif doc_type == 'E31':
-        return parse_e31(root, filename)
-    else:
-        logger.error(f"{filename}: unsupported or missing DocumentType "
-                     f"(ebIXCode={doc_type!r})")
+    except ValueError as e:
+        logger.error(f"{filename}: cannot read header: {e}")
         return None
+    return metered_data_from_header(
+        header, meter_mappings=meter_mappings,
+        self_contained_meters=self_contained_meters)

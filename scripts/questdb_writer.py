@@ -62,14 +62,12 @@ def _ts(iso: str) -> datetime:
     return datetime.fromisoformat(iso.replace('Z', '+00:00'))
 
 
-def rows_from_e66(parsed: MeteredData, attributed_meter_id: Optional[str] = None) -> List[tuple]:
+def rows_from_e66(parsed: MeteredData) -> List[tuple]:
     """Build cel_energy rows from a parsed E66 document.
 
-    `attributed_meter_id`: for a production
-    breakdown it is the full ID of the physical meter the breakdown belongs to,
-    so the rows are stored against that meter rather than the virtual one. The
-    watcher computes it (it needs the virtual ID's prefix), so it is passed in
-    rather than read off `parsed`.
+    `parsed.meter_id` is already the meter the rows belong to: the parser
+    finishes the virtual-to-physical attribution, so there is nothing to resolve
+    here (the file's own meter is kept in cel_file_header.file_meter_id).
 
     Total over ParseResult: a None or a SkippedDocument yields no rows rather
     than AttributeError, so a caller that skips the isinstance check writes
@@ -78,12 +76,8 @@ def rows_from_e66(parsed: MeteredData, attributed_meter_id: Optional[str] = None
     if not getattr(parsed, 'observations', None) or not parsed.metric_type:
         return []
 
-    meter_id = parsed.meter_id
-    if parsed.is_production_breakdown and attributed_meter_id:
-        meter_id = attributed_meter_id
-
     return [
-        (_ts(obs.timestamp), meter_id, parsed.metric_type.direction,
+        (_ts(obs.timestamp), parsed.meter_id, parsed.metric_type.direction,
          parsed.metric_type.segment, parsed.product_code, parsed.community_id,
          obs.value, parsed.code_type, obs.condition, parsed.filename, parsed.rcp)
         for obs in parsed.observations
@@ -247,9 +241,8 @@ class QuestDBWriter:
             self._discard()
             return self._execute(sql, rows)
 
-    def write_e66(self, parsed: MeteredData, attributed_meter_id: Optional[str] = None) -> int:
-        return self.write(E66_TABLE, E66_COLUMNS,
-                          rows_from_e66(parsed, attributed_meter_id))
+    def write_e66(self, parsed: MeteredData) -> int:
+        return self.write(E66_TABLE, E66_COLUMNS, rows_from_e66(parsed))
 
     def write_e31(self, parsed: MeteredData) -> int:
         return self.write(E31_TABLE, E31_COLUMNS, rows_from_e31(parsed))

@@ -1,14 +1,14 @@
 """Tests for parse_sdat_e66_individual (ValidatedMeteredData_1.6)."""
 import pytest
 
-from scripts.models import MeteredData, SkippedDocument
+from scripts.models import MeteredData, MetricType, SkippedDocument
 from scripts.parse_sdat import parse_sdat
-from scripts.parse_sdat_e66_individual import MetricType
 from conftest import (
     make_e66_xml,
+    meter_id,
     real_files,
     SAMPLE_MAPPINGS,
-    SAMPLE_PHYSICAL_METERS,
+    SAMPLE_SELF_CONTAINED,
 )
 
 
@@ -22,11 +22,9 @@ def test_consumption_local_vse(write_xml):
                                code_type="VSENationalCode"))
     r = parse_sdat(f)
     assert r.document_type == "E66"
-    assert r.metering_point_type == "consumption"
     assert r.metric_type == MetricType.CONSUMPTION_LOCAL
-    assert r.meter_id == "CH101110123450000000000000020576V"
+    assert r.meter_id == meter_id("0020576V")
     assert r.community_id == "101110-002726"
-    assert r.is_production_breakdown is False
 
 
 def test_consumption_grid_vse(write_xml):
@@ -49,10 +47,9 @@ def test_production_total_ebix(write_xml):
                                product_code="8716867000030",
                                code_type="ebIXCode"))
     r = parse_sdat(f)
-    assert r.metering_point_type == "production"
     assert r.metric_type == MetricType.PRODUCTION_TOTAL
-    # ebIX production total is NOT a breakdown, must not be flagged
-    assert r.is_production_breakdown is False
+    # An unmapped meter's own total is stored under that meter, not attributed.
+    assert r.meter_id == meter_id("0020576V")
 
 
 # --------------------------------------------------------------------------
@@ -74,12 +71,6 @@ def test_observations_parsed_with_timestamps(write_xml):
     assert "22:30:00" in obs[2].timestamp
 
 
-def test_resolution_extracted(write_xml):
-    f = write_xml(make_e66_xml(resolution=30))
-    r = parse_sdat(f)
-    assert r.resolution_minutes == 30
-
-
 def test_missing_resolution_returns_none(write_xml):
     # Parser now rejects files without a resolution (returns None)
     f = write_xml(make_e66_xml(include_resolution=False))
@@ -91,25 +82,24 @@ def test_missing_resolution_returns_none(write_xml):
 # --------------------------------------------------------------------------
 
 def test_virtual_meter_mapped_to_physical(write_xml):
-    # 085-prefixed virtual meter with production VSE code, present in mappings
-    virt = "CH1011101234500000000000000855229G"
+    # A virtual meter's production breakdown is stored under its physical twin,
+    # so meter_id is already the physical one when the parser returns.
+    virt = meter_id("0855229G")
     f = write_xml(make_e66_xml(point="production", meter_id=virt,
                                product_code="2404050010123"))
-    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
-    assert r.is_production_breakdown is True
-    assert r.attributed_physical_meter == "0020576V"
+    r = parse_sdat(f, meter_mappings={virt: meter_id("0020576V")})
+    assert r.meter_id == meter_id("0020576V")
     assert r.metric_type == MetricType.PRODUCTION_LOCAL
 
 
 def test_self_contained_meter_attributed_to_itself(write_xml):
-    # Production VSE breakdown on a meter that is itself a physical prod meter
-    mid = "CH101110123450000000000000134575W"
+    # Production VSE breakdown on a meter that also reports consumption: it owns
+    # its breakdown, so nothing is re-attributed.
+    mid = meter_id("0134575W")
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
-    r = parse_sdat(f, meter_mappings={},
-                       physical_production_meters={"0134575W"})
-    assert r.is_production_breakdown is True
-    assert r.attributed_physical_meter == "0134575W"
+    r = parse_sdat(f, meter_mappings={}, self_contained_meters={mid})
+    assert r.meter_id == mid
 
 
 def test_virtual_meter_production_total_dropped(write_xml):
@@ -117,37 +107,37 @@ def test_virtual_meter_production_total_dropped(write_xml):
     # meter's total, so it must be dropped to avoid double counting the
     # community production sum. The drop is signalled as a SkippedDocument
     # (not None) so callers can log it as expected rather than as a failure.
-    virt = "CH1011101234500000000000000855229G"
+    virt = meter_id("0855229G")
     f = write_xml(make_e66_xml(point="production", meter_id=virt,
                                product_code="8716867000030",
                                code_type="ebIXCode"))
-    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
+    r = parse_sdat(f, meter_mappings={virt: meter_id("0020576V")})
     assert isinstance(r, SkippedDocument)
     assert r.meter_id == virt
-    assert "0020576V" in r.reason
+    assert meter_id("0020576V") in r.reason
 
 
 def test_self_contained_meter_production_total_kept(write_xml):
     # The self-contained meter is NOT in meter_mappings (only in the physical
     # set), so its own production total must be kept, not dropped.
-    mid = "CH101110123450000000000000134575W"
+    mid = meter_id("0134575W")
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="8716867000030",
                                code_type="ebIXCode"))
-    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"},
-                       physical_production_meters={"0134575W"})
+    r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
+                       self_contained_meters={mid})
     assert r is not None
     assert r.metric_type == MetricType.PRODUCTION_TOTAL
-    assert r.is_production_breakdown is False
+    assert r.meter_id == mid
 
 
 def test_physical_meter_production_total_kept(write_xml):
     # A physical producer's own ebIX production total is always kept.
-    mid = "CH101110123450000000000000020576V"
+    mid = meter_id("0020576V")
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="8716867000030",
                                code_type="ebIXCode"))
-    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"})
+    r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS)
     assert r is not None
     assert r.metric_type == MetricType.PRODUCTION_TOTAL
 
@@ -156,21 +146,21 @@ def test_unknown_virtual_meter_returns_none(write_xml):
     # Production VSE breakdown, unknown meter, no mapping, not self-contained.
     # This IS a failure (a new member needs discovery), so it must stay None --
     # never a SkippedDocument, which would silence it and archive the file.
-    mid = "CH101110123450000000000000999999X"
+    mid = meter_id("0999999X")
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
-    r = parse_sdat(f, meter_mappings={}, physical_production_meters=set())
+    r = parse_sdat(f, meter_mappings={}, self_contained_meters=set())
     assert r is None
 
 
 def test_mapping_takes_precedence_over_self_contained(write_xml):
-    # If suffix is BOTH in mappings and physical set, the mapping wins
-    mid = "CH1011101234500000000000000855229G"
+    # If a meter is BOTH mapped and self-contained, the mapping wins
+    mid = meter_id("0855229G")
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="2404050010123"))
-    r = parse_sdat(f, meter_mappings={"0855229G": "0020576V"},
-                       physical_production_meters={"0855229G"})
-    assert r.attributed_physical_meter == "0020576V"
+    r = parse_sdat(f, meter_mappings={mid: meter_id("0020576V")},
+                       self_contained_meters={mid})
+    assert r.meter_id == meter_id("0020576V")
 
 
 # --------------------------------------------------------------------------
@@ -214,16 +204,15 @@ def test_real_e66_files_all_parse():
     dropped = 0
     for f in _E66_SAMPLES:
         r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
-                           physical_production_meters=SAMPLE_PHYSICAL_METERS)
+                           self_contained_meters=SAMPLE_SELF_CONTAINED)
         assert r is not None, f"{f.name}: unexpected parse failure"
         if isinstance(r, SkippedDocument):
             # Only a mapped virtual meter's production total may be skipped.
-            assert r.meter_id and r.meter_id[-8:] in SAMPLE_MAPPINGS, \
+            assert r.meter_id in SAMPLE_MAPPINGS, \
                 f"unexpected skip of {f.name} (not a mapped virtual meter)"
             dropped += 1
             continue
         assert r.document_type == "E66"
-        assert r.resolution_minutes == 15
         # 15-min resolution over whole days => observation count is a multiple
         # of 96 (real deliveries seen: 480 = 5 days, 2976 = 31 days)
         assert r.observations, f"no observations in {f.name}"
@@ -241,7 +230,7 @@ def test_real_e66_product_codes_are_known():
     seen = set()
     for f in _E66_SAMPLES:
         r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
-                           physical_production_meters=SAMPLE_PHYSICAL_METERS)
+                           self_contained_meters=SAMPLE_SELF_CONTAINED)
         if isinstance(r, MeteredData) and r.product_code:
             seen.add(r.product_code)
     assert seen, "no product codes seen"
@@ -255,7 +244,7 @@ def test_real_e66_builds_storable_rows():
     from scripts.questdb_writer import E66_COLUMNS, rows_from_e66
     f = _E66_SAMPLES[0]
     r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
-                       physical_production_meters=SAMPLE_PHYSICAL_METERS)
+                       self_contained_meters=SAMPLE_SELF_CONTAINED)
     rows = rows_from_e66(r)
     assert len(rows) == len(r.observations)
     row = dict(zip(E66_COLUMNS, rows[0]))

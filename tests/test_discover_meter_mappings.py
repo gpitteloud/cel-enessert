@@ -1,264 +1,273 @@
 """Tests for discover_meter_mappings - pairing virtual meters to physical ones.
 
-Written BEFORE the discovery rewrite, so these pin today's behaviour including
-the parts that are known defects: classification by the '085' ID prefix, a
-0.1 kWh matching tolerance, and first-match-wins pairing. The tests named
-`..._today` are the ones the rewrite is expected to change.
+Two things are pinned here, and they are independent: classification uses only
+which series a meter reports (never its ID), and pairing compares the whole
+observation vector inside one report period. Anything discovery cannot decide
+must come back as an ambiguity -- a wrong pairing stores a member's production
+under someone else's meter and cannot be told apart afterwards.
 """
-import zipfile
+import xml.etree.ElementTree as ET
 
 import pytest
 
-from conftest import SAMPLE_DIR, make_e66_xml
-from scripts import discover_meter_mappings as dmm
-from scripts.discover_meter_mappings import (discover_mappings,
-                                             get_physical_production_meters,
-                                             get_virtual_meters_from_files,
-                                             load_or_discover_mappings,
-                                             save_mappings)
+from conftest import SAMPLE_DIR, make_e66_xml, meter_id
+from scripts.discover_meter_mappings import (classify_meters, discover_mappings,
+                                             group_by_report_period,
+                                             load_cached_mappings,
+                                             log_mapping_changes,
+                                             mappings_for_period,
+                                             pair_virtual_meters, save_mappings)
+from scripts.sdat_header import load_headers, parse_header
 
 EBIX_TOTAL = '8716867000030'
 VSE_CEL = '2404050010123'
+VSE_GRID = '2404050010124'
 
-PREFIX = 'CH10111012345000000000000'
-PHYSICAL = PREFIX + '0046782G'
-VIRTUAL = PREFIX + '08552310'
+PHYSICAL = meter_id('0046782G')
+VIRTUAL = meter_id('08552310')
+MEMBER = meter_id('0020576V')
 
-
-def total_file(directory, meter_id, values, name):
-    """An ebIX production-total document, the input discovery matches on."""
-    path = directory / name
-    path.write_text(make_e66_xml(meter_id=meter_id, point='production',
-                                 product_code=EBIX_TOTAL, code_type='ebIXCode',
-                                 values=values), encoding='utf-8')
-    return path
+# A second report period, so a monthly file can never be paired with a 5-day one.
+MONTH = {'start': '2026-04-30T22:00:00Z', 'end': '2026-05-31T22:00:00Z'}
 
 
-def breakdown_file(directory, meter_id, name):
-    """A VSE production-breakdown document: what marks a meter as virtual."""
-    path = directory / name
-    path.write_text(make_e66_xml(meter_id=meter_id, point='production',
-                                 product_code=VSE_CEL,
-                                 code_type='VSENationalCode'), encoding='utf-8')
-    return path
+def header(**kwargs):
+    """A FileHeader for a synthetic E66 document."""
+    xml = make_e66_xml(**kwargs)
+    return parse_header(ET.fromstring(xml), '20260522_094500_x.xml')
 
+
+def production(meter, product_code=EBIX_TOTAL, values=(1.0, 2.0), **kwargs):
+    code_type = 'ebIXCode' if product_code == EBIX_TOTAL else 'VSENationalCode'
+    return header(meter_id=meter, point='production', product_code=product_code,
+                  code_type=code_type, values=values, **kwargs)
+
+
+def consumption(meter, product_code=EBIX_TOTAL, **kwargs):
+    code_type = 'ebIXCode' if product_code == EBIX_TOTAL else 'VSENationalCode'
+    return header(meter_id=meter, point='consumption', product_code=product_code,
+                  code_type=code_type, **kwargs)
+
+
+# --------------------------------------------------------------------------
+# Classification, from the series a meter reports
+# --------------------------------------------------------------------------
+
+def test_a_meter_with_a_breakdown_and_no_consumption_is_virtual():
+    classes = classify_meters([production(VIRTUAL),
+                               production(VIRTUAL, VSE_CEL),
+                               production(VIRTUAL, VSE_GRID)])
+    assert classes.virtual == {VIRTUAL}
+    assert classes.self_contained == set()
+    # A virtual meter is never its own pairing candidate.
+    assert classes.physical_producers == set()
+
+
+def test_a_meter_with_a_breakdown_and_consumption_is_self_contained():
+    """The absence of a consumption file is what makes a meter virtual, so one
+    consumption file is enough to say the breakdown is the meter's own."""
+    classes = classify_meters([consumption(MEMBER),
+                               production(MEMBER),
+                               production(MEMBER, VSE_CEL)])
+    assert classes.self_contained == {MEMBER}
+    assert classes.virtual == set()
+    assert classes.physical_producers == {MEMBER}
+
+
+def test_a_producer_without_a_breakdown_is_a_physical_producer():
+    classes = classify_meters([production(PHYSICAL), consumption(PHYSICAL)])
+    assert classes.physical_producers == {PHYSICAL}
+    assert classes.virtual == set() and classes.self_contained == set()
+
+
+def test_a_consumer_is_in_no_producer_set():
+    classes = classify_meters([consumption(MEMBER),
+                               consumption(MEMBER, VSE_CEL),
+                               consumption(MEMBER, VSE_GRID)])
+    assert (classes.virtual, classes.self_contained,
+            classes.physical_producers) == (set(), set(), set())
+
+
+# --------------------------------------------------------------------------
+# Pairing on the whole observation vector
+# --------------------------------------------------------------------------
+
+def paired(headers):
+    return pair_virtual_meters(headers, classify_meters(headers))
+
+
+def test_identical_vectors_are_paired():
+    headers = [production(VIRTUAL, values=(1.5, 2.25)),
+               production(VIRTUAL, VSE_CEL),
+               production(PHYSICAL, values=(1.5, 2.25))]
+    mappings, ambiguities = paired(headers)
+    assert mappings == {VIRTUAL: PHYSICAL}
+    assert ambiguities == []
+
+
+def test_an_all_zero_vector_still_pairs_when_it_is_the_only_one():
+    """The real 08552310 reports nothing but zeros and still resolves, because
+    no other producer in the group is all-zero."""
+    headers = [production(VIRTUAL, values=(0.0, 0.0)),
+               production(VIRTUAL, VSE_CEL),
+               production(PHYSICAL, values=(0.0, 0.0)),
+               production(MEMBER, values=(1.0, 2.0))]
+    mappings, ambiguities = paired(headers)
+    assert mappings == {VIRTUAL: PHYSICAL}
+    assert ambiguities == []
+
+
+def test_a_vector_that_differs_in_one_slot_is_not_paired():
+    """Exact equality, no tolerance: 1.05 is a different meter, not a rounding."""
+    headers = [production(VIRTUAL, values=(1.0, 2.0)),
+               production(VIRTUAL, VSE_CEL),
+               production(PHYSICAL, values=(1.05, 2.0))]
+    mappings, ambiguities = paired(headers)
+    assert mappings == {}
+    assert any('no physical producer' in a for a in ambiguities)
+
+
+def test_two_matching_producers_are_reported_not_guessed():
+    headers = [production(VIRTUAL, values=(1.0,)),
+               production(VIRTUAL, VSE_CEL),
+               production(PHYSICAL, values=(1.0,)),
+               production(MEMBER, values=(1.0,))]
+    mappings, ambiguities = paired(headers)
+    assert mappings == {}
+    assert any(PHYSICAL in a and MEMBER in a for a in ambiguities)
+
+
+def test_one_physical_meter_cannot_back_two_virtual_meters():
+    """Assignment is one-to-one: the second claim is an ambiguity, not an
+    overwrite that would silently give one member the other's production."""
+    second = meter_id('0855229G')
+    headers = [production(VIRTUAL, values=(1.0,)), production(VIRTUAL, VSE_CEL),
+               production(second, values=(1.0,)), production(second, VSE_CEL),
+               production(PHYSICAL, values=(1.0,))]
+    mappings, ambiguities = paired(headers)
+    assert len(mappings) == 1
+    assert any('matches both' in a for a in ambiguities)
+
+
+def test_a_virtual_meter_without_a_total_is_reported():
+    headers = [production(VIRTUAL, VSE_CEL), production(PHYSICAL)]
+    mappings, ambiguities = paired(headers)
+    assert mappings == {}
+    assert any('no production total' in a for a in ambiguities)
+
+
+# --------------------------------------------------------------------------
+# Grouping
+# --------------------------------------------------------------------------
+
+def test_report_periods_are_grouped_separately():
+    """A delivery is not one report period: 20260807 carries a month and 5 days,
+    whose totals must never be compared with each other."""
+    headers = [production(VIRTUAL, values=(1.0,)), production(VIRTUAL, VSE_CEL),
+               production(PHYSICAL, values=(1.0,), **MONTH)]
+    groups = group_by_report_period(headers)
+    assert len(groups) == 2
+
+    results = discover_mappings(headers)
+    five_day = results[headers[0].report_period]
+    assert five_day.mappings == {}, 'a monthly total is not a candidate'
+    assert not five_day.complete
+
+
+def test_rcp_files_are_left_out():
+    """RCP carries only ebIX totals, so it has no virtual meters -- and its
+    meters must not become pairing candidates for CEL ones."""
+    rcp = production(meter_id('0803097E'), business_reason='E88',
+                     reason_code_type='ebIXCode', community_id=None)
+    assert rcp.rcp is True
+    assert group_by_report_period([rcp]) == {}
+
+
+def test_a_group_is_complete_only_when_every_virtual_meter_paired():
+    headers = [production(VIRTUAL, values=(1.0,)), production(VIRTUAL, VSE_CEL),
+               production(PHYSICAL, values=(1.0,))]
+    result = discover_mappings(headers)[headers[0].report_period]
+    assert result.complete
+    assert mappings_for_period(result, cached={'x': 'y'}) == {VIRTUAL: PHYSICAL}
+
+
+def test_an_incomplete_group_falls_back_to_the_recorded_mappings():
+    """Discovery that cannot decide must not wipe what is known: without any
+    mapping every breakdown file of the delivery fails."""
+    headers = [production(VIRTUAL, values=(1.0,)), production(VIRTUAL, VSE_CEL)]
+    result = discover_mappings(headers)[headers[0].report_period]
+    assert not result.complete
+    assert mappings_for_period(result, cached={VIRTUAL: PHYSICAL}) == {
+        VIRTUAL: PHYSICAL}
+
+
+# --------------------------------------------------------------------------
+# The YAML record
+# --------------------------------------------------------------------------
+
+def test_saved_mappings_are_read_back(tmp_path):
+    cache = tmp_path / 'meter_mappings.yaml'
+    save_mappings({VIRTUAL: PHYSICAL}, cache)
+    assert load_cached_mappings(cache) == {VIRTUAL: PHYSICAL}
+
+
+def test_a_suffix_keyed_cache_is_ignored(tmp_path):
+    """The previous version keyed on the last 8 characters, which is not a meter
+    id. Half-trusting it would attribute a breakdown to nothing."""
+    cache = tmp_path / 'meter_mappings.yaml'
+    cache.write_text("meter_mappings:\n  '08552310': '0046782G'\n")
+    assert load_cached_mappings(cache) == {}
+
+
+def test_a_missing_or_unreadable_cache_is_empty(tmp_path):
+    assert load_cached_mappings(tmp_path / 'absent.yaml') == {}
+    broken = tmp_path / 'broken.yaml'
+    broken.write_text('meter_mappings: [not, a, mapping]\n')
+    assert load_cached_mappings(broken) == {}
+
+
+def test_a_changed_mapping_is_logged_as_an_error(caplog):
+    """A breakdown moving to a different physical meter is either a provider
+    change or a mis-pairing; both are worth an error line."""
+    with caplog.at_level('INFO'):
+        log_mapping_changes({VIRTUAL: PHYSICAL, MEMBER: PHYSICAL},
+                            {VIRTUAL: MEMBER})
+    changed = [r for r in caplog.records if r.levelname == 'ERROR']
+    assert len(changed) == 1 and VIRTUAL in changed[0].message
+    assert any('New mapping' in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------
+# Golden test on a real delivery
+# --------------------------------------------------------------------------
 
 @pytest.fixture
-def data_dir(tmp_path):
-    d = tmp_path / 'incoming'
-    d.mkdir()
-    return d
-
-
-# --------------------------------------------------------------------------
-# Recognising a production total
-# --------------------------------------------------------------------------
-
-def test_only_ebix_production_totals_are_considered(data_dir):
-    from xml.etree.ElementTree import fromstring
-    from scripts.discover_meter_mappings import _production_total_from_root
-
-    def parse(**kwargs):
-        return _production_total_from_root(fromstring(make_e66_xml(**kwargs)))
-
-    assert parse(meter_id=PHYSICAL, point='production',
-                 product_code=EBIX_TOTAL, code_type='ebIXCode') is not None
-    # A consumption point is not a production total.
-    assert parse(meter_id=PHYSICAL, point='consumption',
-                 product_code=EBIX_TOTAL, code_type='ebIXCode') is None
-    # A VSE breakdown is not the total.
-    assert parse(meter_id=PHYSICAL, point='production',
-                 product_code=VSE_CEL, code_type='VSENationalCode') is None
-
-
-def test_the_total_is_the_sum_of_the_observations(data_dir):
-    from xml.etree.ElementTree import fromstring
-    from scripts.discover_meter_mappings import _production_total_from_root
-
-    suffix, total, kind = _production_total_from_root(fromstring(make_e66_xml(
-        meter_id=PHYSICAL, point='production', product_code=EBIX_TOTAL,
-        code_type='ebIXCode', values=(1.5, 2.25, 3.0))))
-    assert (suffix, total, kind) == ('0046782G', 6.75, 'physical')
-
-
-def test_virtual_is_decided_by_the_085_prefix_today():
-    """The rewrite replaces this with a structural test (a virtual meter has no
-    consumption file at all), so this assertion is expected to be deleted."""
-    from xml.etree.ElementTree import fromstring
-    from scripts.discover_meter_mappings import _production_total_from_root
-
-    _, _, kind = _production_total_from_root(fromstring(make_e66_xml(
-        meter_id=VIRTUAL, point='production', product_code=EBIX_TOTAL,
-        code_type='ebIXCode')))
-    assert kind == 'virtual'
-
-
-# --------------------------------------------------------------------------
-# Pairing
-# --------------------------------------------------------------------------
-
-def test_equal_totals_are_paired(data_dir):
-    total_file(data_dir, PHYSICAL, (1.0, 2.0), '20260522_094500_p.xml')
-    total_file(data_dir, VIRTUAL, (1.0, 2.0), '20260522_094500_v.xml')
-    assert discover_mappings(data_dir) == {'0046782G': '08552310'}
-
-
-def test_different_totals_are_not_paired(data_dir):
-    total_file(data_dir, PHYSICAL, (1.0, 2.0), '20260522_094500_p.xml')
-    total_file(data_dir, VIRTUAL, (9.0, 9.0), '20260522_094500_v.xml')
-    assert discover_mappings(data_dir) == {}
-
-
-def test_totals_within_the_tolerance_are_paired_today(data_dir):
-    """A 0.1 kWh tolerance on a float sum. The rewrite compares the whole
-    observation vector for exact Decimal equality instead."""
-    total_file(data_dir, PHYSICAL, (1.0, 2.0), '20260522_094500_p.xml')
-    total_file(data_dir, VIRTUAL, (1.05, 2.0), '20260522_094500_v.xml')
-    assert discover_mappings(data_dir) == {'0046782G': '08552310'}
-
-
-def test_one_virtual_can_be_claimed_by_two_physicals_today(data_dir):
-    """A matched virtual is never removed from the pool, so two physical meters
-    with the same total both map to it and one of them is wrong. The rewrite
-    reports the ambiguity instead of guessing."""
-    other = PREFIX + '0020576V'
-    total_file(data_dir, PHYSICAL, (1.0,), '20260522_094500_p1.xml')
-    total_file(data_dir, other, (1.0,), '20260522_094500_p2.xml')
-    total_file(data_dir, VIRTUAL, (1.0,), '20260522_094500_v.xml')
-
-    mappings = discover_mappings(data_dir)
-    assert mappings == {'0046782G': '08552310', '0020576V': '08552310'}
-
-
-def test_totals_are_read_from_the_archive_zip_when_incoming_is_empty(data_dir, tmp_path):
-    """Once a delivery is archived, incoming is empty and the ebIX totals exist
-    only inside the zip -- discovery has to look there or it finds nothing."""
-    archive = tmp_path / 'archive'
-    archive.mkdir()
-    staging = tmp_path / 'staging'
-    staging.mkdir()
-    p = total_file(staging, PHYSICAL, (4.0,),
-                   '20260522_094500_12X_E66_12X_p.xml')
-    v = total_file(staging, VIRTUAL, (4.0,),
-                   '20260522_094500_12X_E66_12X_v.xml')
-    with zipfile.ZipFile(archive / '20260522.zip', 'w') as zf:
-        for f in (p, v):
-            zf.write(f, arcname=f.name)
-
-    assert discover_mappings(data_dir, archive) == {'0046782G': '08552310'}
-
-
-# --------------------------------------------------------------------------
-# The physical-producer set
-# --------------------------------------------------------------------------
-
-def test_physical_production_meters_collects_ebix_totals(data_dir):
-    total_file(data_dir, PHYSICAL, (1.0,), '20260522_094500_p.xml')
-    breakdown_file(data_dir, PHYSICAL, '20260522_094500_b.xml')
-    assert get_physical_production_meters(data_dir) == {'0046782G'}
-
-
-def test_physical_production_meters_includes_virtual_meters_today(data_dir):
-    """The name is misleading: a virtual meter reports an ebIX total too, so it
-    lands in this set. Callers rely on `meter_mappings` to tell them apart."""
-    total_file(data_dir, PHYSICAL, (1.0,), '20260522_094500_p.xml')
-    total_file(data_dir, VIRTUAL, (1.0,), '20260522_094500_v.xml')
-    assert get_physical_production_meters(data_dir) == {'0046782G', '08552310'}
-
-
-def test_virtual_meters_are_found_from_breakdown_files(data_dir):
-    breakdown_file(data_dir, VIRTUAL, '20260522_094500_v.xml')
-    breakdown_file(data_dir, PHYSICAL, '20260522_094500_p.xml')
-    # Only the 085-prefixed one is reported today.
-    assert get_virtual_meters_from_files(data_dir) == {'08552310'}
-
-
-# --------------------------------------------------------------------------
-# The YAML cache
-# --------------------------------------------------------------------------
-
-def test_cache_is_used_and_reversed(data_dir, tmp_path, monkeypatch):
-    """The cache stores physical -> virtual; callers need virtual -> physical."""
-    cache = tmp_path / 'meter_mappings.yaml'
-    save_mappings({'0046782G': '08552310'}, cache)
-    breakdown_file(data_dir, VIRTUAL, '20260522_094500_v.xml')
-
-    def fail(*a, **k):
-        raise AssertionError('discovery must not run when the cache covers the data')
-    monkeypatch.setattr(dmm, 'discover_mappings', fail)
-
-    assert load_or_discover_mappings(data_dir, tmp_path, cache) == {
-        '08552310': '0046782G'}
-
-
-def test_a_new_virtual_meter_triggers_rediscovery(data_dir, tmp_path):
-    """A new member shows up as a breakdown file for an unknown virtual meter."""
-    cache = tmp_path / 'meter_mappings.yaml'
-    save_mappings({'0046782G': '08552310'}, cache)
-
-    newcomer = PREFIX + '0857405E'
-    breakdown_file(data_dir, newcomer, '20260522_094500_v2.xml')
-    total_file(data_dir, newcomer, (7.0,), '20260522_094500_t2.xml')
-    total_file(data_dir, PREFIX + '0208254A', (7.0,), '20260522_094500_p2.xml')
-
-    assert load_or_discover_mappings(data_dir, tmp_path, cache) == {
-        '0857405E': '0208254A'}
-
-
-def test_no_cache_discovers_and_writes_one(data_dir, tmp_path):
-    cache = tmp_path / 'meter_mappings.yaml'
-    total_file(data_dir, PHYSICAL, (2.0,), '20260522_094500_p.xml')
-    total_file(data_dir, VIRTUAL, (2.0,), '20260522_094500_v.xml')
-
-    assert load_or_discover_mappings(data_dir, tmp_path, cache) == {
-        '08552310': '0046782G'}
-    assert cache.exists(), 'a discovered mapping is cached for the next run'
-
-
-def test_empty_discovery_falls_back_to_the_cache(data_dir, tmp_path, monkeypatch):
-    """Discovery finding nothing must not wipe known mappings: without them
-    every breakdown file of the delivery would fail."""
-    cache = tmp_path / 'meter_mappings.yaml'
-    save_mappings({'0046782G': '08552310'}, cache)
-    # A breakdown for an unknown meter forces rediscovery, which finds no totals.
-    breakdown_file(data_dir, PREFIX + '09999999', '20260522_094500_v.xml')
-
-    assert load_or_discover_mappings(data_dir, tmp_path, cache) == {
-        '08552310': '0046782G'}
-
-
-def test_no_cache_and_no_data_yields_no_mappings(data_dir, tmp_path):
-    assert load_or_discover_mappings(
-        data_dir, tmp_path, tmp_path / 'absent.yaml') == {}
-
-
-# --------------------------------------------------------------------------
-# Golden test on real files
-# --------------------------------------------------------------------------
-
-@pytest.fixture
-def real_delivery(tmp_path):
-    """A directory of symlinks to one real delivery, or skip if data is absent."""
+def real_delivery():
+    """Headers of one real delivery, or skip if the sample data is absent."""
     files = [f for f in SAMPLE_DIR.glob('20260610_*.xml')
              if f.stat().st_size] if SAMPLE_DIR.is_dir() else []
     if not files:
         pytest.skip('real sample files not present')
-    d = tmp_path / '20260610'
-    d.mkdir()
-    for f in files:
-        (d / f.name).symlink_to(f.resolve())
-    return d
+    return load_headers(files)
 
 
-def test_real_delivery_yields_nine_mappings(real_delivery):
-    """The community has 9 virtual meters; every one must pair, or a member's
-    production breakdown is dropped for that delivery."""
-    mappings = discover_mappings(real_delivery)
-    assert len(mappings) == 9
-    assert mappings['0046782G'] == '08552310'
+def test_real_delivery_classifies_without_looking_at_ids(real_delivery):
+    """9 virtual meters, 1 self-contained (0134575W), 10 physical producers --
+    all from the series each meter reports, with no reference to a prefix."""
+    results = discover_mappings(real_delivery.values())
+    assert len(results) == 1, 'this delivery is a single report period'
+    result = next(iter(results.values()))
+
+    assert len(result.classes.virtual) == 9
+    assert result.self_contained == {meter_id('0134575W')}
+    assert len(result.classes.physical_producers) == 10
 
 
-def test_real_delivery_includes_the_self_contained_meter(real_delivery):
-    """0134575W carries its total and its breakdown on the same ID, so it must
-    be in the producer set or its breakdown cannot be attributed to itself."""
-    assert '0134575W' in get_physical_production_meters(real_delivery)
+def test_real_delivery_pairs_every_virtual_meter(real_delivery):
+    """Every virtual meter must pair, or a member's production breakdown is
+    dropped for that delivery."""
+    result = next(iter(discover_mappings(real_delivery.values()).values()))
+    assert result.ambiguities == []
+    assert result.complete
+    assert len(result.mappings) == 9
+    assert result.mappings[VIRTUAL] == PHYSICAL

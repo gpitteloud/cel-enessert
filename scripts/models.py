@@ -57,6 +57,14 @@ _FLOW_TO_DIRECTION = {
     'E18': 'production',
 }
 
+# BusinessReasonType: the only thing separating the two domains that share the
+# provider's folder. C40 = the CEL settlement, E88 = an RCP self-consumption
+# grouping. Filenames, sender and receiver EICs are identical between them.
+_REASON_TO_RCP = {
+    'C40': False,
+    'E88': True,
+}
+
 
 def classify_metric_type(direction: Optional[str], product_code: Optional[str]) -> Optional[MetricType]:
     """Map a flow direction + product code to a MetricType.
@@ -72,6 +80,34 @@ def classify_metric_type(direction: Optional[str], product_code: Optional[str]) 
 def flow_to_direction(flow_characteristic: Optional[str]) -> Optional[str]:
     """Map an E31 FlowCharacteristic (E17/E18) to a consumption/production direction."""
     return _FLOW_TO_DIRECTION.get(flow_characteristic)
+
+
+def is_rcp(business_reason: Optional[str]) -> bool:
+    """True for an RCP document, False for a CEL one.
+
+    Raises on anything else rather than defaulting a third domain into CEL, where
+    it would be summed into the community's charts. Derived from the business
+    reason and not from Receiver/Role for exactly that reason: `Role == 'DEC'`
+    answers False for an unknown domain instead of failing.
+    """
+    try:
+        return _REASON_TO_RCP[business_reason]
+    except KeyError:
+        raise ValueError(
+            f"unknown BusinessReasonType {business_reason!r}: expected one of "
+            f"{sorted(_REASON_TO_RCP)}") from None
+
+
+def is_production_total(metric_type: Optional[MetricType]) -> bool:
+    """The ebIX production total: what a physical producer reports."""
+    return metric_type is MetricType.PRODUCTION_TOTAL
+
+
+def is_production_breakdown(metric_type: Optional[MetricType]) -> bool:
+    """A production cel/grid split: what a virtual (or self-contained) meter reports."""
+    return (metric_type is not None
+            and metric_type.direction == 'production'
+            and metric_type.segment in ('cel', 'grid'))
 
 
 @dataclass(frozen=True)
@@ -106,10 +142,13 @@ class Observation:
 
 @dataclass
 class MeteredData:
-    """Parsed result of one SDAT document, shared by E66 and E31.
+    """What one SDAT document contributes to the measurement tables.
 
-    Common fields apply to both; the E66-only and E31-only blocks are populated
-    depending on document_type and default to None otherwise.
+    Holds only what is persisted, so a field that stops being written stops
+    existing here. Everything else about the file -- period, resolution, metering
+    point type, document ids -- lives on :class:`sdat_header.FileHeader` and is
+    stored once per file rather than once per reading. ``document_type`` is the
+    exception: it selects the target table.
     """
     document_type: str                       # 'E66' | 'E31'
     filename: str
@@ -118,24 +157,18 @@ class MeteredData:
     # --- common ---
     product_code: Optional[str] = None
     community_id: Optional[str] = None
-    start: Optional[str] = None              # interval start (ISO-8601)
-    resolution_minutes: Optional[int] = None
     # Classified from (direction, product_code); populated for both E66 and E31.
     metric_type: Optional[MetricType] = None
     # Which product-code element carried product_code: 'ebIXCode' | 'VSENationalCode'
-    # (the raw XML element name; E31 previously called this product_code_type
-    # with shortened 'ebIX'/'VSE' values -- merged here to one shape).
     code_type: Optional[str] = None
 
     # --- E66 only ---
+    # The meter the rows are stored under: already the physical meter for a
+    # virtual meter's production breakdown, so no caller re-derives it.
     meter_id: Optional[str] = None
-    metering_point_type: Optional[str] = None    # 'consumption' | 'production'
-    is_production_breakdown: bool = False
-    attributed_physical_meter: Optional[str] = None
     rcp: bool = False  # is the meter a member of a RCP
 
     # --- E31 only ---
-    flow_characteristic: Optional[str] = None    # 'E17' consumption | 'E18' production
     grid_area: Optional[str] = None
     community_type: Optional[str] = None
 

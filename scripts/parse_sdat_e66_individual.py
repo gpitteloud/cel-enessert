@@ -1,198 +1,109 @@
 #!/usr/bin/env python3
 """
-SDAT ValidatedMeteredData_1.6 XML Parser for Swiss CEL
+E66 (ValidatedMeteredData_1.6) -> MeteredData: individual meter readings.
 
-Parses Swiss energy provider XML files following ValidatedMeteredData_1.6 schema.
-Schema location: http://www.strom.ch ValidatedMeteredData_1p6.xsd
+The XML is already read into a FileHeader (see sdat_header); what is left here is
+the one decision E66 needs and E31 does not -- which meter a production breakdown
+belongs to. That decision is *finished* here, so MeteredData.meter_id is the id
+the rows are stored under and no later stage re-derives it.
 """
-# TG: pour plus de robustesse, je proposerais de ne pas splitter en 2 scripts lancés en fonction du nom de fichier, 
-# mais plutôt de vérifier la valeur de rsm:ValidatedMeteredData_HeaderInformation/rsm:InstanceDocument/rsm:DocumentType au moment de la lecture du fichier 
-
 import logging
 from typing import Optional
 
-from scripts.models import MetricType, MeteredData, ParseResult, SkippedDocument, classify_metric_type
-from scripts.sdat_xml import NS, extract_product_code, extract_resolution_minutes, parse_observations
+from scripts.models import (MeteredData, ParseResult, SkippedDocument,
+                            is_production_breakdown, is_production_total)
+from scripts.sdat_header import FileHeader
 
 logger = logging.getLogger(__name__)
 
 
-def parse_e66(root, filename: str, meter_mappings: dict = None, physical_production_meters: set = None) -> ParseResult:
+def duplicates_a_physical_total(header: FileHeader, meter_mappings: dict) -> bool:
+    """True for a mapped virtual meter's production total.
+
+    It is identical to its physical meter's total -- that equality is how the two
+    are paired in the first place -- so storing both would double the community's
+    production. A self-contained meter is not in the mappings, so it keeps its own
+    total.
     """
-    Decode a ValidatedMeteredData_1.6 (E66) document.
+    return (is_production_total(header.metric_type)
+            and header.file_meter_id in (meter_mappings or {}))
 
-    Takes an already-parsed XML root element (dispatched from parse_sdat, which
-    owns ET.parse and the E66/E31 document-type decision).
 
-    Special handling for CEL data structure:
-    - Member's consumption: Has all breakdowns (CEL, Grid, Total)
-    - Member's production: Only has Total
-    - Virtual meter production VSE codes: Contains member's production breakdown
+def resolve_production_owner(meter_id: str, meter_mappings: dict,
+                             self_contained_meters: set) -> Optional[str]:
+    """The physical meter a production breakdown belongs to, or None if unknown.
+
+    A separate virtual meter's breakdown goes to its mapped physical twin; a
+    self-contained meter carries the breakdown on the same id as its total and
+    owns it. Unknown means a new member: nothing is guessed.
+    """
+    physical = (meter_mappings or {}).get(meter_id)
+    if physical:
+        return physical
+    if meter_id in (self_contained_meters or set()):
+        return meter_id
+    return None
+
+
+def parse_e66(header: FileHeader, meter_mappings: dict = None,
+              self_contained_meters: set = None) -> ParseResult:
+    """
+    Turn an E66 FileHeader into the rows it should be stored as.
 
     Args:
-        root: parsed XML root Element of an E66 document
-        filename: name of current SDAT file
-        meter_mappings: Dict mapping virtual_meter_id -> physical_meter_id (optional)
-        physical_production_meters: Set of meter suffixes that report an ebIX
-            production total. Used to detect self-contained meters that carry
-            both the total and the VSE breakdown on the same meter ID (optional)
+        header: the parsed file, observations included
+        meter_mappings: virtual meter id -> physical meter id (full ids)
+        self_contained_meters: meter ids carrying their own production breakdown
 
     Returns:
-        MeteredData with document_type='E66' populated;
+        MeteredData with document_type='E66';
         SkippedDocument if the document is valid but deliberately not ingested
         (a mapped virtual meter's duplicate production total -- an expected,
         non-error outcome for ~9 files per delivery);
-        None if the document lacks required content (missing MeteringData,
-        meter_id, or resolution) or cannot be attributed.
+        None if the file has no meter id or its breakdown cannot be attributed.
     """
-    try:
-
-        # Find MeteringData element
-        metering_data = root.find('.//rsm:MeteringData', NS)
-        if metering_data is None:
-            logger.error("No MeteringData element found")
-            return None
-
-        result = MeteredData(document_type='E66', filename=filename)
-
-        # Is it part of RCP
-        receiver_role = root.find('.//rsm:Receiver/rsm:Role', NS)
-        if receiver_role is not None:
-            role = receiver_role.text
-            result.rcp = True if role == 'DEC' else False
-
-        # Extract meter ID
-        meter_id = None
-
-        # Try ConsumptionMeteringPoint
-        consumption_point = metering_data.find('.//rsm:ConsumptionMeteringPoint/rsm:VSENationalID', NS)
-        if consumption_point is not None:
-            meter_id = consumption_point.text
-            result.metering_point_type = 'consumption'
-
-        # Try ProductionMeteringPoint
-        if meter_id is None:
-            production_point = metering_data.find('.//rsm:ProductionMeteringPoint/rsm:VSENationalID', NS)
-            if production_point is not None:
-                meter_id = production_point.text
-                result.metering_point_type = 'production'
-
-        if meter_id:
-            result.meter_id = meter_id
-            logger.info(f"Meter ID: {meter_id}")
-        else:
-            logger.error("meter_id not found in consumption and production")
-            return None
-
-        # Extract interval start (base timestamp for observations)
-        interval = metering_data.find('.//rsm:Interval', NS)
-        if interval is not None:
-            start_elem = interval.find('rsm:StartDateTime', NS)
-            if start_elem is not None:
-                result.start = start_elem.text
-
-        # Extract resolution (missing resolution is fatal)
-        resolution_minutes = extract_resolution_minutes(metering_data, NS)
-        if resolution_minutes is None:
-            logger.error("Resolution not found")
-            return None
-        result.resolution_minutes = resolution_minutes
-
-        # Extract product code - try both formats
-        product_code, code_type = extract_product_code(metering_data, NS)
-
-        if product_code:
-            metric_type = determine_metric_type(product_code, result)
-
-            # A mapped virtual meter also reports an ebIX production TOTAL that is
-            # identical to its physical meter's production total -- that equality
-            # is exactly how auto-discovery pairs them. Storing both would double
-            # the meter production total, so drop the virtual copy: the
-            # physical meter's total is kept, and the virtual meter's VSE
-            # breakdown (handled below) is re-attributed to that same physical
-            # meter. The self-contained meter (e.g. 0134575W) is in
-            # physical_production_meters but NOT in meter_mappings, so it is not
-            # affected and keeps its own total.
-            if (result.metering_point_type == 'production'
-                    and code_type == 'ebIXCode' and meter_mappings):
-                meter_suffix = meter_id[-8:] if meter_id and len(meter_id) >= 8 else None
-                if meter_suffix in meter_mappings:
-                    # Not an error: report it as an intentional skip so the
-                    # caller logs it as expected and still archives the file.
-                    return SkippedDocument(
-                        reason=(f"virtual meter {meter_suffix} production total "
-                                f"duplicates physical {meter_mappings[meter_suffix]}"),
-                        meter_id=meter_id,
-                    )
-
-            # Mark if this is a production breakdown file (VSE CEL/Grid codes on
-            # a production point). Attribute it to a physical meter, either a
-            # mapped separate virtual meter or a self-contained meter (itself).
-            is_production_breakdown = False
-            attributed_physical_meter = None
-
-            if result.metering_point_type == 'production' and code_type == 'VSENationalCode':
-                meter_suffix = meter_id[-8:] if meter_id and len(meter_id) >= 8 else None
-
-                if meter_mappings and meter_suffix in meter_mappings:
-                    # Using mappings: this is a separate virtual meter mapped to a physical one
-                    is_production_breakdown = True
-                    attributed_physical_meter = meter_mappings[meter_suffix]
-                    logger.info(f"Virtual meter {meter_suffix} -> attributing to physical meter {attributed_physical_meter}")
-                elif meter_suffix and physical_production_meters and meter_suffix in physical_production_meters:
-                    # Self-contained meter: the production breakdown is on the same meter ID
-                    # that also reports the ebIX production total. Attribute to itself.
-                    # As of 2026-07, meter 0134575W is the only such meter -- the sole breakdown attributed to itself
-                    # rather than to a separate 085-prefixed virtual meter.
-                    is_production_breakdown = True
-                    attributed_physical_meter = meter_suffix
-                    logger.info(f"Self-contained meter {meter_suffix} -> attributing production breakdown to itself")
-                else:
-                    # No mapping found - skip this virtual meter
-                    logger.error(f"Unknown virtual meter {meter_suffix} - no mapping found in auto-discovery. Skipping file.")
-                    return None
-
-            result.is_production_breakdown = is_production_breakdown
-            result.attributed_physical_meter = attributed_physical_meter
-
-            result.product_code = product_code
-            result.code_type = code_type
-            result.metric_type = metric_type
-
-            if is_production_breakdown:
-                logger.info(f"Product code ({code_type}): {product_code}, production breakdown -> {metric_type}")
-            else:
-                logger.info(f"Product code ({code_type}): {product_code}, Metering point: {result.metering_point_type} -> {metric_type}")
-        else:
-            logger.warning("No product code found")
-
-        # Extract community info
-        community_elem = metering_data.find('.//rsm:Community/rsm:CommunityID', NS)
-        if community_elem is not None:
-            result.community_id = community_elem.text
-
-        # Extract observations (need the interval start to time-stamp them)
-        if result.start is None:
-            logger.error("No start datetime found")
-            return None
-
-        # ~480 observations/file
-        result.observations = parse_observations(
-            metering_data, NS, result.start, resolution_minutes)
-        logger.info(f"Parsed {len(result.observations)} observations")
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Error decoding E66 document: {e}", exc_info=True)
+    meter_id = header.file_meter_id
+    if not meter_id:
+        logger.error(f"{header.file_name}: no consumption or production meter id")
         return None
 
+    if duplicates_a_physical_total(header, meter_mappings):
+        # Not an error: reported as an intentional skip so the caller logs it as
+        # expected and still archives the file.
+        return SkippedDocument(
+            reason=(f"virtual meter {meter_id} production total duplicates "
+                    f"physical {meter_mappings[meter_id]}"),
+            meter_id=meter_id,
+        )
 
-def determine_metric_type(product_code: str, result: MeteredData) -> Optional[MetricType]:
-    """Map a product code + metering point type to a MetricType.
+    if is_production_breakdown(header.metric_type):
+        owner = resolve_production_owner(
+            meter_id, meter_mappings, self_contained_meters)
+        if owner is None:
+            logger.error(f"Unknown virtual meter {meter_id} - no mapping found "
+                         f"in auto-discovery. Skipping {header.file_name}.")
+            return None
+        if owner != meter_id:
+            logger.info(f"Virtual meter {meter_id} -> attributing production "
+                        f"breakdown to physical meter {owner}")
+        meter_id = owner
 
-    The E66 metering point type ('consumption'|'production') is already the
-    direction the shared classifier expects, so this just delegates. Returns
-    None for any unrecognized combination.
-    """
-    return classify_metric_type(result.metering_point_type, product_code)
+    if header.metric_type is None:
+        logger.warning(f"{header.file_name}: unclassified product code "
+                       f"{header.product_code!r}")
+
+    # The header row records where the rows actually went, so the file's own
+    # meter and the stored meter are both queryable.
+    header.attributed_meter_id = meter_id
+
+    return MeteredData(
+        document_type='E66',
+        filename=header.file_name,
+        observations=header.observations,
+        product_code=header.product_code,
+        code_type=header.code_type,
+        community_id=header.community_id,
+        metric_type=header.metric_type,
+        meter_id=meter_id,
+        rcp=header.rcp,
+    )

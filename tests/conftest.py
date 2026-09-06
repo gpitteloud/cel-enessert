@@ -30,14 +30,28 @@ def real_files(pattern):
     return sorted(f for f in SAMPLE_DIR.glob(pattern) if f.stat().st_size > 0)
 
 
+# The 25-char prefix every real meter id in the community shares; a full id is
+# 33 chars. Mappings are keyed on the full id -- ids are never sliced.
+METER_ID_PREFIX = 'CH10111012345000000000000'
+
+
+def meter_id(suffix):
+    """Full 33-char meter id from the 8-char suffix real ids differ in."""
+    return METER_ID_PREFIX + suffix
+
+
 # Real discovered meter mappings for a representative day (virtual -> physical).
 # Only needed so production-breakdown E66 files parse instead of returning None.
 SAMPLE_MAPPINGS = {
-    '0855229G': '0020576V', '08574078': '0217130Y', '08552310': '0046782G',
-    '0855227M': '00846565', '0855223Y': '01192538', '08552213': '0125445D',
-    '0855219K': '01650626', '0857405E': '0208254A', '0855225S': '0803097E',
+    meter_id(virtual): meter_id(physical) for virtual, physical in {
+        '0855229G': '0020576V', '08574078': '0217130Y', '08552310': '0046782G',
+        '0855227M': '00846565', '0855223Y': '01192538', '08552213': '0125445D',
+        '0855219K': '01650626', '0857405E': '0208254A', '0855225S': '0803097E',
+    }.items()
 }
-SAMPLE_PHYSICAL_METERS = {'0134575W'}
+# Meters carrying their own production breakdown (a consumption file exists for
+# them, so they are not virtual).
+SAMPLE_SELF_CONTAINED = {meter_id('0134575W')}
 
 
 RSM_OPEN_E66 = (
@@ -65,15 +79,27 @@ def _observations(values, start_seq=1):
     return "".join(parts)
 
 
-def _e66_header(doc_type):
-    """ValidatedMeteredData header carrying the DocumentType (used for dispatch)."""
-    if doc_type is None:
-        return ""
+def _e66_header(doc_type, business_reason, reason_code_type, start, end):
+    """ValidatedMeteredData header: the DocumentType (dispatch), the
+    BusinessReasonType (CEL vs RCP) and the ReportPeriod (== Interval in real
+    files, so discovery groups on it)."""
+    doc_type_elem = (
+        f'<rsm:DocumentType><rsm:ebIXCode>{doc_type}</rsm:ebIXCode></rsm:DocumentType>'
+        if doc_type is not None else ''
+    )
+    reason = ''
+    if business_reason:
+        reason = (f'<rsm:BusinessReasonType codeListID="VSE">'
+                  f'<rsm:{reason_code_type}>{business_reason}'
+                  f'</rsm:{reason_code_type}></rsm:BusinessReasonType>')
+    period = ''
+    if start and end:
+        period = (f'<rsm:ReportPeriod><rsm:StartDateTime>{start}</rsm:StartDateTime>'
+                  f'<rsm:EndDateTime>{end}</rsm:EndDateTime></rsm:ReportPeriod>')
     return (
         '<rsm:ValidatedMeteredData_HeaderInformation>'
-        '<rsm:InstanceDocument>'
-        f'<rsm:DocumentType><rsm:ebIXCode>{doc_type}</rsm:ebIXCode></rsm:DocumentType>'
-        '</rsm:InstanceDocument>'
+        f'<rsm:BusinessScopeProcess>{reason}{period}</rsm:BusinessScopeProcess>'
+        f'<rsm:InstanceDocument>{doc_type_elem}</rsm:InstanceDocument>'
         '</rsm:ValidatedMeteredData_HeaderInformation>'
     )
 
@@ -85,6 +111,8 @@ def make_e66_xml(
     point="consumption",          # "consumption" | "production" | None (aggregated)
     product_code="2404050010123",
     code_type="VSENationalCode",   # "VSENationalCode" | "ebIXCode"
+    business_reason="C40",         # C40 = CEL, E88 = RCP
+    reason_code_type="VSENationalCode",   # RCP files use ebIXCode
     values=(1.0, 2.0, 3.0),
     resolution=15,
     resolution_unit="MIN",
@@ -96,7 +124,7 @@ def make_e66_xml(
     include_metering_data=True,
 ):
     """Build a ValidatedMeteredData_1.6 (E66) XML document string."""
-    header = _e66_header(doc_type)
+    header = _e66_header(doc_type, business_reason, reason_code_type, start, end)
     if not include_metering_data:
         return RSM_OPEN_E66 + header + "</rsm:ValidatedMeteredData_16>"
 
@@ -169,6 +197,8 @@ def make_e31_xml(
         '<rsm:BusinessReasonType codeListID="VSE">'
         '<rsm:VSENationalCode>C40</rsm:VSENationalCode>'
         '</rsm:BusinessReasonType>'
+        f'<rsm:ReportPeriod><rsm:StartDateTime>{start}</rsm:StartDateTime>'
+        f'<rsm:EndDateTime>{end}</rsm:EndDateTime></rsm:ReportPeriod>'
         '</rsm:BusinessScopeProcess>'
         '<rsm:InstanceDocument>'
         f'{doc_type_elem}'

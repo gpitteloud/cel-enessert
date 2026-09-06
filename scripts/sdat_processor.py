@@ -1,4 +1,5 @@
 import logging
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
 from enum import Enum
@@ -7,11 +8,14 @@ from typing import Any
 
 import yaml
 
-from scripts.discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
+from scripts.discover_meter_mappings import (discover_mappings, load_cached_mappings,
+                                             log_mapping_changes, mappings_for_period,
+                                             save_mappings)
 from scripts.logger_config import configure_logging
 from scripts.models import SkippedDocument, MeteredData
-from scripts.parse_sdat import parse_sdat
+from scripts.parse_sdat import metered_data_from_header
 from scripts.questdb_writer import DEFAULT_DSN as QUESTDB_DEFAULT_DSN, QuestDBWriter
+from scripts.sdat_header import load_headers, read_header
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +59,15 @@ class SDATProcessor:
 
     def __init__(self, incoming_dir: Path, archive_dir: Path, writer,
                  mapping_cache_file: Path = None, meter_mappings: dict = None,
-                 physical_production_meters: set = None):
+                 self_contained_meters: set = None):
         self.incoming_dir = Path(incoming_dir)
         self.archive_dir = Path(archive_dir)
         self.questdb = writer
         self.mapping_cache_file = mapping_cache_file
-        # None means "discover when the batch starts"; an empty dict/set is an
-        # explicit choice and is left alone.
+        # None means "use what the batch discovers, falling back to the recorded
+        # mappings"; an empty dict/set is an explicit choice and is left alone.
         self.meter_mappings = meter_mappings
-        self.physical_production_meters = physical_production_meters
+        self.self_contained_meters = self_contained_meters
 
     @classmethod
     def from_config(cls, api_config):
@@ -79,27 +83,53 @@ class SDATProcessor:
             mapping_cache_file=Path(job_config.get('meter_mapping_file')),
         )
 
-    def resolve_meters(self):
-        """Discover virtual->physical mappings and physical producers for this batch.
+    def cached_mappings(self) -> dict:
+        """The recorded mappings, used only where discovery is not conclusive."""
+        if self.meter_mappings is not None:
+            return self.meter_mappings
+        if self.mapping_cache_file:
+            return load_cached_mappings(self.mapping_cache_file)
+        return {}
 
-        Runs when the batch starts rather than when the object is built: the
-        answer depends on the files present, and a run can span two report
-        periods (delivery 20260807 does).
+    def resolve_meters(self, headers) -> dict:
+        """{report period: (mappings, self-contained meters)} for one delivery.
+
+        Per report period, not per delivery: a delivery can carry two periods
+        (20260807 does), and a monthly total must never be compared with a 5-day
+        one. Discovery runs on the delivery itself, so a new member is picked up
+        without the cache; the cache only covers a period discovery could not
+        resolve.
         """
-        if self.meter_mappings is None:
-            self.meter_mappings = load_or_discover_mappings(
-                self.incoming_dir, self.archive_dir, self.mapping_cache_file)
-        logger.info(f"Using {len(self.meter_mappings)} meter mappings for this batch")
+        cached = self.cached_mappings()
+        resolved = {}
+        trusted = {}
+        for period, result in discover_mappings(headers).items():
+            resolved[period] = (mappings_for_period(result, cached),
+                                result.self_contained)
+            if result.complete:
+                trusted.update(result.mappings)
 
-        if self.physical_production_meters is None:
-            self.physical_production_meters = get_physical_production_meters(
-                self.incoming_dir, self.archive_dir)
-        logger.info(f"Using {len(self.physical_production_meters)} physical production meters for this batch")
+        if trusted:
+            log_mapping_changes(trusted, cached)
+            if self.mapping_cache_file:
+                save_mappings(trusted, self.mapping_cache_file)
+        return resolved
 
+    def meters_for(self, header, resolved: dict):
+        """The mappings and self-contained meters that apply to one file.
+
+        A period discovery never saw -- an RCP file, or a single file processed on
+        its own -- falls back to the recorded mappings.
+        """
+        mappings, self_contained = resolved.get(
+            header.report_period, (None, None))
+        if mappings is None:
+            mappings = self.cached_mappings()
+        if self_contained is None:
+            self_contained = self.self_contained_meters or set()
+        return mappings, self_contained
 
     def process_sdat_files(self):
-        self.resolve_meters()
-
         logger.info(f"=" * 80)
         logger.info(f"Start batch processing")
         logger.info(f"Reading files from {self.incoming_dir}")
@@ -125,6 +155,12 @@ class SDATProcessor:
         logger.info(f"-" * 80)
         logger.info(f"Processing {len(batch)} files delivered on {delivery_date}")
         logger.info(f"-" * 80)
+
+        # One read for the whole delivery: discovery, attribution and provenance
+        # all work off these headers, so no file is parsed twice.
+        headers = load_headers(batch)
+        resolved = self.resolve_meters(headers.values())
+
         for file_path in batch:
             # Check if file still exists (might have been manually deleted)
             if not file_path.exists():
@@ -133,7 +169,12 @@ class SDATProcessor:
                 continue
 
             try:
-                outcome = self.process_sdat_file(file_path)
+                header = headers.get(file_path.name)
+                if header is None:
+                    # load_headers already logged why it could not be read.
+                    outcome = FileOutcome.FAILED
+                else:
+                    outcome = self.process_sdat_file(file_path, header, resolved)
 
                 # Ingested AND intentionally-skipped files are both archived.
                 if outcome.archivable:
@@ -161,10 +202,13 @@ class SDATProcessor:
         return success_count
 
 
-    def process_sdat_file(self, file_path: Path) -> FileOutcome:
+    def process_sdat_file(self, file_path: Path, header=None,
+                          resolved: dict = None) -> FileOutcome:
         """Process a single XML file (E66 or E31)
 
-        Note: Lock should already be acquired by the caller (event handler)
+        `header` and `resolved` come from the batch, which has read every header
+        once already; given neither, the file is read on its own and the recorded
+        mappings apply.
 
         Returns:
             FileOutcome.INGESTED - parsed and written to QuestDB.
@@ -175,8 +219,18 @@ class SDATProcessor:
         """
         try:
             logger.info(f"Processing {file_path.name}")
-            # Parse and dispatch by document content (E66 vs E31)
-            parsed_data = parse_sdat(file_path, self.meter_mappings, self.physical_production_meters)
+            if header is None:
+                try:
+                    header = read_header(file_path)
+                except (OSError, ET.ParseError, ValueError) as e:
+                    logger.error(f"{file_path.name}: cannot read header: {e}")
+                    return FileOutcome.FAILED
+
+            meter_mappings, self_contained = self.meters_for(header, resolved or {})
+            # Dispatch by document content (E66 vs E31), attribution included
+            parsed_data = metered_data_from_header(
+                header, meter_mappings=meter_mappings,
+                self_contained_meters=self_contained)
 
             # total production is on both virtual and physical meters, so skip the virtual one
             if isinstance(parsed_data, SkippedDocument):
@@ -191,43 +245,8 @@ class SDATProcessor:
                 logger.warning(f"No data found in {parsed_data.document_type} file {file_path.name}")
                 return FileOutcome.FAILED
 
-            # the physical meter to which data from a virtual is attached
-            attributed_meter_id = None
-            if parsed_data.document_type == 'E31':
-                # Community aggregate: nothing to resolve, written as parsed.
-                pass
-
-            elif parsed_data.document_type == 'E66':
-                # Individual meter. Resolve production breakdown attribution.
-                if parsed_data.is_production_breakdown:
-                    attributed_meter = parsed_data.attributed_physical_meter
-
-                    if attributed_meter is None:
-                        meter_id = parsed_data.meter_id or ''
-                        virtual_meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else None
-                        logger.error(
-                            f"Unknown virtual meter {virtual_meter_suffix} - no mapping found in auto-discovery. Skipping file.")
-                        logger.error(
-                            f"This indicates a new member was added. Run discovery manually or wait for next batch.")
-                        return FileOutcome.FAILED
-
-                    # Reconstruct the physical meter's full ID by swapping the
-                    # last 8 chars of the virtual meter's own ID. The full-length
-                    # prefix (e.g. "CH10111012345000000000000", 25 chars) is thus
-                    # taken from real data rather than hardcoded -- a hardcoded
-                    # prefix had one extra zero, producing a 34-char ID that
-                    # matched no real meter (the total is stored under the real
-                    # 33-char ID).
-                    virtual_full_id = parsed_data.meter_id or ''
-                    attributed_meter_id = virtual_full_id[:-8] + attributed_meter
-                    logger.info(f"Attributing production breakdown to physical meter: {attributed_meter}")
-
-            else:
-                logger.warning(f"Unsupported document type {parsed_data.document_type}: {file_path.name}")
-                return FileOutcome.FAILED
-
             delivery = file_path.name[:8]
-            questdb_failed = self._write_questdb(parsed_data, file_path, delivery, attributed_meter_id)
+            questdb_failed = self._write_questdb(parsed_data, file_path, delivery)
 
             if questdb_failed:
                 logger.error(f"Failed to process {file_path.name}: QuestDB write failed")
@@ -241,7 +260,7 @@ class SDATProcessor:
             return FileOutcome.FAILED
 
 
-    def _write_questdb(self, parsed_data: MeteredData, file_path: Path, delivery: str, attributed_meter_id) -> bool:
+    def _write_questdb(self, parsed_data: MeteredData, file_path: Path, delivery: str) -> bool:
         """Write one parsed document to QuestDB. Returns True if it FAILED.
 
         A failure is propagated rather than swallowed: QuestDB is the only store,
@@ -253,8 +272,7 @@ class SDATProcessor:
             if parsed_data.document_type == 'E31':
                 rows = self.questdb.write_e31(parsed_data)
             else:
-                rows = self.questdb.write_e66(
-                parsed_data, attributed_meter_id)
+                rows = self.questdb.write_e66(parsed_data)
 
             if not rows:
                 # A parsed document with observations that yields no rows means

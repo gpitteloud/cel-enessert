@@ -121,9 +121,10 @@ This is a **key concept** for understanding the data structure:
 - Production Grid (VSE code `2404050010124`)
 - Production Total (ebIX code `8716867000030` - used to match with physical meter)
 
-**Identifier pattern**:
-- Last 8 characters start with `085`: e.g., `08574078`, `0855229G`
-- Full format: `CH10111012345000000000000008574078`
+**Identifier pattern**: no logic depends on it — the id is opaque and a meter is
+classified by the series it reports (see [Discovery Algorithm](#discovery-algorithm)).
+Observed only: today's virtual ids happen to carry `085` in the last 8 characters,
+e.g. `CH10111012345000000000000008574078`.
 
 **Important**: Virtual meter values are **estimated/calculated** (see Condition 21), not directly measured.
 
@@ -166,16 +167,14 @@ Meter: CH101110123450000000000000134575W
 ```
 
 **Key differences from the virtual-meter pattern**:
-- No separate `085xxxxx` meter — total and breakdown share one meter ID
+- No separate virtual meter — total and breakdown share one meter ID
 - No production-total matching needed — the breakdown is attributed to the
   meter **itself**
-- The suffix does **not** start with `085`
 
-**How it's handled**: During discovery we collect the set of all meter suffixes
-that report an ebIX production total (the "physical production meters"). When a
-production file carries VSE breakdown codes and its own suffix is in that set,
-the parser attributes the breakdown to itself rather than looking for a virtual
-→ physical mapping. See [Meter Mapping Discovery](#meter-mapping-discovery).
+**How it's handled**: it has a consumption file, so it is not virtual, so its
+breakdown is its own — the classification rule separates it with no special case.
+Discovery returns it in the self-contained set and the parser attributes the
+breakdown to the meter itself. See [Meter Mapping Discovery](#meter-mapping-discovery).
 
 ---
 
@@ -395,42 +394,64 @@ Production (E18):
 
 **Problem**: Provider delivers files with both physical and virtual meters, but doesn't tell us which virtual meter corresponds to which physical meter.
 
-**Our solution**: Auto-discovery by matching production totals!
+**Our solution**: Auto-discovery from the delivery itself — the series each meter
+reports say what kind of meter it is, and its production total says whose it is.
 
 ### Discovery Algorithm
 
-**Principle**: If a physical meter and virtual meter have the **same production total**, they belong to the same member.
+Everything below is per **report period**, over CEL files only, on **full 33-char
+meter ids** (never a suffix, never a prefix test). A delivery is not one report
+period — `20260807` carries a month and 5 days — and comparing a monthly total
+with a 5-day one would pair the wrong meters.
 
-**Steps**:
+**Step 1 — classify structurally**, from the set of `(metering point, segment)`
+series a meter reports:
 
-1. **Scan files** for production totals (ebIX code `8716867000030`)
-2. **Identify meter type** by behavior:
-   - Physical: Has both consumption and production files
-   - Virtual: Has production files only (provides breakdown)
-   - **Note**: Virtual meters typically have suffixes starting with `085`, but this is not absolute
-3. **Match by total**:
-   ```python
-   if abs(physical_total - virtual_total) <= 0.1 kWh:
-       # These meters belong to the same member!
-       mapping[physical_suffix] = virtual_suffix
-   ```
+```python
+has_breakdown   = a (production, cel) or (production, grid) file exists
+has_consumption = any consumption file exists
 
-**Example discovery**:
+virtual           = has_breakdown and not has_consumption   # pair to a physical
+self_contained    = has_breakdown and has_consumption       # owns its breakdown
+physical_producer = has (production, total) and not virtual
 ```
-Scanning files from 2026-05-27...
 
-Physical meter 0217130Y: production total = 234.567 kWh
-Virtual meter 08574078: production total = 234.567 kWh
-✓ Match found! 0217130Y <-> 08574078
+A virtual meter has **no consumption file at all** — that absence is the
+discriminator, and it holds for all 9 in every period measured. `0134575W` is
+separated by the same rule with no special case.
 
-Physical meter 0046782G: production total = 189.234 kWh
-Virtual meter 08552310: production total = 189.234 kWh
-✓ Match found! 0046782G <-> 08552310
+**Step 2 — pair on the whole observation vector**. A virtual meter's ebIX
+production total repeats its physical twin's, slot for slot, so within the group
+the vectors are compared for **exact `Decimal` equality** — no tolerance, no
+sums, no sampling. Assignment is one-to-one:
 
+```python
+for v in virtual:
+    candidates = [p for p in physical_producers if vector(p) == vector(v)]
+    # exactly one, not already claimed -> mappings[v] = p
+    # zero, several, or already claimed -> report an ambiguity, map nothing
+```
+
+Exact equality works because the grouping guarantees identical slot counts, and
+one-to-one assignment is what keeps a second claim from silently storing one
+member's production under another's meter. Ambiguities are reported, never
+guessed: a wrong pairing cannot be told apart afterwards.
+
+A group is **complete** when every virtual meter paired and nothing was
+ambiguous. Only a complete group is written to `config/meter_mappings.yaml`; an
+incomplete one falls back to what that file already records.
+
+**Example discovery** (delivery `20260610`, one report period):
+```
+9 virtual meters, 1 self-contained (0134575W), 10 physical producers
+CH10111012345000000000000008552310 -> CH101110123450000000000000046782G
 ...
-
-Discovered 9 meter mappings
+9 mappings, 0 ambiguities
 ```
+
+Including the case a sum-based matcher would get wrong: virtual `…08552310`
+reports nothing but zeros and still resolves, because `0046782G` is the only
+other all-zero producer in the group.
 
 ### Two Kinds of Production Breakdown
 
@@ -438,17 +459,17 @@ When the parser encounters a production file carrying VSE breakdown codes
 (`2404050010123` / `2404050010124`), it decides where to attribute the
 breakdown in this order:
 
-1. **Separate virtual meter** — the suffix is a known `085xxxxx` virtual meter
-   present in the discovered mappings → attribute to its paired physical meter.
-2. **Self-contained meter** — the suffix is itself a physical production meter
-   (it reports an ebIX production total) → attribute the breakdown to itself.
+1. **Separate virtual meter** — the meter id is in the discovered mappings →
+   attribute to its paired physical meter.
+2. **Self-contained meter** — the meter is in the self-contained set → attribute
+   the breakdown to itself.
 3. **Unknown** — neither of the above → the file is treated as a failure and
    logged as an error (indicates a genuinely new, unrecognized meter), so it
    stays in the incoming folder and is retried on the next batch.
 
-To support case 2, discovery also builds the set of all suffixes that report an
-ebIX production total (`get_physical_production_meters()`), passed to the parser
-alongside the virtual→physical mappings.
+Both inputs come from the same discovery pass and are passed to the parser, which
+resolves the owner itself: `MeteredData.meter_id` is already the meter the rows
+belong to. The file's own meter id is kept in `cel_file_header.file_meter_id`.
 
 ### Intentional skips are not errors
 
@@ -507,61 +528,35 @@ itself. It is **not linked to RCP** and is currently the only such meter. See
 
 ### When Discovery Runs
 
-**1. At startup** (if no cache exists):
-- Scans `/data/incoming` and `/data/archive`
-- Creates initial mappings
-- Saves to `/app/config/meter_mappings.yaml`
+Once per delivery batch, on the batch's own files — never at startup, never
+against the archive. The batch reads every file's header once (`sdat_header.load_headers`)
+and discovery works off those headers, so nothing is parsed twice and a new member
+is picked up by the delivery that introduces them.
 
-**2. Before batch processing**:
-- Checks for new virtual meters in incoming files
-- Re-discovers if new meters detected
-- Updates cache with new mappings
-- Rebuilds the physical-production-meter set (for self-contained meters)
+A run that spans two report periods discovers each separately; a file whose period
+discovery could not resolve falls back to the recorded mappings.
 
-**3. Automatic cache refresh**:
-- Cache is valid indefinitely
-- Refreshes when new meters detected
-- No manual maintenance needed
-
-### Discovery Sources
-
-**Priority order**:
-
-1. **Incoming directory** (`/data/incoming`)
-   - Contains files currently being delivered
-   - Scanned first for recent data
-
-2. **Archive directory** (`/data/archive`)
-   - Contains all previously processed files
-   - Used when incoming has <100 files
-   - Provides historical data for discovery
-
-**Sampling strategy**:
-- If >500 files available: Sample from 3 most recent delivery dates
-- Ensures fast discovery while maintaining accuracy
-
-### Cache File Format
+### The YAML file is a record, not the source of truth
 
 **Location**: `/app/config/meter_mappings.yaml`
 
-**Structure**:
+**Structure** — flat `virtual: physical`, on full meter ids:
 ```yaml
-# Physical to Virtual Meter Mappings
-# Auto-discovered by analyzing production totals
-
 meter_mappings:
-  '0217130Y':
-    virtual_meter: '08574078'
-  '0020576V':
-    virtual_meter: '0855229G'
+  CH10111012345000000000000008574078: CH101110123450000000000000217130Y
+  CH10111012345000000000000008552310: CH101110123450000000000000046782G
   # ... etc
 ```
 
-**Cache management**:
-- ✅ Created automatically on first discovery
-- ✅ Updated when new members join
-- ✅ No manual editing required
-- ✅ Human-readable format for verification
+Only **complete** period discoveries are written to it (every virtual meter paired,
+nothing ambiguous), and the difference against what it held is logged: a new mapping
+at INFO, a disappeared one at WARNING, a *changed* one at **ERROR** — a breakdown
+moving to a different physical meter is either a provider change or a mis-pairing,
+and both are worth an error line.
+
+A file whose keys are not full-length meter ids is from the previous suffix-keyed
+format and is **ignored outright** rather than half-trusted: a partial id attributes
+a breakdown to nothing.
 
 ---
 

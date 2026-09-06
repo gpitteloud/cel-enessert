@@ -1,373 +1,273 @@
 #!/usr/bin/env python3
 """
-Auto-discover physical-to-virtual meter mappings
+Discover which physical meter each virtual meter's production breakdown belongs to.
 
-Analyzes XML files to find matching production totals between:
-- Physical meters (with production total ebIX 8716867000030)
-- Virtual meters (with production breakdown VSE codes)
+Two independent steps, and only the second one looks at values:
 
-Mappings are discovered by matching production total values.
+**Classification is structural.** The set of (direction, segment) series a meter
+reports over one report period says what it is, with no reference to its id:
+
+    has_breakdown    = it reports a production cel/grid split
+    has_consumption  = it reports any consumption series
+
+    virtual          = has_breakdown and not has_consumption
+    self-contained   = has_breakdown and has_consumption      -> owns its breakdown
+    physical producer = reports a production total, and is not virtual
+
+A virtual meter has no consumption file at all -- that absence is the
+discriminator, and it separates the self-contained meter without a special case.
+
+**Pairing compares the whole reading vector.** Files are grouped by report period
+first, so every file in a group covers the same slots and two vectors can be
+compared for exact Decimal equality: no sums, no tolerance, no sampling, and a
+monthly file can never be matched against a 5-day one. A virtual meter also
+reports the production total of its physical twin, identical value by value, and
+that is what pairs them.
+
+Nothing is guessed. Zero candidates, several candidates, or a physical meter
+already claimed by another virtual is reported as an ambiguity, and the group is
+then not trusted.
 """
 
 import logging
-import xml.etree.ElementTree as ET
-import zipfile
+from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
-from scripts.sdat_xml import NS
+from scripts.models import is_production_breakdown, is_production_total
+from scripts.sdat_header import FileHeader
 
 logger = logging.getLogger(__name__)
 
+# A VSE national meter id is 33 characters. A cache written by the previous
+# version keyed on the last 8, which is not a meter and must not be trusted.
+MIN_FULL_METER_ID_LENGTH = 20
 
-def extract_production_total(xml_file: Path) -> Tuple[str, float, str]:
+
+@dataclass
+class MeterClasses:
+    """What each meter is, over one report period."""
+    virtual: Set[str] = field(default_factory=set)
+    self_contained: Set[str] = field(default_factory=set)
+    physical_producers: Set[str] = field(default_factory=set)
+
+
+@dataclass
+class PeriodDiscovery:
+    """Discovery result for one (report period) group of CEL files."""
+    period: Tuple
+    classes: MeterClasses
+    mappings: Dict[str, str] = field(default_factory=dict)   # virtual -> physical
+    ambiguities: List[str] = field(default_factory=list)
+
+    @property
+    def self_contained(self) -> Set[str]:
+        return self.classes.self_contained
+
+    @property
+    def complete(self) -> bool:
+        """True when every virtual meter paired and nothing was ambiguous."""
+        return (not self.ambiguities
+                and len(self.mappings) == len(self.classes.virtual))
+
+
+def group_by_report_period(headers: Iterable[FileHeader]) -> Dict[Tuple, List[FileHeader]]:
+    """Group CEL files by report period. RCP files are left out: they carry only
+    ebIX totals, so they have no breakdown and no virtual meters."""
+    groups = defaultdict(list)
+    for header in headers:
+        if header.rcp:
+            continue
+        groups[header.report_period].append(header)
+    return groups
+
+
+def classify_meters(headers: Iterable[FileHeader]) -> MeterClasses:
+    """Classify every meter in one group from the series it reports."""
+    signatures = defaultdict(set)
+    for header in headers:
+        if header.file_meter_id and header.metric_type:
+            signatures[header.file_meter_id].add(header.metric_type)
+
+    classes = MeterClasses()
+    for meter_id, metric_types in signatures.items():
+        has_breakdown = any(is_production_breakdown(m) for m in metric_types)
+        has_consumption = any(m.direction == 'consumption' for m in metric_types)
+        if has_breakdown and not has_consumption:
+            classes.virtual.add(meter_id)
+        elif has_breakdown:
+            classes.self_contained.add(meter_id)
+
+    for meter_id, metric_types in signatures.items():
+        if (any(is_production_total(m) for m in metric_types)
+                and meter_id not in classes.virtual):
+            classes.physical_producers.add(meter_id)
+
+    return classes
+
+
+def _production_totals(headers: Iterable[FileHeader]) -> Dict[str, Tuple]:
+    """{meter id: reading vector} from the ebIX production total files."""
+    totals = {}
+    for header in headers:
+        if is_production_total(header.metric_type) and header.file_meter_id:
+            totals.setdefault(header.file_meter_id, header.values)
+    return totals
+
+
+def pair_virtual_meters(headers: List[FileHeader], classes: MeterClasses
+                        ) -> Tuple[Dict[str, str], List[str]]:
+    """Pair each virtual meter with the physical meter whose total it repeats.
+
+    Returns (virtual -> physical, ambiguities). One physical meter can back only
+    one virtual meter, so a second claim on it is an ambiguity rather than an
+    overwrite -- the previous version never removed a matched meter from the pool
+    and so could map two physicals onto the same virtual, one of them wrongly.
     """
-    Extract production total from XML file
+    totals = _production_totals(headers)
+    mappings: Dict[str, str] = {}
+    claimed_by: Dict[str, str] = {}
+    ambiguities: List[str] = []
 
-    Returns: (meter_suffix, total_kwh, metering_type) or None
-    """
-    try:
-        return _production_total_from_root(ET.parse(xml_file).getroot())
-    except Exception as e:
-        logger.debug(f"Could not extract from {xml_file.name}: {e}")
-        return None
-
-
-def _production_total_from_root(root) -> Tuple[str, float, str]:
-    """Extract (meter_suffix, total_kwh, 'physical'|'virtual') from a parsed
-    ebIX production-total document, or None if it isn't one.
-
-    Split out from extract_production_total so the same logic can be applied to
-    XML read from an archive zip (bytes) as well as a file on disk.
-    """
-    try:
-        # Get meter ID
-        meter_elem = root.find('.//rsm:VSENationalID', NS)
-        if meter_elem is None:
-            return None
-
-        meter_id = meter_elem.text
-        meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else meter_id
-
-        # Check if this is production
-        is_production = root.find('.//rsm:ProductionMeteringPoint', NS) is not None
-        if not is_production:
-            return None
-
-        # Get product code - must be ebIX Total (8716867000030)
-        product = root.find('.//rsm:Product', NS)
-        if product is None:
-            return None
-
-        ebix_elem = product.find('.//rsm:ID/rsm:ebIXCode', NS)
-        if ebix_elem is None or ebix_elem.text != '8716867000030':
-            return None
-
-        # Sum all observations to get total
-        total = 0.0
-        observations = root.findall('.//rsm:Observation', NS)
-        for obs in observations:
-            vol_elem = obs.find('.//rsm:Volume', NS)
-            if vol_elem is not None:
-                total += float(vol_elem.text)
-
-        # Determine if physical or virtual based on meter ID pattern
-        # Physical meters typically have different suffix patterns than virtual
-        # Virtual meters for this community start with "085" in the suffix
-        is_virtual = meter_suffix.startswith('085')
-        metering_type = 'virtual' if is_virtual else 'physical'
-
-        return meter_suffix, round(total, 3), metering_type
-
-    except Exception as e:
-        logger.debug(f"Could not extract production total: {e}")
-        return None
-
-
-def discover_mappings(data_dir: Path, archive_dir: Path = None) -> Dict[str, str]:
-    """
-    Discover physical-to-virtual meter mappings by analyzing files
-
-    Args:
-        data_dir: Primary directory to scan (incoming)
-        archive_dir: Optional archive directory to scan if incoming is empty
-
-    Returns: dict mapping physical_meter_suffix -> virtual_meter_suffix
-    """
-    logger.info(f"Discovering meter mappings from {data_dir}")
-
-    # Collect production totals
-    physical_meters = {}  # meter_suffix -> total_kwh
-    virtual_meters = {}   # meter_suffix -> total_kwh
-
-    # Scan files (limit to recent files for efficiency)
-    xml_files = sorted(data_dir.glob('*.xml'))
-
-    # If incoming is empty or too few files, check archive
-    if len(xml_files) < 100 and archive_dir and archive_dir.exists():
-        logger.info(f"Not enough files in {data_dir}, checking archive: {archive_dir}")
-        archive_files = sorted(archive_dir.glob('*.xml'))
-        xml_files.extend(archive_files)
-        logger.info(f"Found {len(archive_files)} additional files in archive")
-
-    # If too many files, sample from recent deliveries
-    if len(xml_files) > 500:
-        # Get unique delivery dates
-        delivery_dates = sorted(set(f.name[:8] for f in xml_files))
-        # Use most recent 3 delivery dates
-        recent_dates = delivery_dates[-3:]
-        xml_files = [f for f in xml_files if f.name[:8] in recent_dates]
-        logger.info(f"Sampling {len(xml_files)} files from {len(recent_dates)} recent deliveries")
-
-    for xml_file in xml_files:
-        result = extract_production_total(xml_file)
-        if result:
-            meter_suffix, total, metering_type = result
-            if metering_type == 'physical':
-                physical_meters[meter_suffix] = total
-            elif metering_type == 'virtual':
-                virtual_meters[meter_suffix] = total
-
-    # Fall back to the newest archive zip when loose XML yields nothing usable.
-    # Once a delivery is fully handled, incoming is empty (ingested AND
-    # intentionally-skipped files are both archived), so the ebIX production
-    # totals this matching needs live only inside the zips -- same reason
-    # get_physical_production_meters() reads them. One zip = one delivery date,
-    # so the totals being compared cover the same period.
-    if not (physical_meters and virtual_meters) and archive_dir and archive_dir.exists():
-        zips = sorted(archive_dir.glob('*.zip'))
-        if zips:
-            newest = zips[-1]
-            logger.info(f"No production totals in loose XML, reading archive zip {newest.name}")
-            try:
-                with zipfile.ZipFile(newest, 'r') as zf:
-                    for name in zf.namelist():
-                        if not name.endswith('.xml') or '_E66_' not in name:
-                            continue
-                        try:
-                            result = _production_total_from_root(ET.fromstring(zf.read(name)))
-                        except Exception:
-                            continue
-                        if not result:
-                            continue
-                        meter_suffix, total, metering_type = result
-                        if metering_type == 'physical':
-                            physical_meters[meter_suffix] = total
-                        elif metering_type == 'virtual':
-                            virtual_meters[meter_suffix] = total
-            except Exception as e:
-                logger.warning(f"Could not read zip {newest.name}: {e}")
-
-    logger.info(f"Found {len(physical_meters)} physical meters with production")
-    logger.info(f"Found {len(virtual_meters)} virtual meters with production")
-
-    # Match by production totals
-    mappings = {}
-    tolerance = 0.1  # Allow small differences due to rounding
-
-    for phys_meter, phys_total in physical_meters.items():
-        for virt_meter, virt_total in virtual_meters.items():
-            if abs(phys_total - virt_total) <= tolerance:
-                mappings[phys_meter] = virt_meter
-                logger.info(f"Matched: {phys_meter} (physical) <-> {virt_meter} (virtual) | total={phys_total:.3f} kWh")
-                break
-
-    logger.info(f"Discovered {len(mappings)} meter mappings")
-    return mappings
-
-
-def save_mappings(mappings: Dict[str, str], output_file: Path):
-    """Save discovered mappings to YAML file"""
-    data = {
-        'meter_mappings': {
-            phys: {'virtual_meter': virt}
-            for phys, virt in mappings.items()
-        }
-    }
-
-    with open(output_file, 'w') as f:
-        f.write("# Physical to Virtual Meter Mappings\n")
-        f.write("# Auto-discovered by analyzing production totals\n")
-        f.write("# DO NOT EDIT - This file is automatically generated\n\n")
-        yaml.dump(data, f, default_flow_style=False)
-
-    logger.info(f"Saved {len(mappings)} mappings to {output_file}")
-
-
-def get_virtual_meters_from_files(data_dir: Path, sample_size: int = 50) -> set:
-    """
-    Quick scan to find all virtual meter IDs in recent files
-
-    Returns: set of virtual meter suffixes
-    """
-    virtual_meters = set()
-    xml_files = sorted(data_dir.glob('*.xml'), reverse=True)[:sample_size]
-
-    for xml_file in xml_files:
-        try:
-            tree = ET.parse(xml_file)
-            root = tree.getroot()
-
-            meter_elem = root.find('.//rsm:VSENationalID', NS)
-            if meter_elem is None:
-                continue
-
-            meter_id = meter_elem.text
-            meter_suffix = meter_id[-8:] if len(meter_id) >= 8 else meter_id
-
-            # Check if virtual meter (starts with "085")
-            if meter_suffix.startswith('085'):
-                # Verify it has VSE production codes
-                is_production = root.find('.//rsm:ProductionMeteringPoint', NS) is not None
-                product = root.find('.//rsm:Product', NS)
-                if is_production and product is not None:
-                    vse_elem = product.find('.//rsm:ID/rsm:VSENationalCode', NS)
-                    if vse_elem is not None:
-                        virtual_meters.add(meter_suffix)
-        except:
+    for virtual in sorted(classes.virtual):
+        vector = totals.get(virtual)
+        if vector is None:
+            ambiguities.append(
+                f"virtual meter {virtual} reports no production total, "
+                f"nothing to pair it on")
             continue
 
-    return virtual_meters
-
-
-def _physical_meter_suffix_from_root(root) -> str:
-    """Return the meter suffix if this XML is a production file reporting an
-    ebIX production total (8716867000030), else None."""
-    meter_elem = root.find('.//rsm:VSENationalID', NS)
-    if meter_elem is None or meter_elem.text is None:
-        return None
-
-    # Must be a production metering point
-    if root.find('.//rsm:ProductionMeteringPoint', NS) is None:
-        return None
-
-    # Must have ebIX production total code
-    product = root.find('.//rsm:Product', NS)
-    if product is None:
-        return None
-    ebix_elem = product.find('.//rsm:ID/rsm:ebIXCode', NS)
-    if ebix_elem is None or ebix_elem.text != '8716867000030':
-        return None
-
-    return meter_elem.text[-8:] if len(meter_elem.text) >= 8 else meter_elem.text
-
-
-def get_physical_production_meters(data_dir: Path, archive_dir: Path = None) -> set:
-    """
-    Find all meter suffixes that report an ebIX production total (8716867000030).
-
-    These are "physical" production meters. A meter that also carries VSE
-    breakdown codes on the SAME suffix is self-contained (its breakdown is
-    attributed to itself, not to a separate virtual meter).
-
-    Scans loose XML files in data_dir/archive_dir AND inside archive zip files
-    (once files are zipped, the ebIX total lives only inside the zip - this is
-    essential when replaying extracted breakdown files whose totals are zipped).
-
-    Returns: set of meter suffixes
-    """
-    physical_meters = set()
-
-    # 1. Loose XML files in incoming
-    xml_files = sorted(data_dir.glob('*.xml'))
-
-    # If incoming has few files, also check loose XMLs in archive
-    if len(xml_files) < 100 and archive_dir and archive_dir.exists():
-        xml_files.extend(sorted(archive_dir.glob('*.xml')))
-
-    for xml_file in xml_files:
-        try:
-            root = ET.parse(xml_file).getroot()
-            suffix = _physical_meter_suffix_from_root(root)
-            if suffix:
-                physical_meters.add(suffix)
-        except Exception:
+        candidates = [physical for physical in sorted(classes.physical_producers)
+                      if totals.get(physical) == vector]
+        if not candidates:
+            ambiguities.append(
+                f"virtual meter {virtual}: no physical producer reports the same "
+                f"production total")
+            continue
+        if len(candidates) > 1:
+            ambiguities.append(
+                f"virtual meter {virtual}: {len(candidates)} physical producers "
+                f"report the same production total ({', '.join(candidates)})")
             continue
 
-    # 2. XML files inside archive zips
-    if archive_dir and archive_dir.exists():
-        for zip_path in sorted(archive_dir.glob('*.zip')):
-            try:
-                with zipfile.ZipFile(zip_path, 'r') as zf:
-                    for name in zf.namelist():
-                        if not name.endswith('.xml') or '_E66_' not in name:
-                            continue
-                        try:
-                            root = ET.fromstring(zf.read(name))
-                            suffix = _physical_meter_suffix_from_root(root)
-                            if suffix:
-                                physical_meters.add(suffix)
-                        except Exception:
-                            continue
-            except Exception as e:
-                logger.warning(f"Could not read zip {zip_path.name}: {e}")
+        physical = candidates[0]
+        if physical in claimed_by:
+            ambiguities.append(
+                f"physical meter {physical} matches both {claimed_by[physical]} "
+                f"and {virtual}")
+            continue
 
-    logger.info(f"Found {len(physical_meters)} physical production meters (ebIX total)")
-    return physical_meters
+        mappings[virtual] = physical
+        claimed_by[physical] = virtual
+        logger.info(f"Paired virtual {virtual} -> physical {physical}")
+
+    return mappings, ambiguities
 
 
-def load_or_discover_mappings(data_dir: Path, archive_dir: Path, cache_file: Path) -> Dict[str, str]:
+def discover_mappings(headers: Iterable[FileHeader]) -> Dict[Tuple, PeriodDiscovery]:
+    """Discover mappings for every report period present in a batch.
+
+    A delivery is not one report period: 20260807 carries a monthly group and a
+    5-day group, whose totals must never be compared with each other.
     """
-    Load mappings from cache, or discover if cache doesn't exist or new meters detected
+    results = {}
+    for period, group in group_by_report_period(headers).items():
+        classes = classify_meters(group)
+        mappings, ambiguities = pair_virtual_meters(group, classes)
+        result = PeriodDiscovery(period=period, classes=classes,
+                                 mappings=mappings, ambiguities=ambiguities)
+        results[period] = result
 
-    Returns: dict mapping virtual_meter_suffix -> physical_meter_suffix (reversed)
+        logger.info(
+            f"Period {_period_label(period)}: {len(group)} CEL file(s), "
+            f"{len(classes.virtual)} virtual, "
+            f"{len(classes.self_contained)} self-contained, "
+            f"{len(classes.physical_producers)} physical producer(s), "
+            f"{len(mappings)} mapping(s)")
+        for ambiguity in ambiguities:
+            logger.error(f"Period {_period_label(period)}: {ambiguity}")
+
+    return results
+
+
+def _period_label(period: Tuple) -> str:
+    start, end = period
+    return f"{start:%Y-%m-%d}..{end:%Y-%m-%d}" if start and end else str(period)
+
+
+def load_cached_mappings(cache_file: Path) -> Dict[str, str]:
+    """Read the recorded virtual -> physical mappings, or {} if unusable.
+
+    The cache is a record of the last discovery, not the source of truth:
+    discovery now runs from the batch itself on every run. A cache keyed on
+    anything other than full meter ids was written by the previous version and is
+    ignored rather than half-trusted.
     """
-    cached_mappings = None
-    needs_rediscovery = False
+    cache_file = Path(cache_file)
+    if not cache_file.exists():
+        return {}
+    try:
+        data = yaml.safe_load(cache_file.read_text()) or {}
+    except Exception as e:
+        logger.warning(f"Cannot read mapping cache {cache_file}: {e}")
+        return {}
 
-    # Try to load cache
-    if cache_file.exists():
-        logger.info(f"Loading mappings from cache: {cache_file}")
-        try:
-            with open(cache_file, 'r') as f:
-                data = yaml.safe_load(f)
+    mappings = data.get('meter_mappings') or {}
+    if not isinstance(mappings, dict):
+        return {}
+    if any(len(str(virtual)) < MIN_FULL_METER_ID_LENGTH
+           or len(str(physical)) < MIN_FULL_METER_ID_LENGTH
+           for virtual, physical in mappings.items()):
+        logger.warning(f"Ignoring mapping cache {cache_file}: not keyed on full "
+                       f"meter ids, so it predates the current format")
+        return {}
+    return dict(mappings)
 
-            if data and 'meter_mappings' in data:
-                # Store for comparison
-                cached_mappings = data['meter_mappings']
-                logger.info(f"Loaded {len(cached_mappings)} mappings from cache")
 
-                # Quick check: are there new virtual meters not in cache?
-                current_virtual_meters = get_virtual_meters_from_files(data_dir, sample_size=100)
-                cached_virtual_meters = set(info['virtual_meter'] for info in cached_mappings.values())
+def save_mappings(mappings: Dict[str, str], cache_file: Path) -> None:
+    """Record the discovered mappings for the next run to compare against."""
+    with open(cache_file, 'w') as f:
+        f.write("# Virtual to physical meter mappings, virtual meter id first.\n")
+        f.write("# A record of the last discovery -- discovery itself runs from\n")
+        f.write("# the delivery on every run. DO NOT EDIT.\n\n")
+        yaml.dump({'meter_mappings': dict(mappings)}, f,
+                  default_flow_style=False)
+    logger.info(f"Recorded {len(mappings)} mappings in {cache_file}")
 
-                new_meters = current_virtual_meters - cached_virtual_meters
-                if new_meters:
-                    logger.info(f"Detected {len(new_meters)} new virtual meters: {new_meters}")
-                    logger.info("Re-discovering mappings to include new members")
-                    needs_rediscovery = True
-                else:
-                    logger.info("No new meters detected - using cached mappings")
-            else:
-                needs_rediscovery = True
-        except Exception as e:
-            logger.warning(f"Failed to load cache: {e}")
-            needs_rediscovery = True
-    else:
-        logger.info("No cache found - discovering mappings")
-        needs_rediscovery = True
 
-    # Re-discover if needed
-    if needs_rediscovery:
-        # Try to discover from data_dir, also check archive if needed
-        mappings = discover_mappings(data_dir, archive_dir)
-        if mappings:
-            save_mappings(mappings, cache_file)
-        else:
-            logger.warning("Discovery found no mappings")
-            # Fall back to cache if available
-            if cached_mappings:
-                logger.info("Falling back to cached mappings")
-                mappings = {phys: info['virtual_meter'] for phys, info in cached_mappings.items()}
-            else:
-                mappings = {}
-    else:
-        # Use cache
-        mappings = {phys: info['virtual_meter'] for phys, info in cached_mappings.items()}
+def log_mapping_changes(discovered: Dict[str, str],
+                        cached: Dict[str, str]) -> None:
+    """Log how discovery differs from the recorded mappings.
 
-    # Return reversed mapping (virtual -> physical)
-    reverse_map = {virt: phys for phys, virt in mappings.items()}
-    logger.info(f"Using {len(reverse_map)} meter mappings")
-    return reverse_map
+    A new member appearing is exactly the event worth logging, and a mapping that
+    *changed* would mean a breakdown moving to a different meter -- worth an error
+    even though discovery, not the cache, decides.
+    """
+    for virtual in sorted(set(discovered) - set(cached)):
+        logger.info(f"New mapping: {virtual} -> {discovered[virtual]}")
+    for virtual in sorted(set(cached) - set(discovered)):
+        logger.warning(f"Mapping gone: {virtual} -> {cached[virtual]}")
+    for virtual in sorted(set(cached) & set(discovered)):
+        if cached[virtual] != discovered[virtual]:
+            logger.error(f"Mapping changed for {virtual}: "
+                         f"{cached[virtual]} -> {discovered[virtual]}")
+
+
+def mappings_for_period(result: PeriodDiscovery,
+                        cached: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The mappings to ingest a period with: discovery's, or the record's.
+
+    An incomplete or ambiguous group is not trusted -- a wrongly attributed
+    breakdown is stored under the wrong member and cannot be told apart later --
+    so the recorded mappings are used instead and the difference is logged.
+    """
+    if result.complete:
+        return result.mappings
+    logger.warning(
+        f"Period {_period_label(result.period)}: discovery incomplete "
+        f"({len(result.mappings)}/{len(result.classes.virtual)} virtual meters "
+        f"paired), falling back to the recorded mappings")
+    return dict(cached or {})

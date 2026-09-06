@@ -11,20 +11,18 @@ import zipfile
 
 import pytest
 
-from conftest import SAMPLE_MAPPINGS, SAMPLE_PHYSICAL_METERS, make_e31_xml, make_e66_xml
+from conftest import (SAMPLE_MAPPINGS, SAMPLE_SELF_CONTAINED, make_e31_xml,
+                      make_e66_xml, meter_id)
 from scripts.sdat_processor import (FileOutcome, SDATProcessor,
                                     archive_batch_as_zip, group_by_date)
 
 EBIX_TOTAL = '8716867000030'
 VSE_CEL = '2404050010123'
 
-# Full-length IDs share the 25-char prefix; only the last 8 chars differ, which
-# is what the current attribution splices.
-PREFIX = 'CH10111012345000000000000'
-VIRTUAL = PREFIX + '08552310'          # in SAMPLE_MAPPINGS
-PHYSICAL = PREFIX + '0046782G'         # its mapped physical meter
-MEMBER = PREFIX + '0020576V'
-SELF_CONTAINED = PREFIX + '0134575W'   # in SAMPLE_PHYSICAL_METERS
+VIRTUAL = meter_id('08552310')          # in SAMPLE_MAPPINGS
+PHYSICAL = meter_id('0046782G')         # its mapped physical meter
+MEMBER = meter_id('0020576V')
+SELF_CONTAINED = meter_id('0134575W')   # in SAMPLE_SELF_CONTAINED
 
 
 def sdat_name(delivery='20260522', time='094500', doc='E66', tag='a1b2c3d4'):
@@ -40,7 +38,7 @@ def processor(tmp_path, fake_questdb):
     archive.mkdir()
     return SDATProcessor(incoming, archive, fake_questdb.writer,
                          meter_mappings=dict(SAMPLE_MAPPINGS),
-                         physical_production_meters=set(SAMPLE_PHYSICAL_METERS))
+                         self_contained_meters=set(SAMPLE_SELF_CONTAINED))
 
 
 def drop(processor, xml, **name_kwargs):
@@ -62,7 +60,7 @@ def test_constructor_does_no_io(tmp_path, fake_questdb):
     """
     missing = tmp_path / 'does-not-exist'
     p = SDATProcessor(missing, missing, fake_questdb.writer)
-    assert p.meter_mappings is None and p.physical_production_meters is None
+    assert p.meter_mappings is None and p.self_contained_meters is None
 
 
 def test_from_config_reads_paths_and_builds_a_writer():
@@ -77,16 +75,15 @@ def test_from_config_reads_paths_and_builds_a_writer():
     assert p.questdb.dsn == 'postgresql://fake'
 
 
-def test_injected_mappings_are_not_rediscovered(processor):
+def test_injected_mappings_are_not_read_from_the_cache(processor, tmp_path):
     """An empty mapping is a choice, not a missing value.
 
     `is None` rather than truthiness, so a test (or a run with no virtual
-    meters) cannot silently trigger a filesystem-wide discovery.
+    meters) cannot silently fall back to the recorded mappings.
     """
     processor.meter_mappings = {}
-    processor.physical_production_meters = set()
-    processor.resolve_meters()
-    assert processor.meter_mappings == {}
+    processor.mapping_cache_file = tmp_path / 'never-read.yaml'
+    assert processor.cached_mappings() == {}
 
 
 # --------------------------------------------------------------------------
@@ -170,7 +167,7 @@ def test_unknown_virtual_meter_fails_rather_than_guessing(processor):
     """A new member appears as an unmapped breakdown file. Failing keeps it in
     incoming for the next delivery instead of storing it on the wrong meter."""
     path = drop(processor, make_e66_xml(
-        meter_id=PREFIX + '09999999', point='production',
+        meter_id=meter_id('09999999'), point='production',
         product_code=VSE_CEL, code_type='VSENationalCode'))
     assert processor.process_sdat_file(path) is FileOutcome.FAILED
 
@@ -228,6 +225,33 @@ def test_batch_archives_what_it_handled_and_keeps_what_failed(processor):
     assert broken.exists(), 'a failed file stays in incoming for the next run'
     with zipfile.ZipFile(processor.archive_dir / '20260522.zip') as zf:
         assert sorted(zf.namelist()) == sorted([good.name, skipped.name])
+
+
+def test_a_batch_discovers_its_own_mappings(tmp_path, fake_questdb):
+    """With no cache and no injected mappings, the delivery itself says where a
+    virtual meter's breakdown belongs: the virtual repeats its physical twin's
+    production total value for value, and nothing else in the group does."""
+    incoming, archive = tmp_path / 'incoming', tmp_path / 'archive'
+    incoming.mkdir()
+    archive.mkdir()
+    processor = SDATProcessor(incoming, archive, fake_questdb.writer)
+
+    def write(tag, **kwargs):
+        (incoming / sdat_name(tag=tag)).write_text(
+            make_e66_xml(point='production', **kwargs), encoding='utf-8')
+
+    total = (5.0, 7.0)
+    write('v1', meter_id=VIRTUAL, product_code=EBIX_TOTAL,
+          code_type='ebIXCode', values=total)
+    write('v2', meter_id=VIRTUAL, product_code=VSE_CEL, values=(2.0, 3.0))
+    write('p1', meter_id=PHYSICAL, product_code=EBIX_TOTAL,
+          code_type='ebIXCode', values=total)
+
+    processor.process_sdat_files()
+
+    stored = {(r['meter_id'], r['segment'])
+              for r in fake_questdb.rows['cel_energy'].values()}
+    assert stored == {(PHYSICAL, 'total'), (PHYSICAL, 'cel')}
 
 
 def test_each_delivery_date_gets_its_own_zip(processor):

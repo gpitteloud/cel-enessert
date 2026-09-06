@@ -18,15 +18,15 @@ def test_parse_basic_metadata(write_xml):
     assert r.community_type == "CT01"
     assert r.product_code == "2404050010123"
     assert r.code_type == "VSENationalCode"
-    assert r.flow_characteristic == "E17"
     assert r.grid_area == "12Y-0000000719-J"
-    assert r.resolution_minutes == 15
+    # The flow characteristic itself stays on the header; the aggregate rows
+    # store the direction it means (see test_sdat_header).
+    assert r.metric_type.direction == "consumption"
 
 
 def test_flow_e18_production(write_xml):
     f = write_xml(make_e31_xml(flow="E18"))
-    r = parse_sdat(f)
-    assert r.flow_characteristic == "E18"
+    assert parse_sdat(f).metric_type.direction == "production"
 
 
 # --------------------------------------------------------------------------
@@ -161,8 +161,7 @@ def test_real_e31_files_all_parse():
         assert r is not None, f"failed to parse real file: {f.name}"
         assert r.document_type == "E31"
         assert r.community_id
-        assert r.flow_characteristic in ("E17", "E18")
-        assert r.resolution_minutes == 15
+        assert r.metric_type.direction in ("consumption", "production")
         # 15-min resolution over whole days => multiple of 96
         # (real deliveries seen: 480 = 5 days, 2976 = 31 days)
         assert r.observations, f"no observations in {f.name}"
@@ -178,9 +177,9 @@ def test_real_e31_flows_and_codes():
     for f in _E31_SAMPLES:
         r = parse_sdat(f)
         if r:
-            flows.add(r.flow_characteristic)
+            flows.add(r.metric_type.direction)
             codes.add(r.product_code)
-    assert flows == {"E17", "E18"}, f"expected both flows, got {flows}"
+    assert flows == {"consumption", "production"}, f"expected both flows, got {flows}"
     assert not (codes - known), f"unexpected product codes: {codes - known}"
 
 

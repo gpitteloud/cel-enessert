@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FakeQuestDB, real_files, SAMPLE_MAPPINGS, SAMPLE_PHYSICAL_METERS
+from conftest import (FakeQuestDB, real_files, SAMPLE_MAPPINGS,
+                      SAMPLE_SELF_CONTAINED)
 from scripts.models import MeteredData, MetricType, Observation
 from scripts import questdb_writer
 from scripts.questdb_writer import (E31_COLUMNS, E66_COLUMNS, rows_from_e31,
@@ -33,7 +34,7 @@ E31_FILE = '20260522_094500_12X-0000001536-1_E31_12X-00000020FW-5_e5f6a7b8.xml'
 
 def e66(values, meter_id='CH1011101234500000000000000020576V',
         product_code='8716867000030', metric_type=MetricType.CONSUMPTION_TOTAL,
-        condition=None, is_breakdown=False, attributed=None, filename=E66_FILE):
+        condition=None, filename=E66_FILE):
     """A parsed E66 document with `values` as consecutive 15-min observations."""
     return MeteredData(
         document_type='E66',
@@ -48,9 +49,6 @@ def e66(values, meter_id='CH1011101234500000000000000020576V',
         community_id='101110-002726',
         metric_type=metric_type,
         meter_id=meter_id,
-        metering_point_type='consumption',
-        is_production_breakdown=is_breakdown,
-        attributed_physical_meter=attributed,
     )
 
 
@@ -152,22 +150,13 @@ def test_rows_from_e66_shape():
     assert row['source_file'] == E66_FILE
 
 
-def test_rows_from_e66_uses_attributed_physical_meter():
-    """A production breakdown is stored against the physical meter, matching
-    transform_to_datapoints -- otherwise it lands on the virtual twin."""
-    virtual = 'CH1011101234500000000000000008552310'
-    physical = 'CH1011101234500000000000000046782G'
-    rows = rows_from_e66(
-        e66([(TS, '1.000')], meter_id=virtual, is_breakdown=True),
-        attributed_meter_id=physical)
+def test_rows_from_e66_stores_the_meter_the_parser_resolved():
+    """Attribution is finished in the parser, so the writer stores meter_id as
+    given -- a production breakdown already carries its physical meter."""
+    physical = 'CH101110123450000000000000046782G'
+    rows = rows_from_e66(e66([(TS, '1.000')], meter_id=physical,
+                             metric_type=MetricType.PRODUCTION_LOCAL))
     assert dict(zip(E66_COLUMNS, rows[0]))['meter_id'] == physical
-
-
-def test_rows_from_e66_ignores_attribution_when_not_a_breakdown():
-    meter = 'CH1011101234500000000000000020576V'
-    rows = rows_from_e66(e66([(TS, '1.000')], meter_id=meter),
-                         attributed_meter_id='CH999')
-    assert dict(zip(E66_COLUMNS, rows[0]))['meter_id'] == meter
 
 
 def test_rows_from_e31_shape():
@@ -563,36 +552,16 @@ def test_is_connection_error_classifies_by_name():
 # --------------------------------------------------------------------------
 
 def _parse_real(paths):
-    """Parse real files into (parsed_doc, attributed_meter_id) pairs."""
-    import xml.etree.ElementTree as ET
-    from scripts.models import SkippedDocument
-    from scripts.parse_sdat_e66_individual import parse_e66
-    from scripts.parse_sdat_e31_aggregated import parse_e31
+    """Parse real files into storable documents, dropping skips and failures."""
+    from scripts.models import MeteredData
+    from scripts.parse_sdat import parse_sdat
 
-    ns = '{http://www.strom.ch}'
-    doc_type_path = f'.//{ns}DocumentType/{ns}ebIXCode'
     out = []
     for path in paths:
-        try:
-            root = ET.parse(path).getroot()
-        except ET.ParseError:
-            continue
-        elem = root.find(doc_type_path)
-        kind = elem.text if elem is not None else None
-        if kind == 'E66':
-            parsed = parse_e66(root, path.name, meter_mappings=SAMPLE_MAPPINGS,
-                               physical_production_meters=SAMPLE_PHYSICAL_METERS)
-            if parsed is None or isinstance(parsed, SkippedDocument):
-                continue
-            attributed = None
-            if parsed.is_production_breakdown and parsed.attributed_physical_meter:
-                virtual = parsed.meter_id or ''
-                attributed = virtual[:-8] + parsed.attributed_physical_meter
-            out.append((parsed, attributed))
-        elif kind == 'E31':
-            parsed = parse_e31(root, path.name)
-            if parsed is not None:
-                out.append((parsed, None))
+        parsed = parse_sdat(path, meter_mappings=SAMPLE_MAPPINGS,
+                            self_contained_meters=SAMPLE_SELF_CONTAINED)
+        if isinstance(parsed, MeteredData):
+            out.append(parsed)
     return out
 
 
@@ -614,15 +583,15 @@ def test_real_deliveries_end_at_newest_value(fake_questdb):
 
     expected = {}
     for delivery in sorted(groups):
-        for parsed, attributed in _parse_real(groups[delivery]):
+        for parsed in _parse_real(groups[delivery]):
             if parsed.document_type == 'E31':
                 table, columns = 'cel_community_energy', E31_COLUMNS
                 rows = rows_from_e31(parsed)
                 fake_questdb.writer.write_e31(parsed)
             else:
                 table, columns = 'cel_energy', E66_COLUMNS
-                rows = rows_from_e66(parsed, attributed)
-                fake_questdb.writer.write_e66(parsed, attributed)
+                rows = rows_from_e66(parsed)
+                fake_questdb.writer.write_e66(parsed)
 
             keys = FakeQuestDB.DEDUP_KEYS[table]
             for row in rows:
@@ -647,9 +616,9 @@ def test_real_deliveries_contain_downward_revisions():
 
     seen, downward = {}, 0
     for delivery in sorted(groups):
-        for parsed, attributed in _parse_real(groups[delivery]):
+        for parsed in _parse_real(groups[delivery]):
             rows = (rows_from_e31(parsed) if parsed.document_type == 'E31'
-                    else rows_from_e66(parsed, attributed))
+                    else rows_from_e66(parsed))
             columns = (E31_COLUMNS if parsed.document_type == 'E31'
                        else E66_COLUMNS)
             table = ('cel_community_energy' if parsed.document_type == 'E31'
