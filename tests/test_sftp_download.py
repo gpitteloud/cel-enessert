@@ -251,14 +251,18 @@ def test_a_quarantined_file_is_downloaded_again(dirs, ftp):
     assert (incoming / broken).read_bytes() == b'a good copy this time'
 
 
-def test_a_file_already_in_incoming_is_not_downloaded(dirs, ftp):
+def test_a_file_sitting_in_incoming_is_downloaded_again(dirs, ftp):
+    """Same rule as failed/: only the archive proves a file was stored, so a copy
+    in incoming means it was never processed and a fresh one is wanted. main()
+    quarantines incoming before downloading anyway, so this is the direct-call
+    case -- and treating incoming as already-had would contradict that move."""
     incoming, archive = dirs
-    already = name('20260807')
-    (incoming / already).write_text('x')
-    fake = ftp({already: b'y'})
+    stale = name('20260807')
+    (incoming / stale).write_text('truncated')
+    ftp({stale: b'a good copy'})
 
-    assert download_sdat_files(incoming, archive) == 0
-    assert fake.retrieved == []
+    assert download_sdat_files(incoming, archive) == 1
+    assert (incoming / stale).read_bytes() == b'a good copy'
 
 
 def test_files_older_than_the_window_are_not_downloaded(dirs, ftp):

@@ -178,8 +178,11 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
     deliveries arrive in up to four waves, as late as 16:24, so no schedule can
     avoid that; per-file identity can.
 
-    Files under failed/ deliberately do NOT count as known, so a fresh copy is
-    fetched on the next run. That is what self-heals a truncated download.
+    A file counts as already-had only once it is inside an archive zip, because
+    archiving is what proves it was stored. A copy sitting in incoming or under
+    failed/ proves the opposite -- it was never processed, or processing it
+    failed -- so it is fetched again. That is what self-heals a truncated
+    download.
     """
     host = require_env("SFTP_HOST")
     port = int(require_env("SFTP_PORT"))
@@ -187,11 +190,10 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
     password = read_secret("sftp_password")
 
     floor = last_archived_date(archive_dir) - timedelta(days=window_days)
-    known = archived_names(archive_dir, floor)
-    known.update(p.name for p in target_dir.glob('*.xml'))
+    archived = archived_names(archive_dir, floor)
 
     logger.info(f"Download SDAT files from {floor} onward from FTP server {host} "
-                f"({len(known)} file(s) already present or archived)")
+                f"({len(archived)} file(s) already archived)")
     session = FTPSession(host, port, sftp_user, password)
     count = 0
     try:
@@ -215,7 +217,7 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
             except ValueError:
                 logger.debug(f"Skipping {filename}, not a SDAT file with valid filename")
                 continue
-            if file_date < floor or filename in known:
+            if file_date < floor or filename in archived:
                 continue
 
             logger.debug(f"Downloading {filename}")
