@@ -583,7 +583,7 @@ a breakdown to nothing.
 │  ├─ Meter mapping discovery                                 │
 │  ├─ E66 parser (parse_sdat_e66_individual.py)                          │
 │  ├─ E31 parser (parse_sdat_e31_aggregated.py)                    │
-│  └─ Batch processor (watch_ftproot.py)                      │
+│  └─ Batch processor (sdat_processor.py)                     │
 └────────────────┬────────────────────────────────────────────┘
                  │ INSERT over PG-wire (psycopg), Decimal values
                  ↓

@@ -40,13 +40,15 @@ This document provides E31-specific Grafana queries and integration details. For
 
 Dedup keys: `(ts, direction, segment, product_code, community_id)`.
 
-### Updated: `watch_ftproot.py`
+### Updated: the ingestion path
 
-**Changes**:
-- Imports E31 parser alongside E66 parser
-- Detects file type by checking for `_E31_` or `_E66_` in filename
-- Routes to appropriate parser based on file type
-- Both file types are archived after successful processing
+- `sdat_processor.py` reads every header of a delivery once and dispatches on the
+  document's own `InstanceDocument/DocumentType`, not on `_E31_`/`_E66_` in the
+  filename: the filenames of the two domains sharing the folder (CEL and RCP) are
+  indistinguishable, so routing has to be content-based.
+- `parse_sdat.py` hands an E31 header to the aggregate parser and an E66 one to
+  the per-meter parser.
+- Both document types are archived after successful processing.
 
 ## E31 File Breakdown
 
@@ -164,18 +166,14 @@ known residuals.
 
 ## Deployment
 
-### Files to Deploy:
-1. `/app/scripts/parse_sdat_e31_aggregated.py` (new)
-2. `/app/scripts/watch_ftproot.py` (updated)
-
 ### Steps:
-```bash
-# On development machine
-scp cel-community/scripts/parse_sdat_e31_aggregated.py synology:/volume1/docker/cel/scripts/
-scp cel-community/scripts/watch_ftproot.py synology:/volume1/docker/cel/scripts/
+The scripts are a bind mount and the image is built from this repo, so deployment
+is the ordinary one — see [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md).
 
+```bash
 # On Synology
-docker restart cel-parser
+git -C /volume1/docker/cel pull
+docker compose up -d --build
 
 # Verify
 docker logs -f cel-parser

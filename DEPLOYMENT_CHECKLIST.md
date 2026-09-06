@@ -150,8 +150,7 @@ Scripts are plain files on a bind mount, so rollback is a copy:
 ssh synology
 
 docker stop cel-parser
-cp /volume1/docker/cel/scripts/watch_ftproot.py.backup \
-   /volume1/docker/cel/scripts/watch_ftproot.py
+git -C /volume1/docker/cel checkout <previous-commit> -- scripts/
 docker start cel-parser
 ```
 

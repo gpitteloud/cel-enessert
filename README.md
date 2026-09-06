@@ -65,13 +65,15 @@ published** — see [QUESTDB.md](QUESTDB.md#security).
 
 ### 5. Upload SDAT Files via FTP
 
-Provider sends XML files to your Synology FTP, or you upload manually to `/volume1/ftproot/`.
+Provider sends XML files to its SFTP server, or you upload manually to
+`/volume1/ftproot/`.
 
-Files are automatically:
-1. Detected by cel-parser
-2. Parsed and validated
-3. Written to QuestDB
-4. Archived to `/volume1/docker/cel/archive/`
+Once a day at 11:00 the scheduler runs the job, which:
+1. Downloads every file not already archived, over a 7-day window
+2. Parses and validates them, one batch per delivery date
+3. Writes them to QuestDB
+4. Archives the batch as `/volume1/docker/cel/archive/<YYYYMMDD>.zip`
+5. Reports the delivery: what it contained, and where it does not add up
 
 A file whose write fails is **not** archived, so nothing is ever filed away having
 stored no data. It stays in the incoming folder for the rest of the run; the next
@@ -85,7 +87,7 @@ Provider uploads SDAT XML via FTP
          ↓
 /volume1/ftproot/
          ↓
-cel-parser (watches for new files)
+cel-parser (downloads and ingests, daily at 11:00)
          ↓
 QuestDB (stores measurements, last write wins)
          ↓
@@ -97,7 +99,8 @@ Grafana (displays dashboards)
 1. **questdb** - Time-series database, the system of record (ports unpublished)
 2. **questdb-init** - One-shot schema apply + verify; the parser waits for it
 3. **grafana** - Visualization dashboards (port 3000)
-4. **cel-parser** - Watches `/volume1/ftproot` and processes XML files automatically
+4. **cel-parser** - Downloads and ingests one delivery per day
+5. **cel-scheduler** - Ofelia, which triggers the parser job at 11:00
 
 ## File Structure on Synology
 
@@ -108,16 +111,19 @@ Grafana (displays dashboards)
 │   ├── parse_sdat_e66_individual.py   # E66 parser (individual meters)
 │   ├── parse_sdat_e31_aggregated.py   # E31 parser (community aggregates)
 │   ├── models.py                      # MeteredData, MetricType, classification
+│   ├── sdat_header.py                 # One parse per file: header + observations
 │   ├── discover_meter_mappings.py     # Auto-discover physical-virtual mappings
 │   ├── questdb_schema.sql             # Authoritative DDL
 │   ├── questdb_init.py                # Applies + verifies the schema
 │   ├── questdb_writer.py              # Writes rows over PG-wire
-│   └── watch_ftproot.py               # Batch processor (auto-runs)
+│   ├── sftp_download_and_process.py   # The scheduled job's entry point
+│   ├── sdat_processor.py              # Ingests a folder, one batch per delivery
+│   └── delivery_report.py             # What a delivery contained, per observation
 ├── config/
 │   ├── api_config.yaml                # DSN and project settings
 │   └── meter_mappings.yaml            # Physical-virtual meter mappings (auto-generated)
 ├── logs/
-│   └── watcher.log                    # Processing logs
+│   └── job.log                        # Processing logs
 ├── archive/                            # Processed XML files
 ├── questdb-data/                       # QuestDB data
 ├── grafana-data/                       # Grafana data
@@ -140,7 +146,8 @@ cel_energy           -- E66: one row per (ts, meter_id, direction, segment,
                      --      product_code, community_id)
 cel_community_energy -- E31: one row per (ts, direction, segment,
                      --      product_code, community_id)
-cel_ingest_log       -- provenance: ~1 row per processed file
+cel_file_header      -- what each file IS: one current row per file
+cel_ingest_log       -- what HAPPENED: one row per ingestion attempt
 ```
 
 `direction` is `consumption` | `production`; `segment` is `cel` | `grid` |
@@ -200,7 +207,7 @@ sudo docker ps | grep cel-
 sudo docker logs -f cel-parser
 
 # Or check log file
-sudo cat /volume1/docker/cel/logs/watcher.log
+sudo cat /volume1/docker/cel/logs/job.log
 ```
 
 **Query QuestDB.** Its ports are not published, so run this from inside a
