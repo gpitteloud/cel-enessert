@@ -134,7 +134,7 @@ services:
       - sftp_password
     labels:
       ofelia.enabled: "true"
-      ofelia.job-exec.parserjob-devl.schedule: "0 0 10 * * *"
+      ofelia.job-exec.parserjob-devl.schedule: "0 0 11 * * *"
       ofelia.job-exec.parserjob-devl.command: "python -m scripts.sftp_download_and_process"
 
   scheduler:
