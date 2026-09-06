@@ -3,9 +3,16 @@
 # it would also be actively misleading here: this file uses
 # `condition: service_completed_successfully`, which the 3.8 schema it claimed to
 # conform to did not support.
+#
+# The project name is pinned rather than inherited.
+# The scheduler's --docker-filter below matches on exactly this string
+name: cel
+
 services:
   # The system of record. See QUESTDB.md.
   questdb:
+      # Pin the version so a silent `latest` bump can't change dedup or decimal
+      # behaviour under us. Both are load-bearing here.
     image: questdb/questdb:9.4.3
     container_name: cel-questdb
     restart: unless-stopped
@@ -17,11 +24,17 @@ services:
     volumes:
       - /volume1/docker/cel/questdb-data:/var/lib/questdb
     environment:
-      # Pin the version so a silent `latest` bump can't change dedup or decimal
-      # behaviour under us. Both are load-bearing here.
       - QDB_TELEMETRY_ENABLED=false
       - QDB_PG_USER=${DB_USER}
       - QDB_PG_PASSWORD=${DB_PASSWORD}
+      # used by Grafana
+      - QDB_PG_READONLY_USER_ENABLED=true
+      - QDB_PG_READONLY_USER=${RO_DB_USER}
+      - QDB_PG_READONLY_PASSWORD=${RO_DB_PASSWORD}
+      # access to the web console
+      - QDB_HTTP_USER=${HTTP_USER}
+      - QDB_HTTP_PASSWORD=${HTTP_PASSWORD}
+      - QDB_HTTP_SECURITY_READONLY=true # R-O access through the web console
     networks:
       - cel-network
 
@@ -96,7 +109,9 @@ services:
   cel-parser-job:
     build: .
     container_name: cel-parser-job
-    restart: "no"
+    # Keeping it alive makes an ad-hoc run possible:
+    #   docker exec cel-parser-job python -m scripts.sftp_download_and_process
+    restart: unless-stopped
     command: ["sleep", "infinity"] # real command in ofelia command label
     volumes:
       - /volume1/docker/cel/input:/data/incoming
@@ -122,11 +137,12 @@ services:
       ofelia.job-exec.parserjob.command: "python -m scripts.sftp_download_and_process"
 
   scheduler:
-    image: mcuadros/ofelia:latest
+    image: mcuadros/ofelia:0.3.22
     depends_on:
       questdb-init:
         condition: service_completed_successfully
-    command: daemon --docker
+    # --docker-filter scopes label discovery to THIS stack.
+    command: daemon --docker --docker-filter label=com.docker.compose.project=cel
     environment:
       - TZ=Europe/Zurich
     volumes:
