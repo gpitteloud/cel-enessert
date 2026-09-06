@@ -8,21 +8,11 @@ from typing import Any
 import yaml
 
 from scripts.discover_meter_mappings import load_or_discover_mappings, get_physical_production_meters
-from scripts.logger_config import cet_formatter
+from scripts.logger_config import configure_logging
 from scripts.models import SkippedDocument, MeteredData
 from scripts.parse_sdat import parse_sdat
 from scripts.questdb_writer import DEFAULT_DSN as QUESTDB_DEFAULT_DSN, QuestDBWriter
 
-file_handler = logging.FileHandler('/app/logs/job.log')
-file_handler.setFormatter(cet_formatter)
-
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(cet_formatter)
-
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[file_handler, console_handler]
-)
 logger = logging.getLogger(__name__)
 
 
@@ -44,30 +34,71 @@ class FileOutcome(Enum):
 
 
 def group_by_date(xml_files):
+    """Group files by their YYYYMMDD delivery prefix, each batch in filename order.
+
+    The sort by filename means delivery time, so that we reproduce the order of the provider.
+    """
     batches = defaultdict(list)
-    for f in xml_files:
+    for f in sorted(xml_files, key=lambda p: p.name):
         date_prefix = f.name[:8]
         batches[date_prefix].append(f)
     return batches
 
 
 class SDATProcessor:
-    def __init__(self, api_config):
-        self.questdb = QuestDBWriter(api_config.get('questdb', {}).get('dsn') or QUESTDB_DEFAULT_DSN)
-        logger.info("QuestDB writer ready")
+    """Ingest a folder of SDAT files, one batch per delivery date.
+
+    The constructor only assigns: no network, no filesystem scan, no XML parse.
+    Everything the run needs is either passed in or resolved by `from_config`,
+    which is what production uses.
+    """
+
+    def __init__(self, incoming_dir: Path, archive_dir: Path, writer,
+                 mapping_cache_file: Path = None, meter_mappings: dict = None,
+                 physical_production_meters: set = None):
+        self.incoming_dir = Path(incoming_dir)
+        self.archive_dir = Path(archive_dir)
+        self.questdb = writer
+        self.mapping_cache_file = mapping_cache_file
+        # None means "discover when the batch starts"; an empty dict/set is an
+        # explicit choice and is left alone.
+        self.meter_mappings = meter_mappings
+        self.physical_production_meters = physical_production_meters
+
+    @classmethod
+    def from_config(cls, api_config):
+        """Build the processor production uses: paths from config, a real writer."""
         job_config = api_config.get('processing', {})
-        # Auto-discover meter mappings (virtual -> physical)
-        # Tries to load from cache first, discovers if cache missing/stale
-        self.incoming_dir = Path(job_config.get('incoming_path'))
-        cache_file = Path(job_config.get('meter_mapping_file'))
-        self.archive_dir = Path(job_config.get('archive_path'))
-        self.meter_mappings = load_or_discover_mappings(self.incoming_dir, self.archive_dir, cache_file)
+        writer = QuestDBWriter(
+            api_config.get('questdb', {}).get('dsn') or QUESTDB_DEFAULT_DSN)
+        logger.info("QuestDB writer ready")
+        return cls(
+            incoming_dir=Path(job_config.get('incoming_path')),
+            archive_dir=Path(job_config.get('archive_path')),
+            writer=writer,
+            mapping_cache_file=Path(job_config.get('meter_mapping_file')),
+        )
+
+    def resolve_meters(self):
+        """Discover virtual->physical mappings and physical producers for this batch.
+
+        Runs when the batch starts rather than when the object is built: the
+        answer depends on the files present, and a run can span two report
+        periods (delivery 20260807 does).
+        """
+        if self.meter_mappings is None:
+            self.meter_mappings = load_or_discover_mappings(
+                self.incoming_dir, self.archive_dir, self.mapping_cache_file)
         logger.info(f"Using {len(self.meter_mappings)} meter mappings for this batch")
-        self.physical_production_meters = get_physical_production_meters(self.incoming_dir, self.archive_dir)
+
+        if self.physical_production_meters is None:
+            self.physical_production_meters = get_physical_production_meters(
+                self.incoming_dir, self.archive_dir)
         logger.info(f"Using {len(self.physical_production_meters)} physical production meters for this batch")
 
 
     def process_sdat_files(self):
+        self.resolve_meters()
 
         logger.info(f"=" * 80)
         logger.info(f"Start batch processing")
@@ -121,7 +152,7 @@ class SDATProcessor:
 
         # Archive processed files as a zip (only real failures stay in the source folder, so incoming ends up empty)
         if archivable_files:
-            self.archive_batch_as_zip(archivable_files, delivery_date)
+            archive_batch_as_zip(archivable_files, delivery_date, self.archive_dir)
 
         logger.info(f"-" * 80)
         logger.info(f"{delivery_date} batch complete")
@@ -252,57 +283,58 @@ class SDATProcessor:
                 rows_written=0, outcome='failed')
             return True
 
-    def archive_batch_as_zip(self, file_paths: list, date_str: str):
-        """Archive a batch of files into a single zip file named by date (YYYYMMDD.zip)
 
-        If a zip for this date already exists, new files are appended to it
-        rather than creating a separate timestamped archive. Files already
-        present in the zip are skipped to avoid duplicates.
-        """
-        try:
-            zip_filename = f"{date_str}.zip"
-            zip_path = self.archive_dir / zip_filename
+def archive_batch_as_zip(file_paths: list, date_str: str, archive_dir: Path):
+    """Archive a batch of files into a single zip file named by date (YYYYMMDD.zip)
 
-            # Open in append mode if zip exists, otherwise create new
-            if zip_path.exists():
-                mode = 'a'
-                # Get names already in the archive to skip duplicates
-                with zipfile.ZipFile(zip_path, 'r') as existing:
-                    existing_names = set(existing.namelist())
-                logger.info(f"Appending to existing archive: {zip_filename} ({len(existing_names)} files already present)")
-            else:
-                mode = 'w'
-                existing_names = set()
-                logger.info(f"Creating archive: {zip_filename} with {len(file_paths)} files")
+    If a zip for this date already exists, new files are appended to it
+    rather than creating a separate timestamped archive. Files already
+    present in the zip are skipped to avoid duplicates.
+    """
+    try:
+        zip_filename = f"{date_str}.zip"
+        zip_path = archive_dir / zip_filename
 
-            # Track which files actually get added (so we only delete those)
-            added_files = []
+        # Open in append mode if zip exists, otherwise create new
+        if zip_path.exists():
+            mode = 'a'
+            # Get names already in the archive to skip duplicates
+            with zipfile.ZipFile(zip_path, 'r') as existing:
+                existing_names = set(existing.namelist())
+            logger.info(f"Appending to existing archive: {zip_filename} ({len(existing_names)} files already present)")
+        else:
+            mode = 'w'
+            existing_names = set()
+            logger.info(f"Creating archive: {zip_filename} with {len(file_paths)} files")
 
-            with zipfile.ZipFile(zip_path, mode, zipfile.ZIP_DEFLATED) as zipf:
-                for file_path in file_paths:
-                    if not file_path.exists():
-                        continue
-                    if file_path.name in existing_names:
-                        logger.debug(f"Already in archive, skipping: {file_path.name}")
-                        added_files.append(file_path)  # still safe to remove source
-                        continue
-                    zipf.write(file_path, arcname=file_path.name)
-                    added_files.append(file_path)
-                    logger.debug(f"Added {file_path.name} to zip")
+        # Track which files actually get added (so we only delete those)
+        added_files = []
 
-            logger.info(f"Archive updated: {zip_filename}")
+        with zipfile.ZipFile(zip_path, mode, zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in file_paths:
+                if not file_path.exists():
+                    continue
+                if file_path.name in existing_names:
+                    logger.debug(f"Already in archive, skipping: {file_path.name}")
+                    added_files.append(file_path)  # still safe to remove source
+                    continue
+                zipf.write(file_path, arcname=file_path.name)
+                added_files.append(file_path)
+                logger.debug(f"Added {file_path.name} to zip")
 
-            # Remove original files after successful zipping
-            for file_path in added_files:
-                if file_path.exists():
-                    file_path.unlink()
-                    logger.debug(f"Removed original file: {file_path.name}")
+        logger.info(f"Archive updated: {zip_filename}")
 
-            logger.info(f"Archived {len(added_files)} files to {zip_filename}")
+        # Remove original files after successful zipping
+        for file_path in added_files:
+            if file_path.exists():
+                file_path.unlink()
+                logger.debug(f"Removed original file: {file_path.name}")
 
-        except Exception as e:
-            logger.error(f"Failed to create/update zip archive {date_str}.zip: {e}", exc_info=True)
-            logger.warning("Files not deleted due to archiving error")
+        logger.info(f"Archived {len(added_files)} files to {zip_filename}")
+
+    except Exception as e:
+        logger.error(f"Failed to create/update zip archive {date_str}.zip: {e}", exc_info=True)
+        logger.warning("Files not deleted due to archiving error")
 
 
 
@@ -316,8 +348,9 @@ def load_config(config_path):
 
 def main():
     # standalone entry point: process files stored in /data/incoming
+    configure_logging()
     api_config = load_config("/app/config")
-    SDATProcessor(api_config).process_sdat_files()
+    SDATProcessor.from_config(api_config).process_sdat_files()
 
 
 if __name__ == '__main__':

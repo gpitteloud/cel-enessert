@@ -17,3 +17,28 @@ class CETFormatter(logging.Formatter):
 # Setup logging with CET timezone
 cet_formatter = CETFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
+JOB_LOG = '/app/logs/job.log'
+
+
+def configure_logging(log_file: str = JOB_LOG, level: int = logging.INFO) -> None:
+    """Configure root logging for a job entry point. Call from main(), not on import.
+
+    A module that opens a FileHandler at import time cannot be imported at all
+    outside the container, where /app/logs does not exist -- so a missing log
+    directory degrades to console only instead of raising.
+    """
+    handlers = [logging.StreamHandler()]
+    file_error = None
+    try:
+        handlers.append(logging.FileHandler(log_file))
+    except OSError as e:
+        file_error = e
+
+    for handler in handlers:
+        handler.setFormatter(cet_formatter)
+    logging.basicConfig(level=level, handlers=handlers)
+
+    if file_error is not None:
+        logging.getLogger(__name__).warning(
+            f"Logging to console only, cannot open {log_file}: {file_error}")
+

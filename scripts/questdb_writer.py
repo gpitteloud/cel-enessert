@@ -70,8 +70,12 @@ def rows_from_e66(parsed: MeteredData, attributed_meter_id: Optional[str] = None
     so the rows are stored against that meter rather than the virtual one. The
     watcher computes it (it needs the virtual ID's prefix), so it is passed in
     rather than read off `parsed`.
+
+    Total over ParseResult: a None or a SkippedDocument yields no rows rather
+    than AttributeError, so a caller that skips the isinstance check writes
+    nothing instead of crashing mid-batch.
     """
-    if not parsed.observations or not parsed.metric_type:
+    if not getattr(parsed, 'observations', None) or not parsed.metric_type:
         return []
 
     meter_id = parsed.meter_id
@@ -87,8 +91,11 @@ def rows_from_e66(parsed: MeteredData, attributed_meter_id: Optional[str] = None
 
 
 def rows_from_e31(parsed: MeteredData) -> List[tuple]:
-    """Build cel_community_energy rows from a parsed E31 document."""
-    if not parsed.observations or not parsed.metric_type:
+    """Build cel_community_energy rows from a parsed E31 document.
+
+    Total over ParseResult, as in rows_from_e66.
+    """
+    if not getattr(parsed, 'observations', None) or not parsed.metric_type:
         return []
 
     return [

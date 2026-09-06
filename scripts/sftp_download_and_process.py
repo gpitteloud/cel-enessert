@@ -5,19 +5,9 @@ from datetime import date, datetime
 from ftplib import FTP_TLS
 from pathlib import Path
 
-from scripts.logger_config import cet_formatter
+from scripts.logger_config import configure_logging
 from scripts.sdat_processor import load_config, SDATProcessor
 
-file_handler = logging.FileHandler('/app/logs/job.log')
-file_handler.setFormatter(cet_formatter)
-
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(cet_formatter)
-
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[file_handler, console_handler]
-)
 logger = logging.getLogger(__name__)
 
 
@@ -27,12 +17,18 @@ def require_env(var: str):
         raise ValueError(f"Environment {var} is required")
     return value
 
+
+def read_secret(name: str) -> str:
+    """Read a docker secret from /run/secrets. Isolated so tests can replace it."""
+    return Path(f"/run/secrets/{name}").read_text().strip()
+
+
 def download_sdat_files(target_dir: Path, after_date: date) -> int:
 
     host = require_env("SFTP_HOST")
     port = int(require_env("SFTP_PORT"))
-    sftp_user = Path("/run/secrets/sftp_user").read_text().strip()
-    password = Path("/run/secrets/sftp_password").read_text().strip()
+    sftp_user = read_secret("sftp_user")
+    password = read_secret("sftp_password")
 
     logger.info(f"Download all SDAT files after {after_date} from FTP server {host}")
     count = 0
@@ -80,6 +76,7 @@ def last_archived_date(archive_dir: Path) -> date:
 
 
 def main():
+    configure_logging()
     logger.info("CEL SDAT File downloader starting...")
 
     api_config = load_config("/app/config")
@@ -95,7 +92,7 @@ def main():
         last_archived = last_archived_date(Path(job_config.get('archive_path')))
         nb_files = download_sdat_files(target_dir, last_archived)
         if nb_files:
-            SDATProcessor(api_config).process_sdat_files()
+            SDATProcessor.from_config(api_config).process_sdat_files()
         else:
             logger.info(f"No new SDAT files found after {last_archived}")
 

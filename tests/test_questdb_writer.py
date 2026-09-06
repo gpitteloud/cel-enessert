@@ -16,21 +16,28 @@ from pathlib import Path
 import pytest
 
 from conftest import FakeQuestDB, real_files, SAMPLE_MAPPINGS, SAMPLE_PHYSICAL_METERS
-from models import MeteredData, MetricType, Observation
-import questdb_writer
-from questdb_writer import (E31_COLUMNS, E66_COLUMNS, rows_from_e31,
+from scripts.models import MeteredData, MetricType, Observation
+from scripts import questdb_writer
+from scripts.questdb_writer import (E31_COLUMNS, E66_COLUMNS, rows_from_e31,
                             rows_from_e66, validate_rows)
 
 TS = '2026-05-22T00:00:00+00:00'
 TS2 = '2026-05-22T00:15:00+00:00'
 
+# Real-shaped SDAT names: the YYYYMMDD_HHMMSS prefix is the delivery, and the
+# name is what lands in cel_energy.source_file, so it is asserted on rather than
+# defaulted away.
+E66_FILE = '20260522_094500_12X-0000001536-1_E66_12X-00000020FW-5_a1b2c3d4.xml'
+E31_FILE = '20260522_094500_12X-0000001536-1_E31_12X-00000020FW-5_e5f6a7b8.xml'
+
 
 def e66(values, meter_id='CH1011101234500000000000000020576V',
         product_code='8716867000030', metric_type=MetricType.CONSUMPTION_TOTAL,
-        condition=None, is_breakdown=False, attributed=None):
+        condition=None, is_breakdown=False, attributed=None, filename=E66_FILE):
     """A parsed E66 document with `values` as consecutive 15-min observations."""
     return MeteredData(
         document_type='E66',
+        filename=filename,
         observations=[
             Observation(sequence=i + 1, timestamp=t, value=Decimal(v),
                         condition=condition)
@@ -48,9 +55,11 @@ def e66(values, meter_id='CH1011101234500000000000000020576V',
 
 
 def e31(values, product_code='2404050010123',
-        metric_type=MetricType.CONSUMPTION_LOCAL, condition=None):
+        metric_type=MetricType.CONSUMPTION_LOCAL, condition=None,
+        filename=E31_FILE):
     return MeteredData(
         document_type='E31',
+        filename=filename,
         observations=[
             Observation(sequence=i + 1, timestamp=t, value=Decimal(v),
                         condition=condition)
@@ -77,7 +86,7 @@ def test_dedup_keys_match_schema_file():
     deliveries silently double-counted in production.
     """
     import re
-    from questdb_init import _split_statements
+    from scripts.questdb_init import _split_statements
 
     sql = (Path(__file__).resolve().parent.parent
            / 'scripts' / 'questdb_schema.sql').read_text()
@@ -140,6 +149,7 @@ def test_rows_from_e66_shape():
     assert row['direction'] == 'consumption' and row['segment'] == 'total'
     assert row['ts'].isoformat() == TS
     assert row['condition'] is None
+    assert row['source_file'] == E66_FILE
 
 
 def test_rows_from_e66_uses_attributed_physical_meter():
@@ -166,6 +176,7 @@ def test_rows_from_e31_shape():
     assert row['value'] == Decimal('2.500')
     assert row['segment'] == 'cel'
     assert row['grid_area'] == '12Y-0000000719-J'
+    assert row['source_file'] == E31_FILE
     assert 'meter_id' not in row
 
 
@@ -176,7 +187,7 @@ def test_unclassified_metric_type_yields_no_rows():
 
 
 def test_missing_observations_yields_no_rows():
-    from models import SkippedDocument
+    from scripts.models import SkippedDocument
     assert rows_from_e66(SkippedDocument(reason='dup')) == []
     assert rows_from_e66(None) == []
     assert rows_from_e31(None) == []
@@ -554,9 +565,9 @@ def test_is_connection_error_classifies_by_name():
 def _parse_real(paths):
     """Parse real files into (parsed_doc, attributed_meter_id) pairs."""
     import xml.etree.ElementTree as ET
-    from models import SkippedDocument
-    from parse_sdat_e66_individual import parse_e66
-    from parse_sdat_e31_aggregated import parse_e31
+    from scripts.models import SkippedDocument
+    from scripts.parse_sdat_e66_individual import parse_e66
+    from scripts.parse_sdat_e31_aggregated import parse_e31
 
     ns = '{http://www.strom.ch}'
     doc_type_path = f'.//{ns}DocumentType/{ns}ebIXCode'
@@ -569,7 +580,7 @@ def _parse_real(paths):
         elem = root.find(doc_type_path)
         kind = elem.text if elem is not None else None
         if kind == 'E66':
-            parsed = parse_e66(root, meter_mappings=SAMPLE_MAPPINGS,
+            parsed = parse_e66(root, path.name, meter_mappings=SAMPLE_MAPPINGS,
                                physical_production_meters=SAMPLE_PHYSICAL_METERS)
             if parsed is None or isinstance(parsed, SkippedDocument):
                 continue
@@ -579,7 +590,7 @@ def _parse_real(paths):
                 attributed = virtual[:-8] + parsed.attributed_physical_meter
             out.append((parsed, attributed))
         elif kind == 'E31':
-            parsed = parse_e31(root)
+            parsed = parse_e31(root, path.name)
             if parsed is not None:
                 out.append((parsed, None))
     return out

@@ -1,8 +1,8 @@
 """Tests for parse_sdat_e31_aggregated (AggregatedMeteredData_1.3)."""
 import pytest
 
-from parse_sdat import parse_sdat
-from models import MetricType
+from scripts.parse_sdat import parse_sdat
+from scripts.models import MetricType
 from conftest import make_e31_xml, real_files
 
 
@@ -65,7 +65,7 @@ def test_metric_type_none_for_unknown_flow(write_xml):
 def test_unknown_flow_yields_no_rows(write_xml):
     # No classification -> no direction/segment to store, so the writer emits
     # nothing rather than inventing an 'unknown' row that a sum() would pick up.
-    from questdb_writer import rows_from_e31
+    from scripts.questdb_writer import rows_from_e31
     f = write_xml(make_e31_xml(flow="E99", product_code="2404050010123"))
     assert rows_from_e31(parse_sdat(f)) == []
 
@@ -186,7 +186,7 @@ def test_real_e31_flows_and_codes():
 
 @pytest.mark.skipif(not _E31_SAMPLES, reason="no real E31 sample files present")
 def test_real_e31_builds_storable_rows():
-    from questdb_writer import E31_COLUMNS, rows_from_e31
+    from scripts.questdb_writer import E31_COLUMNS, rows_from_e31
     r = parse_sdat(_E31_SAMPLES[0])
     rows = rows_from_e31(r)
     assert len(rows) == len(r.observations)

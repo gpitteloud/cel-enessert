@@ -1,9 +1,9 @@
 """Tests for parse_sdat_e66_individual (ValidatedMeteredData_1.6)."""
 import pytest
 
-from models import MeteredData, SkippedDocument
-from parse_sdat import parse_sdat
-from parse_sdat_e66_individual import MetricType
+from scripts.models import MeteredData, SkippedDocument
+from scripts.parse_sdat import parse_sdat
+from scripts.parse_sdat_e66_individual import MetricType
 from conftest import (
     make_e66_xml,
     real_files,
@@ -252,7 +252,7 @@ def test_real_e66_product_codes_are_known():
 @pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
 def test_real_e66_builds_storable_rows():
     """A real file must produce one storable row per observation."""
-    from questdb_writer import E66_COLUMNS, rows_from_e66
+    from scripts.questdb_writer import E66_COLUMNS, rows_from_e66
     f = _E66_SAMPLES[0]
     r = parse_sdat(f, meter_mappings=SAMPLE_MAPPINGS,
                        physical_production_meters=SAMPLE_PHYSICAL_METERS)

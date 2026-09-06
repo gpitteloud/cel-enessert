@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 
-# Make scripts/ importable
+# Import the scripts as `scripts.<module>`, exactly as they import each other.
+# Putting scripts/ itself on sys.path instead gives two distinct module objects
+# for the same file (`models` and `scripts.models`), so isinstance() is False
+# across them -- a genuine SkippedDocument then fails an isinstance check.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = REPO_ROOT / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
 # Directory of real (gitignored) sample files, used by golden-file tests that
 # skip when the data is not present (e.g. clean checkout / CI without data).
@@ -304,7 +306,7 @@ def fake_questdb(monkeypatch):
     the executemany/commit/rollback flow are still exercised, only the socket is
     replaced.
     """
-    import questdb_writer
+    from scripts import questdb_writer
 
     fake = FakeQuestDB()
 
