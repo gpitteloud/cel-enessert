@@ -15,7 +15,7 @@
       }
     ]
   },
-  "description": "Per-meter and whole-community energy from cel_energy (E66). 7 panels / 9 SQL expressions against QuestDB. Two conventions the plugin forces and that are easy to break: every output column is cast to DOUBLE (there is no DECIMAL converter), and series are named via byFrameRefID overrides because the plugin prefixes each frame with its refId, which makes byName match nothing. See QUESTDB.md.",
+  "description": "Per-meter and whole-community energy from cel_energy (E66). 7 panels / 9 SQL expressions against QuestDB. Every read is scoped to community_id, the meter dropdown included: the 8 meters that carry no <Community> element are the RCP self-consumption meters, and without the filter they sit in the dropdown next to the 22 community members. Two conventions the plugin forces and that are easy to break: every output column is cast to DOUBLE (there is no DECIMAL converter), and series are named via byFrameRefID overrides because the plugin prefixes each frame with its refId, which makes byName match nothing. See QUESTDB.md.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -149,7 +149,7 @@
           "format": 0,
           "meta": {},
           "queryType": "sql",
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND community_id = '101110-002726'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
           "selectedFormat": 0
         },
@@ -162,7 +162,7 @@
           "hide": false,
           "meta": {},
           "queryType": "sql",
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND community_id = '101110-002726'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
           "selectedFormat": 0
         }
@@ -296,7 +296,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'production'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'production'\n    AND community_id = '101110-002726'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
           "selectedFormat": 0
         },
@@ -308,7 +308,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'production'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'production'\n    AND community_id = '101110-002726'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "B",
           "selectedFormat": 0
         }
@@ -385,7 +385,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'consumption'\n  AND meter_id LIKE '%$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'consumption'\n  AND community_id = '101110-002726'\n  AND meter_id LIKE '%$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
           "selectedFormat": 0
         }
@@ -462,7 +462,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'production'\n  AND meter_id LIKE '%$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'production'\n  AND community_id = '101110-002726'\n  AND meter_id LIKE '%$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
           "selectedFormat": 0
         }
@@ -547,7 +547,7 @@
           "format": 1,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND meter_id LIKE '%$meter_id'\n  AND direction = 'consumption'\n  AND segment in ('cel', 'grid')",
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND meter_id LIKE '%$meter_id'\n  AND direction = 'consumption'\n  AND segment in ('cel', 'grid')",
           "refId": "A",
           "selectedFormat": 1
         }
@@ -632,7 +632,7 @@
           "format": 1,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND meter_id LIKE '%$meter_id'\n  AND direction = 'production'\n  AND segment in ('cel', 'grid')",
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND meter_id LIKE '%$meter_id'\n  AND direction = 'production'\n  AND segment in ('cel', 'grid')",
           "refId": "A",
           "selectedFormat": 1
         }
@@ -744,7 +744,7 @@
           "format": 0,
           "queryType": "sql",
           "meta": {},
-          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Net Energy (positive = producing more)\"\nFROM (\n  SELECT ts, sum(case when direction = 'production' then value else value * -1 end) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment in ('cel', 'grid')\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Net Energy (positive = producing more)\"\nFROM (\n  SELECT ts, sum(case when direction = 'production' then value else value * -1 end) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment in ('cel', 'grid')\n    AND community_id = '101110-002726'\n    AND meter_id LIKE '%$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
           "refId": "A",
           "selectedFormat": 0
         }
@@ -775,13 +775,13 @@
           "type": "questdb-questdb-datasource",
           "uid": "QuestDB"
         },
-        "definition": "SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
+        "definition": "SELECT DISTINCT meter_id FROM cel_energy WHERE community_id = '101110-002726' AND segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
         "hide": 0,
         "includeAll": false,
         "multi": false,
         "name": "meter_id",
         "options": [],
-        "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
+        "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE community_id = '101110-002726' AND segment = 'total' AND direction = 'consumption' ORDER BY meter_id",
         "refresh": 1,
         "regex": ".*([0-9A-Z]{8})$",
         "skipUrlSync": false,

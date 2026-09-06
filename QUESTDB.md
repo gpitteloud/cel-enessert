@@ -292,8 +292,12 @@ so no `0m` literal is needed.
   already contains what `cel_energy` sums to.
   `test_queries_target_the_right_table` holds an explicit `(panel, refId)`
   allow-list.
-- **Both sides of those panels filter `community_id`.** Without it the E66 side
-  is inflated by the community-less meters below.
+- **Every `cel_energy` read on both dashboards filters `community_id`**, the
+  overview's meter-selector variable included, and
+  `test_every_cel_energy_read_is_scoped_to_the_community` enforces it per SELECT
+  block. Without it the E66 side of the E31 comparison is inflated by the
+  community-less meters below, and those same meters appear in the meter dropdown
+  — where picking one charts an RCP grouping as a community member.
 - The meter selector matches the variable's 8-char suffix against the full ID
   with `meter_id LIKE '%$meter_id'`. `$__conditionalAll` is the better fit **if**
   the variable is ever set to `includeAll` — it is not today
@@ -307,11 +311,13 @@ confirmed in the raw XML:
 
 - **8 meters carry no `<Community>` element**, so `community_id` is NULL on
   their rows: `0042214D`, `0042215A`, `0201080P`, `0733915V`, `0854697H`,
-  `0854699B`, `0854701T`, `0856898T`. They first appear in delivery `20260729`
-  and each carries ~5 months of history back to 2026-02-28. The E31 aggregate
-  does not include them, so an **unscoped** `sum(cel_energy)` overstates the
-  community by **+23.8% on consumption and +32.9% on production**. Always scope
-  by `community_id` when comparing against E31.
+  `0854699B`, `0854701T`, `0856898T`. **These are the RCP meters, and the
+  omission is the source's, not a defect**: an RCP file is a self-consumption
+  grouping (`BusinessReasonType` `E88`) and has no community. They first appear in
+  delivery `20260729` and each carries ~5 months of history back to 2026-02-28.
+  The E31 aggregate does not include them, so an **unscoped** `sum(cel_energy)`
+  overstates the community by **+23.8% on consumption and +32.9% on production**.
+  NULL is what excludes them, so always scope by `community_id`.
 - **E31 consumption is all-zero for 2026-06-02..24** (23 days, `cel` and `grid`
   alike, while `production.total` keeps arriving): 960 `Volume` elements, none
   non-zero. Delivered as zeros rather than as absent rows, so no query can
