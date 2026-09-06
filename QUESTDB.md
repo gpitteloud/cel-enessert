@@ -356,14 +356,23 @@ ssh -L 9000:cel-questdb:9000 <nas>     # or docker exec + curl
 
 ## Operations
 
-`scripts/validate_daily_balance_questdb.py` checks a day's stored sums;
-`scripts/validate_daily_balance_sdat.py` computes the same figures straight from
-the source XML, so the two together tell you whether a discrepancy is in the
-data or in the ingestion. Both must run **inside `cel-parser`** — it is on
-`cel-network` and has `psycopg`, and QuestDB's ports are unpublished, so neither
-database is reachable from the NAS host shell:
+`scripts/validate_daily_balance_questdb.py` checks a day's stored sums.
+`scripts/delivery_report.py` reports the same balance straight from the source
+XML — per observation and per report period, so a delivery carrying a month next
+to a 5-day window is not compared against itself — so the two together tell you
+whether a discrepancy is in the data or in the ingestion. The report also runs at
+the end of every batch, on the headers the run already read.
+
+The stored-sums check must run **inside `cel-parser`**: it is on `cel-network`
+and has `psycopg`, and QuestDB's ports are unpublished, so the database is not
+reachable from the NAS host shell.
 
 ```bash
 docker exec -it cel-parser python3 \
     /app/scripts/validate_daily_balance_questdb.py 20260610
+docker exec -it cel-parser python3 -m scripts.delivery_report 20260610
 ```
+
+The report finds a delivery whether it is still in incoming or already archived,
+so re-running it after the fact needs no unpacking. Locally, point it at a
+directory of source files: `python3 -m scripts.delivery_report 20260527 input/all`.

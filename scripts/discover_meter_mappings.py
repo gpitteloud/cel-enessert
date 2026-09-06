@@ -56,6 +56,20 @@ class MeterClasses:
 
 
 @dataclass
+class PeriodResolution:
+    """What one report period is actually ingested with.
+
+    `mappings` is discovery's when the group is trusted and the recorded ones
+    otherwise, so a caller reproducing what was stored -- the delivery report --
+    reads the same values the parser saw.
+    """
+    mappings: Dict[str, str]
+    self_contained: Set[str] = field(default_factory=set)
+    ambiguities: List[str] = field(default_factory=list)
+    trusted: bool = True
+
+
+@dataclass
 class PeriodDiscovery:
     """Discovery result for one (report period) group of CEL files."""
     period: Tuple
@@ -182,18 +196,18 @@ def discover_mappings(headers: Iterable[FileHeader]) -> Dict[Tuple, PeriodDiscov
         results[period] = result
 
         logger.info(
-            f"Period {_period_label(period)}: {len(group)} CEL file(s), "
+            f"Period {period_label(period)}: {len(group)} CEL file(s), "
             f"{len(classes.virtual)} virtual, "
             f"{len(classes.self_contained)} self-contained, "
             f"{len(classes.physical_producers)} physical producer(s), "
             f"{len(mappings)} mapping(s)")
         for ambiguity in ambiguities:
-            logger.error(f"Period {_period_label(period)}: {ambiguity}")
+            logger.error(f"Period {period_label(period)}: {ambiguity}")
 
     return results
 
 
-def _period_label(period: Tuple) -> str:
+def period_label(period: Tuple) -> str:
     start, end = period
     return f"{start:%Y-%m-%d}..{end:%Y-%m-%d}" if start and end else str(period)
 
@@ -267,7 +281,20 @@ def mappings_for_period(result: PeriodDiscovery,
     if result.complete:
         return result.mappings
     logger.warning(
-        f"Period {_period_label(result.period)}: discovery incomplete "
+        f"Period {period_label(result.period)}: discovery incomplete "
         f"({len(result.mappings)}/{len(result.classes.virtual)} virtual meters "
         f"paired), falling back to the recorded mappings")
     return dict(cached or {})
+
+
+def resolve_periods(headers: Iterable[FileHeader],
+                    cached: Optional[Dict[str, str]] = None
+                    ) -> Dict[Tuple, PeriodResolution]:
+    """Discover what each report period in a batch should be ingested with."""
+    return {
+        period: PeriodResolution(mappings=mappings_for_period(result, cached),
+                                 self_contained=result.self_contained,
+                                 ambiguities=result.ambiguities,
+                                 trusted=result.complete)
+        for period, result in discover_mappings(headers).items()
+    }

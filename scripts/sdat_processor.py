@@ -8,9 +8,10 @@ from typing import Any
 
 import yaml
 
-from scripts.discover_meter_mappings import (discover_mappings, load_cached_mappings,
-                                             log_mapping_changes, mappings_for_period,
-                                             save_mappings)
+from scripts.delivery_report import report_delivery
+from scripts.discover_meter_mappings import (load_cached_mappings,
+                                             log_mapping_changes,
+                                             resolve_periods, save_mappings)
 from scripts.logger_config import configure_logging
 from scripts.models import SkippedDocument, MeteredData
 from scripts.parse_sdat import metered_data_from_header
@@ -92,7 +93,7 @@ class SDATProcessor:
         return {}
 
     def resolve_meters(self, headers) -> dict:
-        """{report period: (mappings, self-contained meters)} for one delivery.
+        """{report period: PeriodResolution} for one delivery.
 
         Per report period, not per delivery: a delivery can carry two periods
         (20260807 does), and a monthly total must never be compared with a 5-day
@@ -101,14 +102,12 @@ class SDATProcessor:
         resolve.
         """
         cached = self.cached_mappings()
-        resolved = {}
-        trusted = {}
-        for period, result in discover_mappings(headers).items():
-            resolved[period] = (mappings_for_period(result, cached),
-                                result.self_contained)
-            if result.complete:
-                trusted.update(result.mappings)
+        resolved = resolve_periods(headers, cached)
 
+        trusted = {}
+        for resolution in resolved.values():
+            if resolution.trusted:
+                trusted.update(resolution.mappings)
         if trusted:
             log_mapping_changes(trusted, cached)
             if self.mapping_cache_file:
@@ -121,13 +120,10 @@ class SDATProcessor:
         A period discovery never saw -- an RCP file, or a single file processed on
         its own -- falls back to the recorded mappings.
         """
-        mappings, self_contained = resolved.get(
-            header.report_period, (None, None))
-        if mappings is None:
-            mappings = self.cached_mappings()
-        if self_contained is None:
-            self_contained = self.self_contained_meters or set()
-        return mappings, self_contained
+        resolution = resolved.get(header.report_period)
+        if resolution is None:
+            return (self.cached_mappings(), self.self_contained_meters or set())
+        return resolution.mappings, resolution.self_contained
 
     def process_sdat_files(self):
         logger.info(f"=" * 80)
@@ -151,6 +147,7 @@ class SDATProcessor:
         skipped_count = 0
         error_count = 0
         archivable_files = []
+        failed_files = []
 
         logger.info(f"-" * 80)
         logger.info(f"Processing {len(batch)} files delivered on {delivery_date}")
@@ -166,6 +163,7 @@ class SDATProcessor:
             if not file_path.exists():
                 logger.warning(f"File no longer exists: {file_path.name}")
                 error_count += 1
+                failed_files.append(file_path.name)
                 continue
 
             try:
@@ -187,13 +185,22 @@ class SDATProcessor:
                     # Real failure - leave file in source folder for retry
                     logger.warning(f"File not processed, keeping in source folder: {file_path.name}")
                     error_count += 1
+                    failed_files.append(file_path.name)
             except Exception as e:
                 logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
                 error_count += 1
+                failed_files.append(file_path.name)
 
         # Archive processed files as a zip (only real failures stay in the source folder, so incoming ends up empty)
         if archivable_files:
             archive_batch_as_zip(archivable_files, delivery_date, self.archive_dir)
+
+        try:
+            report_delivery(delivery_date, headers.values(), resolved, failed_files)
+        except Exception as e:
+            # A diagnostic must never fail the ingestion it describes.
+            logger.error(f"Could not report delivery {delivery_date}: {e}",
+                         exc_info=True)
 
         logger.info(f"-" * 80)
         logger.info(f"{delivery_date} batch complete")
@@ -265,9 +272,6 @@ class SDATProcessor:
         if not parsed_data.observations:
             logger.warning(f"No data found in {parsed_data.document_type} file {header.file_name}")
             return FileOutcome.FAILED, 0
-
-        # The rows may belong to another meter than the file does.
-        header.attributed_meter_id = parsed_data.meter_id or header.file_meter_id
 
         rows = self._write_questdb(parsed_data)
         if rows is None:

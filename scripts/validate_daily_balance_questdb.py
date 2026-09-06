@@ -2,9 +2,9 @@
 """
 Validate the daily CEL energy balance from QuestDB (stored data).
 
-validate_daily_balance_sdat.py sums the source SDAT XML; this one sums what
-actually landed in the database. Running both confirms the ingest pipeline stored
-the data faithfully.
+delivery_report.py reports the same balance from the source SDAT XML, per
+observation; this one sums what actually landed in the database. Running both
+confirms the ingest pipeline stored the data faithfully.
 
 In a closed energy community, over any day the electricity CONSUMED FROM CEL
 (local import) equals the electricity PRODUCED TO CEL (local export).
