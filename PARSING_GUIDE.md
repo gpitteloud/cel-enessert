@@ -464,7 +464,7 @@ This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 |---------------|---------|-------------------|
 | `MeteredData` | parsed | write to QuestDB, archive (`FileOutcome.INGESTED`) |
 | `SkippedDocument` | valid, deliberately not ingested | log at **INFO**, archive (`FileOutcome.SKIPPED`) |
-| `None` | genuine failure (malformed, unknown meter, missing fields) | log at WARNING/ERROR, **keep in incoming** for retry (`FileOutcome.FAILED`) |
+| `None` | genuine failure (malformed, unknown meter, missing fields) | log at WARNING/ERROR, **not archived** (`FileOutcome.FAILED`); the next run moves it to `incoming/failed/` and re-downloads it |
 
 Skipped files are archived like ingested ones because the decision is permanent
 — leaving them in `/data/incoming` would make them reappear (and be re-reported)

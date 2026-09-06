@@ -73,8 +73,10 @@ Files are automatically:
 3. Written to QuestDB
 4. Archived to `/volume1/docker/cel/archive/`
 
-A file whose write fails is **not** archived: it stays in the incoming folder and
-is retried, so nothing is ever filed away having stored no data.
+A file whose write fails is **not** archived, so nothing is ever filed away having
+stored no data. It stays in the incoming folder for the rest of the run; the next
+run moves it to `incoming/failed/` and downloads a fresh copy, which heals a
+truncated file and leaves a genuinely broken one visible in one place.
 
 ## Architecture
 
