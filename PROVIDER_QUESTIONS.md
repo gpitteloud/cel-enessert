@@ -318,18 +318,17 @@ the E31 community aggregate). Each is a concrete, dated discrepancy we cannot
 resolve from the data alone.
 
 **Questions:**
-27. **E66 files with no `<Community>` element:** Starting with delivery 20260729
-    we receive E66 files for 8 meters that carry no `Community/CommunityID`, each
-    backfilled to 2026-02-28:
-    `0042214D`, `0042215A`, `0201080P`, `0733915V`, `0854697H`, `0854699B`,
-    `0854701T`, `0856898T` (suffixes of `CH1011101234500000000000000...`).
-    - Are these members of community 101110-002726 whose `<Community>` element is
-      simply missing, or meters genuinely outside the community?
-    - If they are members, will the element be added in future deliveries?
-    - Their consumption is ~24% of the E31 community total and their production
-      ~33%, so the answer changes every aggregate we compute.
-    - Note `0854699B` and `0854697H` report *identical* consumption series
-      (3993.5 kWh each) — is one a duplicate of the other?
+27. **E66 files with no `<Community>` element:** ~~Starting with delivery 20260729
+    we receive E66 files for 8 meters that carry no `Community/CommunityID`~~
+    **Answered from the data, no reply needed.** Those 8 meters
+    (`0042214D`, `0042215A`, `0201080P`, `0733915V`, `0854697H`, `0854699B`,
+    `0854701T`, `0856898T`) are the RCP meters: their files carry
+    `BusinessReasonType/ebIXCode` = `E88` and `Receiver/Role` = `DEC`, and an RCP
+    self-consumption grouping has no community, so the absence is correct. They
+    are excluded from every community figure by their NULL `community_id`.
+    - Still open: `0854699B` and `0854697H` report *identical* consumption series
+      (3993.5 kWh each) — is one a duplicate of the other, or do two RCP
+      groupings legitimately share a reading?
 
 28. **E31 consumption is zero for 2026-06-02 to 2026-06-24:** For those 23 days
     every E31 consumption value (`total`, CEL `2404050010123` and grid

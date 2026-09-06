@@ -342,9 +342,9 @@ is what separates "one meter stopped reporting" from "every meter is slightly
 off" from "E31 itself is zero".
 
 Open provider questions from this analysis, tracked in `PROVIDER_QUESTIONS.md`:
-are the 8 community-less meters members whose `<Community>` element is merely
-missing, or genuinely outside the CEL? Why is E31 consumption zero for
-2026-06-02..24? Why does per-meter production fall ~10% short from 2026-07 on?
+why is E31 consumption zero for 2026-06-02..24? Why does per-meter production fall
+~10% short from 2026-07 on? (The community-less meters are no longer among them —
+they are the RCP meters, answered from the data.)
 
 ## Security
 
