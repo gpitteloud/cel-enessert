@@ -1,8 +1,9 @@
 import logging
 import os
+import time
 import zipfile
 from datetime import date, datetime, timedelta
-from ftplib import FTP_TLS
+from ftplib import FTP_TLS, error_perm
 from pathlib import Path
 
 from scripts.logger_config import configure_logging
@@ -13,6 +14,11 @@ logger = logging.getLogger(__name__)
 # How far back the download looks. A wave that arrives hours -- or a day or two
 # -- after its delivery is recovered; anything older is assumed already handled.
 DOWNLOAD_WINDOW_DAYS = 7
+
+# A network fault costs a whole file, and the run only comes round once a day,
+# so a transfer is attempted more than once before it is given up on.
+RETRY_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 5
 
 
 def require_env(var: str):
@@ -25,6 +31,71 @@ def require_env(var: str):
 def read_secret(name: str) -> str:
     """Read a docker secret from /run/secrets. Isolated so tests can replace it."""
     return Path(f"/run/secrets/{name}").read_text().strip()
+
+
+def with_retries(what: str, action, before_retry=None):
+    """Run `action`, retrying a transient failure with a growing delay.
+
+    `error_perm` (a 5xx reply) is never retried: the server is refusing, not
+    faltering, so repeating the request would only burn the delivery window --
+    bad credentials and a missing file both land here.
+    """
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return action()
+        except error_perm:
+            raise
+        except Exception as e:
+            if attempt == RETRY_ATTEMPTS:
+                logger.error(f"{what} failed after {attempt} attempt(s): {e}")
+                raise
+            delay = RETRY_DELAY_SECONDS * attempt
+            logger.warning(f"{what} failed ({e}); retrying in {delay}s "
+                           f"(attempt {attempt + 1}/{RETRY_ATTEMPTS})")
+            time.sleep(delay)
+            if before_retry is not None:
+                before_retry()
+
+
+class FTPSession:
+    """An FTP connection that can be reopened between transfers.
+
+    Reopening is the point. A transfer interrupted by a network fault usually
+    takes the control connection down with it, so repeating the RETR on the same
+    connection fails instantly and a retry that does not reconnect buys nothing.
+    """
+
+    def __init__(self, host, port, user, password):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.ftps = None
+
+    def open(self):
+        with_retries(f"Connecting to {self.host}:{self.port}", self._open)
+
+    def _open(self):
+        ftps = FTP_TLS()
+        ftps.connect(self.host, self.port, timeout=30)
+        ftps.login(user=self.user, passwd=self.password)
+        ftps.prot_p()
+        self.ftps = ftps
+
+    def reopen(self):
+        """Drop the current connection and open a fresh one."""
+        self.close()
+        self._open()
+
+    def close(self):
+        if self.ftps is None:
+            return
+        try:
+            self.ftps.quit()
+        except Exception:
+            # A connection that already died cannot be closed politely.
+            pass
+        self.ftps = None
 
 
 def last_archived_date(archive_dir: Path) -> date:
@@ -62,6 +133,40 @@ def archived_names(archive_dir: Path, floor: date) -> set:
     return names
 
 
+def download_one(session: FTPSession, filename: str, target_dir: Path) -> bool:
+    """Fetch one file, atomically and with retries. True if it landed.
+
+    Written to <name>.part and renamed, so an interrupted transfer cannot leave a
+    truncated XML under its final name: such a file parses to nothing, gets
+    archived anyway, and then counts as already-downloaded, masking the good copy
+    permanently. The two 0-byte files in the corpus look exactly like that, which
+    is why the transfer is now retried rather than merely cleaned up after.
+    """
+    partial = target_dir / (filename + '.part')
+
+    def fetch():
+        with open(partial, "wb") as f:
+            session.ftps.retrbinary("RETR " + filename, f.write)
+
+    try:
+        with_retries(f"Download of {filename}", fetch, before_retry=session.reopen)
+        partial.replace(target_dir / filename)
+        return True
+    except error_perm as e:
+        logger.error(f"Cannot download {filename}, server refused it ({e})")
+        partial.unlink(missing_ok=True)
+        return False
+    except Exception as e:
+        logger.error(f"Cannot download {filename} ({e})")
+        partial.unlink(missing_ok=True)
+        if session.ftps is None:
+            # Reconnecting failed, so every remaining file would fail the same
+            # way. End the run instead: what did not arrive is still missing and
+            # still wanted, and selecting by name means the next run fetches it.
+            raise
+        return False
+
+
 def download_sdat_files(target_dir: Path, archive_dir: Path,
                         window_days: int = DOWNLOAD_WINDOW_DAYS) -> int:
     """Download every SDAT file of the last `window_days` we do not already have.
@@ -87,16 +192,21 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
 
     logger.info(f"Download SDAT files from {floor} onward from FTP server {host} "
                 f"({len(known)} file(s) already present or archived)")
+    session = FTPSession(host, port, sftp_user, password)
     count = 0
     try:
-        ftps = FTP_TLS()
         logger.info(f"Connecting to {host}:{port}...")
-        ftps.connect(host, port, timeout=30)
-        ftps.login(user=sftp_user, passwd=password)
-        ftps.prot_p()
+        session.open()
         logger.info("Connected.")
 
-        for filename, facts in ftps.mlsd():
+        # Materialised, so that reconnecting inside the loop below cannot leave
+        # a half-consumed listing behind.
+        entries = with_retries("Listing the server",
+                               lambda: list(session.ftps.mlsd()),
+                               before_retry=session.reopen)
+        logger.info(f"{len(entries)} entries on the server")
+
+        for filename, facts in entries:
             # skip folders
             if facts.get("type") != "file":
                 continue
@@ -108,25 +218,16 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
             if file_date < floor or filename in known:
                 continue
 
-            # Download to <name>.part and rename, so an interrupted transfer
-            # cannot leave a truncated XML under its final name: that file would
-            # parse to nothing, get archived, and then mask the good copy.
-            partial = target_dir / (filename + '.part')
-            try:
-                logger.debug(f"Downloading {filename}")
-                with open(partial, "wb") as f:
-                    ftps.retrbinary("RETR " + filename, f.write)
-                partial.replace(target_dir / filename)
+            logger.debug(f"Downloading {filename}")
+            if download_one(session, filename, target_dir):
                 count += 1
-            except Exception as e:
-                logger.error(f"Cannot download {filename} ({e})")
-                partial.unlink(missing_ok=True)
 
         logger.info(f"Downloaded {count} new file(s)")
-        ftps.quit()
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Download run stopped after {count} file(s): {e}")
+    finally:
+        session.close()
 
     return count
 

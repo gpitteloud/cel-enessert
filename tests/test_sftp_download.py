@@ -7,6 +7,7 @@ one bad file stopped the job for good.
 """
 import zipfile
 from datetime import date, timedelta
+from ftplib import error_perm
 
 import pytest
 
@@ -18,30 +19,60 @@ from scripts.sftp_download_and_process import (archived_names,
 
 
 class FakeFTP:
-    """Enough of ftplib.FTP_TLS for the download loop.
+    """Enough of ftplib.FTP_TLS for the download loop, with injectable faults.
 
     `listing` maps a remote name to its bytes; `dirs` adds directory entries.
-    Names in `fail_on` write a few bytes and then raise, which is what a
-    connection dropped mid-transfer looks like.
+    A faulty transfer writes a few bytes and then raises, which is what a
+    connection dropped mid-RETR looks like:
+
+      fail_on           names that fail on every attempt
+      flaky             name -> how many attempts fail before it succeeds
+      refuse            names the server rejects with a 5xx
+      connect_fails_first  the first N connect() calls raise
+      reconnect_fails   every connect() after the first raises
+      login_refused     login() raises a 5xx
+      listing_fails_first  the first N mlsd() calls raise
+
+    One instance is reused across reconnects, so `connects` and `retrieved`
+    count the whole run.
     """
 
-    def __init__(self, listing, dirs=(), fail_on=()):
+    def __init__(self, listing, dirs=(), fail_on=(), flaky=None, refuse=(),
+                 connect_fails_first=0, reconnect_fails=False,
+                 login_refused=False, listing_fails_first=0):
         self.listing = listing
         self.dirs = list(dirs)
         self.fail_on = set(fail_on)
+        self.flaky = dict(flaky or {})
+        self.refuse = set(refuse)
+        self.connect_fails_first = connect_fails_first
+        self.reconnect_fails = reconnect_fails
+        self.login_refused = login_refused
+        self.listing_fails_first = listing_fails_first
         self.retrieved = []
-        self.quit_called = False
+        self.connects = 0
+        self.listings = 0
+        self.quits = 0
 
     def connect(self, host, port, timeout=None):
-        self.host = host
+        self.connects += 1
+        if self.connects <= self.connect_fails_first:
+            raise OSError('cannot reach the server')
+        if self.reconnect_fails and self.connects > 1:
+            raise OSError('cannot reach the server')
 
     def login(self, user=None, passwd=None):
+        if self.login_refused:
+            raise error_perm('530 Login incorrect')
         self.user = user
 
     def prot_p(self):
         pass
 
     def mlsd(self):
+        self.listings += 1
+        if self.listings <= self.listing_fails_first:
+            raise OSError('data connection reset')
         for name in self.dirs:
             yield name, {'type': 'dir'}
         for name in self.listing:
@@ -50,24 +81,40 @@ class FakeFTP:
     def retrbinary(self, command, callback):
         name = command[len('RETR '):]
         self.retrieved.append(name)
+        if name in self.refuse:
+            raise error_perm('550 No such file')
+        if self.flaky.get(name, 0) > 0:
+            self.flaky[name] -= 1
+            callback(b'trunc')
+            raise OSError('connection reset mid-transfer')
         if name in self.fail_on:
             callback(b'trunc')
             raise OSError('connection reset mid-transfer')
         callback(self.listing[name])
 
     def quit(self):
-        self.quit_called = True
+        self.quits += 1
+
+    def attempts(self, name):
+        return self.retrieved.count(name)
 
 
 @pytest.fixture
 def ftp(monkeypatch):
-    """Install a FakeFTP and the credentials the download needs."""
+    """Install a FakeFTP and the credentials the download needs.
+
+    Retry delays are captured instead of slept through, and hung on the fake as
+    `.delays` so a test can assert on the backoff.
+    """
     monkeypatch.setenv('SFTP_HOST', 'ftp.example.test')
     monkeypatch.setenv('SFTP_PORT', '21')
     monkeypatch.setattr(sftp, 'read_secret', lambda name: f'fake-{name}')
+    delays = []
+    monkeypatch.setattr(sftp.time, 'sleep', delays.append)
 
     def install(listing, **kwargs):
         fake = FakeFTP(listing, **kwargs)
+        fake.delays = delays
         monkeypatch.setattr(sftp, 'FTP_TLS', lambda: fake)
         return fake
 
@@ -173,7 +220,7 @@ def test_a_file_already_in_an_archive_is_not_downloaded(dirs, ftp):
 
     assert download_sdat_files(incoming, archive) == 0
     assert fake.retrieved == []
-    assert fake.quit_called
+    assert fake.quits == 1, 'the connection is closed even when nothing is fetched'
 
 
 def test_a_late_wave_of_an_archived_day_is_downloaded(dirs, ftp):
@@ -275,22 +322,125 @@ def test_one_failed_transfer_does_not_abort_the_rest(dirs, ftp):
     assert set(fake.retrieved) == {bad, good}
 
 
-def test_a_connection_failure_is_reported_not_raised(dirs, monkeypatch):
+# --------------------------------------------------------------------------
+# Retrying a transient fault
+# --------------------------------------------------------------------------
+
+def test_a_transient_failure_is_retried_until_it_succeeds(dirs, ftp):
+    """The point of the retry. A dropped transfer is the likeliest cause of the
+    two 0-byte files in the corpus, and losing a file to it costs a day: the run
+    comes round once, and the archive then records the file as handled."""
+    incoming, archive = dirs
+    wanted = name('20260807')
+    fake = ftp({wanted: b'the whole file'}, flaky={wanted: 2})
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 1
+    assert (incoming / wanted).read_bytes() == b'the whole file'
+    assert fake.attempts(wanted) == 3
+
+
+def test_the_retry_reconnects_before_trying_again(dirs, ftp):
+    """A fault that kills a transfer normally kills the control connection too,
+    so repeating the RETR on the same connection would fail instantly. Without
+    the reconnect the retry buys nothing."""
+    incoming, archive = dirs
+    wanted = name('20260807')
+    fake = ftp({wanted: b'x'}, flaky={wanted: 1})
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 1
+    assert fake.connects == 2
+
+
+def test_the_delay_grows_between_attempts(dirs, ftp):
+    """A fixed short delay would just spend all three attempts inside the same
+    outage."""
+    incoming, archive = dirs
+    bad = name('20260807', tag='bad')
+    fake = ftp({bad: b'x'}, fail_on=[bad])
+
+    download_sdat_files(incoming, archive, window_days=365)
+
+    assert fake.delays == [5, 10]
+
+
+def test_a_transfer_is_given_up_after_the_attempt_limit(dirs, ftp):
+    """Bounded, so a permanently broken file cannot stall the whole delivery."""
+    incoming, archive = dirs
+    bad = name('20260807', tag='bad')
+    fake = ftp({bad: b'x'}, fail_on=[bad])
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 0
+    assert fake.attempts(bad) == sftp.RETRY_ATTEMPTS
+
+
+def test_a_server_refusal_is_not_retried(dirs, ftp):
+    """A 5xx means the server is refusing, not faltering: repeating the request
+    cannot change its mind, and three files' worth of delay would be wasted."""
+    incoming, archive = dirs
+    gone = name('20260807', tag='gone')
+    fake = ftp({gone: b'x'}, refuse=[gone])
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 0
+    assert fake.attempts(gone) == 1
+    assert fake.delays == []
+
+
+def test_a_lost_connection_ends_the_run_with_what_it_has(dirs, ftp):
+    """If reconnecting fails, every remaining file would fail the same way. Stop
+    instead -- selecting by name means the next run fetches whatever is missing,
+    so ending early costs nothing but the wait."""
+    incoming, archive = dirs
+    good, bad, later = (name('20260807', tag='good'), name('20260807', tag='bad'),
+                        name('20260807', tag='later'))
+    fake = ftp({good: b'y', bad: b'x', later: b'z'},
+               fail_on=[bad], reconnect_fails=True)
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 1
+    assert (incoming / good).exists()
+    assert fake.attempts(later) == 0, 'the run stops rather than failing each file'
+    assert list(incoming.glob('*.part')) == []
+
+
+# --------------------------------------------------------------------------
+# Connecting
+# --------------------------------------------------------------------------
+
+def test_the_initial_connection_is_retried(dirs, ftp):
+    """A blip at connect time used to cost the entire delivery, with the next
+    attempt 24 hours away."""
+    incoming, archive = dirs
+    wanted = name('20260807')
+    fake = ftp({wanted: b'x'}, connect_fails_first=1)
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 1
+    assert fake.connects == 2
+
+
+def test_the_listing_is_retried(dirs, ftp):
+    """A fault while listing used to cost the whole delivery, not one file."""
+    incoming, archive = dirs
+    wanted = name('20260807')
+    fake = ftp({wanted: b'x'}, listing_fails_first=1)
+
+    assert download_sdat_files(incoming, archive, window_days=365) == 1
+    assert fake.listings == 2
+
+
+def test_an_unreachable_server_is_reported_not_raised(dirs, ftp):
     """The job logs and returns 0 rather than crashing, so the next run retries."""
     incoming, archive = dirs
-    monkeypatch.setenv('SFTP_HOST', 'ftp.example.test')
-    monkeypatch.setenv('SFTP_PORT', '21')
-    monkeypatch.setattr(sftp, 'read_secret', lambda n: 'x')
+    fake = ftp({}, connect_fails_first=99)
 
-    class Unreachable(FakeFTP):
-        def __init__(self):
-            super().__init__({})
-
-        def connect(self, *a, **k):
-            raise OSError('no route to host')
-
-    monkeypatch.setattr(sftp, 'FTP_TLS', Unreachable)
     assert download_sdat_files(incoming, archive) == 0
+    assert fake.connects == sftp.RETRY_ATTEMPTS
+
+
+def test_bad_credentials_are_not_retried(dirs, ftp):
+    incoming, archive = dirs
+    fake = ftp({}, login_refused=True)
+
+    assert download_sdat_files(incoming, archive) == 0
+    assert fake.connects == 1
 
 
 def test_a_missing_credential_is_fatal(dirs, monkeypatch):
