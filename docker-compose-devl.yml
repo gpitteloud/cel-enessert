@@ -139,6 +139,7 @@ services:
 
   scheduler:
     image: mcuadros/ofelia:0.3.22
+    container_name: cel-scheduler-devl
     depends_on:
       questdb-init-devl:
         condition: service_completed_successfully
