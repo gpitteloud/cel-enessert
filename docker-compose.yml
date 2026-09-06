@@ -99,7 +99,7 @@ services:
     restart: "no"
     command: ["sleep", "infinity"] # real command in ofelia command label
     volumes:
-      - /volume1/ftproot:/data/incoming
+      - /volume1/docker/cel/input:/data/incoming
       - /volume1/docker/cel/scripts:/app/scripts
       - /volume1/docker/cel/config:/app/config
       - /volume1/docker/cel/logs:/app/logs
