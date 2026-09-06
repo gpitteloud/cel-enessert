@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS cel_energy (
   product_code SYMBOL,
   community_id SYMBOL,
   value        DECIMAL(12, 3),  -- exact fixed point; source is always 3 dp
-  code_type    SYMBOL,          -- payload: derivable from product_code
   -- Payload, NEVER a dedup key. The provider revises a slot's condition across
   -- overlapping deliveries (estimated one day, measured the next). As a key,
   -- that slot would become TWO rows and every sum() would double-count it.
@@ -45,10 +44,42 @@ CREATE TABLE IF NOT EXISTS cel_community_energy (
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, direction, segment, product_code, community_id);
 
--- Provenance: ~1 row per file, rather than a `delivery` column repeated on every
--- sample. Answers "did delivery 20260722 land?" and "which
--- files failed?" without duplicating the delivery date across ~25M rows.
--- No DEDUP: reprocessing a file is a genuinely new ingestion event.
+-- What a file IS: one current row per file. `ts` comes from the filename's
+-- YYYYMMDD_HHMMSS prefix -- the provider's clock, derived without reading the
+-- file -- so re-ingesting a file rewrites its own row instead of adding one.
+-- Immutable facts only; what HAPPENED to the file is in cel_ingest_log.
+CREATE TABLE IF NOT EXISTS cel_file_header (
+  ts                  TIMESTAMP,   -- filename's YYYYMMDD_HHMMSS prefix
+  file_name           SYMBOL,      -- == cel_energy.source_file (no FK in QuestDB)
+  delivery            SYMBOL,      -- YYYYMMDD prefix
+  document_type       SYMBOL,      -- E66 | E31
+  direction           SYMBOL,      -- consumption | production
+  segment             SYMBOL,      -- cel | grid | total
+  document_id         SYMBOL,
+  creation            TIMESTAMP,
+  business_reason     SYMBOL,      -- C40 (CEL) | E88 (RCP)
+  reason_code_type    SYMBOL,      -- VSENationalCode (CEL) | ebIXCode (RCP)
+  sender_role         SYMBOL,      -- MDR | DEA
+  receiver_role       SYMBOL,      -- CEM (CEL) | DEC (RCP)
+  period_start        TIMESTAMP,   -- ReportPeriod == Interval in every real file
+  period_end          TIMESTAMP,
+  file_meter_id       SYMBOL,      -- the file's OWN meter (may be the virtual one)
+  attributed_meter_id SYMBOL,      -- the meter the observation rows were stored under
+  metering_point_type SYMBOL,      -- consumption | production | NULL for E31
+  flow_characteristic SYMBOL,      -- E17 | E18, E31 only
+  product_code        SYMBOL,
+  code_type           SYMBOL,      -- ebIXCode | VSENationalCode
+  community_id        SYMBOL,      -- NULL for RCP
+  observation_count   INT          -- what the file contains; rows written is in cel_ingest_log
+) TIMESTAMP(ts) PARTITION BY MONTH WAL
+DEDUP UPSERT KEYS(ts, file_name);
+
+-- What HAPPENED: one row per ingestion attempt, on our clock. Answers "did
+-- delivery 20260722 land?" and "which files failed?" without duplicating the
+-- delivery date across ~25M rows.
+-- No DEDUP: reprocessing a file is a genuinely new ingestion event, so a file
+-- that fails on Monday and succeeds on Tuesday keeps both rows -- which is the
+-- retry history a deduped `outcome` in cel_file_header would have erased.
 CREATE TABLE IF NOT EXISTS cel_ingest_log (
   ts           TIMESTAMP,
   delivery     SYMBOL,          -- YYYYMMDD filename prefix

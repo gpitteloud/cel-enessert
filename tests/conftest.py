@@ -276,6 +276,7 @@ class FakeQuestDB:
                        'community_id'),
         'cel_community_energy': ('ts', 'direction', 'segment', 'product_code',
                                  'community_id'),
+        'cel_file_header': ('ts', 'file_name'),   # one current row per file
         'cel_ingest_log': None,       # no dedup: every ingestion is an event
     }
 

@@ -208,6 +208,51 @@ def test_a_successful_write_is_recorded_in_the_ingest_log(processor, fake_questd
     assert logged[0]['file_name'] == path.name
 
 
+def test_an_unreadable_file_is_logged_as_failed(processor, fake_questdb):
+    """The gap this closes: a file that never reaches QuestDB was logged nowhere,
+    so "which files failed?" could not be answered from the table that claims to."""
+    path = drop(processor, 'not xml at all')
+    processor.process_sdat_file(path)
+    logged = list(fake_questdb.rows['cel_ingest_log'].values())
+    assert [(r['outcome'], r['file_name']) for r in logged] == [('failed', path.name)]
+    assert fake_questdb.row_count('cel_file_header') == 0, 'nothing was read'
+
+
+@pytest.mark.parametrize('xml, outcome', [
+    (make_e66_xml(meter_id=MEMBER, values=(1.0,)), 'ingested'),
+    (make_e66_xml(meter_id=VIRTUAL, point='production',
+                  product_code=EBIX_TOTAL, code_type='ebIXCode'), 'skipped'),
+    (make_e66_xml(meter_id=MEMBER, values=()), 'failed'),
+])
+def test_every_readable_file_gets_a_header_row(processor, fake_questdb, xml, outcome):
+    """A file that failed is still a file we received, and the header row is what
+    says so; the outcome is a separate event."""
+    path = drop(processor, xml)
+    processor.process_sdat_file(path)
+    headers = list(fake_questdb.rows['cel_file_header'].values())
+    assert [r['file_name'] for r in headers] == [path.name]
+    assert [r['outcome'] for r in fake_questdb.rows['cel_ingest_log'].values()] == [outcome]
+
+
+def test_the_header_row_keeps_the_files_own_meter(processor, fake_questdb):
+    """The rows went to the physical meter; the file belongs to the virtual one."""
+    path = drop(processor, make_e66_xml(
+        meter_id=VIRTUAL, point='production', product_code=VSE_CEL,
+        code_type='VSENationalCode', values=(3.0,)))
+    processor.process_sdat_file(path)
+    row = list(fake_questdb.rows['cel_file_header'].values())[0]
+    assert (row['file_meter_id'], row['attributed_meter_id']) == (VIRTUAL, PHYSICAL)
+
+
+def test_reprocessing_a_file_leaves_one_header_row_and_two_log_rows(processor, fake_questdb):
+    """The two grains: what the file is does not change, what happened does."""
+    path = drop(processor, make_e66_xml(meter_id=MEMBER, values=(1.0,)))
+    processor.process_sdat_file(path)
+    processor.process_sdat_file(path)
+    assert fake_questdb.row_count('cel_file_header') == 1
+    assert fake_questdb.row_count('cel_ingest_log') == 2
+
+
 # --------------------------------------------------------------------------
 # A whole batch
 # --------------------------------------------------------------------------

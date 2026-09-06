@@ -217,51 +217,69 @@ class SDATProcessor:
             FileOutcome.FAILED   - could not be handled; file stays in the source
                                    folder for retry and is NOT archived.
         """
+        logger.info(f"Processing {file_path.name}")
+        if header is None:
+            try:
+                header = read_header(file_path)
+            except (OSError, ET.ParseError, ValueError) as e:
+                logger.error(f"{file_path.name}: cannot read header: {e}")
+                # No header means no header row; the attempt is still logged, so
+                # "which files failed?" is answerable for these too.
+                self.questdb.log_ingest(
+                    delivery=file_path.name[:8], file_name=file_path.name,
+                    document_type=None, rows_written=0, outcome='failed')
+                return FileOutcome.FAILED
+
         try:
-            logger.info(f"Processing {file_path.name}")
-            if header is None:
-                try:
-                    header = read_header(file_path)
-                except (OSError, ET.ParseError, ValueError) as e:
-                    logger.error(f"{file_path.name}: cannot read header: {e}")
-                    return FileOutcome.FAILED
-
-            meter_mappings, self_contained = self.meters_for(header, resolved or {})
-            # Dispatch by document content (E66 vs E31), attribution included
-            parsed_data = metered_data_from_header(
-                header, meter_mappings=meter_mappings,
-                self_contained_meters=self_contained)
-
-            # total production is on both virtual and physical meters, so skip the virtual one
-            if isinstance(parsed_data, SkippedDocument):
-                logger.info(f"Skipped by design: {file_path.name} ({parsed_data.reason})")
-                return FileOutcome.SKIPPED
-
-            if parsed_data is None:
-                logger.warning(f"Could not parse (unknown type or invalid): {file_path.name}")
-                return FileOutcome.FAILED
-
-            if not parsed_data.observations:
-                logger.warning(f"No data found in {parsed_data.document_type} file {file_path.name}")
-                return FileOutcome.FAILED
-
-            delivery = file_path.name[:8]
-            questdb_failed = self._write_questdb(parsed_data, file_path, delivery)
-
-            if questdb_failed:
-                logger.error(f"Failed to process {file_path.name}: QuestDB write failed")
-                return FileOutcome.FAILED
-
-            logger.info(f"Successfully processed {file_path.name}")
-            return FileOutcome.INGESTED
-
+            outcome, rows_written = self._ingest(header, resolved or {})
         except Exception as e:
             logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
-            return FileOutcome.FAILED
+            outcome, rows_written = FileOutcome.FAILED, 0
+
+        # Provenance in one place: what the file is, then what happened to it.
+        self.questdb.log_file_header(header)
+        self.questdb.log_ingest(
+            delivery=header.delivery, file_name=header.file_name,
+            document_type=header.document_type, rows_written=rows_written,
+            outcome=outcome.value)
+        return outcome
 
 
-    def _write_questdb(self, parsed_data: MeteredData, file_path: Path, delivery: str) -> bool:
-        """Write one parsed document to QuestDB. Returns True if it FAILED.
+    def _ingest(self, header, resolved: dict):
+        """Parse one file's header into rows and write them: (outcome, rows)."""
+        meter_mappings, self_contained = self.meters_for(header, resolved)
+        # Dispatch by document content (E66 vs E31), attribution included
+        parsed_data = metered_data_from_header(
+            header, meter_mappings=meter_mappings,
+            self_contained_meters=self_contained)
+
+        # total production is on both virtual and physical meters, so skip the virtual one
+        if isinstance(parsed_data, SkippedDocument):
+            logger.info(f"Skipped by design: {header.file_name} ({parsed_data.reason})")
+            return FileOutcome.SKIPPED, 0
+
+        if parsed_data is None:
+            logger.warning(f"Could not parse (unknown type or invalid): {header.file_name}")
+            return FileOutcome.FAILED, 0
+
+        if not parsed_data.observations:
+            logger.warning(f"No data found in {parsed_data.document_type} file {header.file_name}")
+            return FileOutcome.FAILED, 0
+
+        # The rows may belong to another meter than the file does.
+        header.attributed_meter_id = parsed_data.meter_id or header.file_meter_id
+
+        rows = self._write_questdb(parsed_data)
+        if rows is None:
+            logger.error(f"Failed to process {header.file_name}: QuestDB write failed")
+            return FileOutcome.FAILED, 0
+
+        logger.info(f"Successfully processed {header.file_name}")
+        return FileOutcome.INGESTED, rows
+
+
+    def _write_questdb(self, parsed_data: MeteredData):
+        """Write one parsed document to QuestDB; rows written, or None if it failed.
 
         A failure is propagated rather than swallowed: QuestDB is the only store,
         so archiving a file whose write failed would lose its data silently. The
@@ -273,33 +291,20 @@ class SDATProcessor:
                 rows = self.questdb.write_e31(parsed_data)
             else:
                 rows = self.questdb.write_e66(parsed_data)
-
-            if not rows:
-                # A parsed document with observations that yields no rows means
-                # the writer rejected all of them (no metric_type, say). Fail otherwise
-                # the file would be archived having written nothing.
-                logger.warning(f"QuestDB: no rows generated from {file_path.name}")
-                self.questdb.log_ingest(
-                    delivery=delivery, file_name=file_path.name,
-                    document_type=parsed_data.document_type,
-                    rows_written=0, outcome='failed')
-                return True
-
-            logger.info(f"QuestDB: wrote {rows} rows from {file_path.name}")
-            self.questdb.log_ingest(
-                delivery=delivery, file_name=file_path.name,
-                document_type=parsed_data.document_type,
-                rows_written=rows, outcome='ingested')
-            return False
-
         except Exception as e:
-            logger.error(f"QuestDB write failed for {file_path.name}: {e}",
+            logger.error(f"QuestDB write failed for {parsed_data.filename}: {e}",
                          exc_info=True)
-            self.questdb.log_ingest(
-                delivery=delivery, file_name=file_path.name,
-                document_type=parsed_data.document_type,
-                rows_written=0, outcome='failed')
-            return True
+            return None
+
+        if not rows:
+            # A parsed document with observations that yields no rows means the
+            # writer rejected all of them (no metric_type, say). Fail otherwise
+            # the file would be archived having written nothing.
+            logger.warning(f"QuestDB: no rows generated from {parsed_data.filename}")
+            return None
+
+        logger.info(f"QuestDB: wrote {rows} rows from {parsed_data.filename}")
+        return rows
 
 
 def archive_batch_as_zip(file_paths: list, date_str: str, archive_dir: Path):

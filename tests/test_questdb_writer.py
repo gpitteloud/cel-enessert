@@ -10,6 +10,7 @@ the regression that out-of-order replay causes (documented, not accidental).
 keys drift apart, these tests are testing semantics the database does not have --
 `test_dedup_keys_match_schema_file` guards exactly that.
 """
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,8 +20,9 @@ from conftest import (FakeQuestDB, real_files, SAMPLE_MAPPINGS,
                       SAMPLE_SELF_CONTAINED)
 from scripts.models import MeteredData, MetricType, Observation
 from scripts import questdb_writer
-from scripts.questdb_writer import (E31_COLUMNS, E66_COLUMNS, rows_from_e31,
-                            rows_from_e66, validate_rows)
+from scripts.questdb_writer import (E31_COLUMNS, E66_COLUMNS, HEADER_COLUMNS,
+                            rows_from_e31, rows_from_e66, validate_rows)
+from scripts.sdat_header import FileHeader
 
 TS = '2026-05-22T00:00:00+00:00'
 TS2 = '2026-05-22T00:15:00+00:00'
@@ -113,7 +115,8 @@ def test_columns_match_schema_file():
            / 'scripts' / 'questdb_schema.sql').read_text()
 
     for table, expected in (('cel_energy', E66_COLUMNS),
-                            ('cel_community_energy', E31_COLUMNS)):
+                            ('cel_community_energy', E31_COLUMNS),
+                            ('cel_file_header', HEADER_COLUMNS)):
         body = re.search(
             rf'CREATE TABLE IF NOT EXISTS {table} \((.*?)\) TIMESTAMP', sql, re.S)
         assert body, f'{table} not found in schema'
@@ -180,6 +183,62 @@ def test_missing_observations_yields_no_rows():
     assert rows_from_e66(SkippedDocument(reason='dup')) == []
     assert rows_from_e66(None) == []
     assert rows_from_e31(None) == []
+
+
+# --------------------------------------------------------------------------
+# What a file is: cel_file_header
+# --------------------------------------------------------------------------
+
+VIRTUAL = 'CH10111012345000000000000008552310'
+PHYSICAL = 'CH101110123450000000000000046782G'
+
+
+def header(**kwargs):
+    """A FileHeader as the batch hands it to the writer."""
+    fields = dict(
+        file_name=E66_FILE, ts=datetime(2026, 5, 22, 9, 45), delivery='20260522',
+        document_type='E66', metric_type=MetricType.PRODUCTION_LOCAL,
+        file_meter_id=VIRTUAL, attributed_meter_id=PHYSICAL,
+        product_code='2404050010123', code_type='VSENationalCode',
+        community_id='101110-002726',
+        observations=[Observation(sequence=1, timestamp=TS, value=Decimal('1'),
+                                 condition='21')])
+    fields.update(kwargs)
+    return FileHeader(**fields)
+
+
+def test_header_row_records_the_meter_the_file_belongs_to_and_the_one_it_was_stored_under(
+        fake_questdb):
+    """The capability the table adds: a virtual meter's breakdown is stored under
+    the physical meter, so the file's own meter used to be lost entirely."""
+    fake_questdb.writer.log_file_header(header())
+    row = list(fake_questdb.rows['cel_file_header'].values())[0]
+    assert (row['file_meter_id'], row['attributed_meter_id']) == (VIRTUAL, PHYSICAL)
+    assert (row['direction'], row['segment']) == ('production', 'cel')
+    assert row['observation_count'] == 1
+    assert 'outcome' not in row, 'what happened belongs in cel_ingest_log'
+
+
+def test_reingesting_a_file_replaces_its_header_row(fake_questdb):
+    """One current row per file: ts comes from the filename, so a second
+    ingestion of the same file has the same key and overwrites."""
+    fake_questdb.writer.log_file_header(header())
+    fake_questdb.writer.log_file_header(header(observations=[]))
+    rows = list(fake_questdb.rows['cel_file_header'].values())
+    assert len(rows) == 1 and rows[0]['observation_count'] == 0
+
+
+def test_a_file_the_provider_did_not_name_gets_no_header_row(fake_questdb):
+    """Without the YYYYMMDD_HHMMSS prefix there is no ts, hence no dedup key."""
+    fake_questdb.writer.log_file_header(header(ts=None, delivery=None))
+    assert fake_questdb.row_count('cel_file_header') == 0
+
+
+def test_header_write_failure_is_swallowed(fake_questdb):
+    """Provenance must never fail the ingestion it describes."""
+    fake_questdb.fail_next_write = True
+    fake_questdb.writer.log_file_header(header())
+    assert fake_questdb.row_count('cel_file_header') == 0
 
 
 # --------------------------------------------------------------------------

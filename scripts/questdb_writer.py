@@ -19,9 +19,9 @@ is no conditional upsert, and DEDUP guarantees one row per key so there is no
 second row to compare against.
 
 Callers must therefore feed deliveries in chronological order. That already
-holds: the watcher batches per delivery date and flushes on change, and its
-startup rescan sorts by the YYYYMMDD filename prefix. Any new replay tooling
-must sort explicitly -- see QUESTDB.md.
+holds: the daily batch groups files by their YYYYMMDD filename prefix and
+processes the groups in sorted order. Any new replay tooling must sort
+explicitly -- see QUESTDB.md.
 
 Values are Decimal end-to-end (never float) so what lands in DECIMAL(12,3) is
 exactly what the provider sent.
@@ -40,14 +40,22 @@ DEFAULT_DSN = os.environ.get('QUESTDB_DSN')
 
 E66_TABLE = 'cel_energy'
 E31_TABLE = 'cel_community_energy'
+HEADER_TABLE = 'cel_file_header'
 LOG_TABLE = 'cel_ingest_log'
 
 # Column order per table; must match questdb_schema.sql. The designated
 # timestamp comes first, as in the schema.
 E66_COLUMNS = ('ts', 'meter_id', 'direction', 'segment', 'product_code',
-               'community_id', 'value', 'code_type', 'condition', 'source_file', 'rcp')
+               'community_id', 'value', 'condition', 'source_file', 'rcp')
 E31_COLUMNS = ('ts', 'direction', 'segment', 'product_code', 'community_id',
                'value', 'code_type', 'community_type', 'grid_area', 'condition', 'source_file')
+HEADER_COLUMNS = ('ts', 'file_name', 'delivery', 'document_type', 'direction',
+                  'segment', 'document_id', 'creation', 'business_reason',
+                  'reason_code_type', 'sender_role', 'receiver_role',
+                  'period_start', 'period_end', 'file_meter_id',
+                  'attributed_meter_id', 'metering_point_type',
+                  'flow_characteristic', 'product_code', 'code_type',
+                  'community_id', 'observation_count')
 LOG_COLUMNS = ('ts', 'delivery', 'file_name', 'document_type', 'rows_written',
                'outcome')
 
@@ -79,7 +87,7 @@ def rows_from_e66(parsed: MeteredData) -> List[tuple]:
     return [
         (_ts(obs.timestamp), parsed.meter_id, parsed.metric_type.direction,
          parsed.metric_type.segment, parsed.product_code, parsed.community_id,
-         obs.value, parsed.code_type, obs.condition, parsed.filename, parsed.rcp)
+         obs.value, obs.condition, parsed.filename, parsed.rcp)
         for obs in parsed.observations
     ]
 
@@ -99,6 +107,23 @@ def rows_from_e31(parsed: MeteredData) -> List[tuple]:
          obs.condition, parsed.filename)
         for obs in parsed.observations
     ]
+
+
+def row_from_header(header) -> tuple:
+    """Build the single cel_file_header row describing one file (a FileHeader).
+
+    `file_meter_id` is the file's own meter, `attributed_meter_id` the one its
+    rows were stored under -- they differ for a virtual meter's breakdown, which
+    is the provenance nothing recorded before.
+    """
+    return (header.ts, header.file_name, header.delivery, header.document_type,
+            header.direction, header.segment, header.document_id,
+            header.creation, header.business_reason, header.reason_code_type,
+            header.sender_role, header.receiver_role, header.period_start,
+            header.period_end, header.file_meter_id, header.attributed_meter_id,
+            header.metering_point_type, header.flow_characteristic,
+            header.product_code, header.code_type, header.community_id,
+            header.observation_count)
 
 
 def validate_rows(rows: Sequence[tuple], columns: Sequence[str]) -> List[tuple]:
@@ -246,6 +271,19 @@ class QuestDBWriter:
 
     def write_e31(self, parsed: MeteredData) -> int:
         return self.write(E31_TABLE, E31_COLUMNS, rows_from_e31(parsed))
+
+    def log_file_header(self, header) -> None:
+        """Record what one file is; DEDUP keeps it at one row per file.
+
+        Best-effort like log_ingest. A file the provider did not name has no ts,
+        so validate_rows drops it and no header row is written -- deliberately:
+        without the provider's clock the row has no key.
+        """
+        try:
+            self.write(HEADER_TABLE, HEADER_COLUMNS, [row_from_header(header)])
+        except Exception as e:
+            logger.warning(
+                f"Could not write file header for {header.file_name}: {e}")
 
     def log_ingest(self, delivery: str, file_name: str, document_type: str,
                    rows_written: int, outcome: str,

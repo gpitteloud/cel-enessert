@@ -30,6 +30,7 @@ EXPECTED_DEDUP_KEYS = {
         'ts', 'meter_id', 'direction', 'segment', 'product_code', 'community_id'},
     'cel_community_energy': {
         'ts', 'direction', 'segment', 'product_code', 'community_id'},
+    'cel_file_header': {'ts', 'file_name'},   # one current row per file
     'cel_ingest_log': set(),          # no dedup by design
 }
 

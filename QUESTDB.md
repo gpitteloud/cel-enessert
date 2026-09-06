@@ -35,13 +35,11 @@ database will show that it happened (`DEDUP UPSERT KEYS` guarantees exactly one
 row per key, so there is no second row to compare against). QuestDB has no
 conditional upsert, so ordering is enforced instead of checked:
 
-- **Live ingestion**: safe. The watcher batches by delivery date and flushes on
-  date change, so batches are chronological, and files *within* one batch all
-  share a delivery date — intra-batch order is irrelevant.
-- **Startup rescan**: safe. `sorted(watch_dir.glob("*.xml"))` puts the
-  `YYYYMMDD` filename prefix in chronological order.
+- **Daily batch**: safe. Files are grouped by their `YYYYMMDD` filename prefix
+  and the groups processed in sorted order, so batches are chronological; within
+  one batch the order is the provider's own send order (the `HHMMSS` field).
 - **Manual replay**: sort explicitly by delivery prefix. Feeding the archive
-  back through the watcher in arbitrary order is the one way to corrupt this
+  back through the batch in arbitrary order is the one way to corrupt this
   database.
 
 ## Schema
@@ -59,8 +57,9 @@ CREATE TABLE cel_energy (                 -- E66, per-meter
   product_code SYMBOL,
   community_id SYMBOL,
   value        DECIMAL(12, 3),  -- exact; matches the source's 3 decimals
-  code_type    SYMBOL,          -- payload: derivable from product_code
-  condition    SYMBOL           -- payload: provider revises it (never a key)
+  condition    SYMBOL,          -- payload: provider revises it (never a key)
+  source_file  SYMBOL,          -- == cel_file_header.file_name
+  rcp          BOOLEAN          -- RCP self-consumption grouping, not the community
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, meter_id, direction, segment, product_code, community_id);
 
@@ -74,11 +73,38 @@ CREATE TABLE cel_community_energy (       -- E31, community aggregate
   code_type      SYMBOL,
   community_type SYMBOL,
   grid_area      SYMBOL,
-  condition      SYMBOL
+  condition      SYMBOL,
+  source_file    SYMBOL
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
 DEDUP UPSERT KEYS(ts, direction, segment, product_code, community_id);
 
-CREATE TABLE cel_ingest_log (             -- provenance, ~1 row per file
+CREATE TABLE cel_file_header (            -- what a file IS: one row per file
+  ts                  TIMESTAMP,   -- filename's YYYYMMDD_HHMMSS: the provider's clock
+  file_name           SYMBOL,
+  delivery            SYMBOL,
+  document_type       SYMBOL,      -- E66 | E31
+  direction           SYMBOL,
+  segment             SYMBOL,
+  document_id         SYMBOL,
+  creation            TIMESTAMP,
+  business_reason     SYMBOL,      -- C40 (CEL) | E88 (RCP)
+  reason_code_type    SYMBOL,
+  sender_role         SYMBOL,
+  receiver_role       SYMBOL,
+  period_start        TIMESTAMP,   -- ReportPeriod == Interval
+  period_end          TIMESTAMP,
+  file_meter_id       SYMBOL,      -- the file's OWN meter (may be virtual)
+  attributed_meter_id SYMBOL,      -- the meter its rows were stored under
+  metering_point_type SYMBOL,
+  flow_characteristic SYMBOL,      -- E31 only
+  product_code        SYMBOL,
+  code_type           SYMBOL,
+  community_id        SYMBOL,      -- NULL for RCP
+  observation_count   INT
+) TIMESTAMP(ts) PARTITION BY MONTH WAL
+DEDUP UPSERT KEYS(ts, file_name);
+
+CREATE TABLE cel_ingest_log (             -- what HAPPENED: one row per attempt
   ts            TIMESTAMP,
   delivery      SYMBOL,
   file_name     SYMBOL,
@@ -107,20 +133,32 @@ across deliveries (estimated → measured). Keyed, one slot becomes **two rows**
 and every `sum()` double-counts it. As payload it is properly storable, so
 questions like "do these 0.00 kWh readings carry Condition 21?" are plain SQL.
 
-**`code_type` is payload, not a key.** It is functionally dependent on
+**`code_type` is not on `cel_energy` at all.** It is functionally dependent on
 `product_code` (`2404050010123`/`...124` → `VSENationalCode`, `8716867000030` →
-`ebIXCode`). Keyed, a provider-side encoding change would create a phantom
-parallel series that silently double-counts instead of overwriting.
+`ebIXCode`), so it says nothing a reading does not already say; it is recorded
+once per file in `cel_file_header`. It could never be a *key* either: a
+provider-side encoding change would create a phantom parallel series that
+silently double-counts instead of overwriting.
 
 **No `project` column.** It would be the constant `'cel'` on every row. The
 table name scopes the data.
 
 **No `delivery` column on the data tables.** LWW cannot use it, and it cannot
 even *detect* a regression after the fact, since there is only ever one row per
-key. Provenance lives in `cel_ingest_log` (~1 row per file) and in the archived
-XML filenames rather than being duplicated across ~25M rows. It would also
-defeat QuestDB's skip-identical-row optimisation on every overlapping row, since
-it changes daily.
+key. Provenance lives in the two tables below rather than being duplicated
+across ~25M rows; `cel_energy.source_file` is the join. It would also defeat
+QuestDB's skip-identical-row optimisation on every overlapping row, since it
+changes daily.
+
+**Two provenance tables, two grains.** `cel_file_header` says what a file *is* —
+immutable facts, one **current** row per file, keyed on the provider's clock so
+re-ingesting rewrites the row instead of adding one. `cel_ingest_log` says what
+*happened* — one row per **attempt**, on our clock, with no dedup at all. A file
+that fails on Monday and succeeds on Tuesday is one header row and two log rows;
+had `outcome` stayed in the deduped header it would look as though it had always
+succeeded, and the retry history would be gone. `observation_count` (what the
+file contains) and `rows_written` (what we stored) live apart for the same
+reason: their disagreement is a real signal.
 
 ### Why `DECIMAL(12,3)`
 
