@@ -9,10 +9,13 @@
 - E31 files (AggregatedMeteredData_1.3 format) - always 6 files (community aggregates)
 
 **File count formula:**
-- Consumer-only member: 3 E66 files (consumption: total + CEL + Grid)
-- Producer member: 4 E66 files (+ production total)
-- Virtual meter (per producer): 3 E66 files (production breakdown)
+- Consumption-only member: 3 E66 files (consumption: total + CEL + Grid)
+- Producing member, consumption metering point: 4 E66 files (+ production total)
+- Producing member, production metering point: 3 E66 files (production breakdown)
 - Community aggregates: 6 E31 files (fixed)
+
+A producing member has **two metering point ids**, one per pattern above. Which
+pairs with which is declared in `config/meters.yaml`; see PARSING_GUIDE.md.
 
 **Example: Community with 21 members (9 with solar, 12 without):**
 - 109 files daily = 103 E66 + 6 E31
@@ -36,7 +39,7 @@
 4. Production Total (ebIX 8716867000030)
 ```
 
-### Pattern 3: Virtual Meters (production breakdown only) - 3 files
+### Pattern 3: Production Metering Points (production breakdown) - 3 files
 ```
 1. Production Total (ebIX 8716867000030)
 2. Production CEL Local breakdown (VSE 2404050010123)
@@ -45,7 +48,7 @@
 
 ## Breakdown by Meter Type (E66 files only)
 
-### Physical Meters with Production (9 meters × 4 files = 36 files)
+### Consumption Metering Points, member produces (9 meters × 4 files = 36 files)
 - 0217130Y (user)
 - 0020576V
 - 0046782G
@@ -56,7 +59,7 @@
 - 0208254A
 - 0803097E
 
-### Physical Meters without Production (12 meters × 3 files = 36 files)
+### Consumption-Only Metering Points (12 meters × 3 files = 36 files)
 - 0036273C
 - 0050170B
 - 0060545I
@@ -70,7 +73,8 @@
 - 0832199P
 - 0858140M
 
-### Virtual Meters (production breakdown) (9 meters × 3 files = 27 files)
+### Production Metering Points (9 meters × 3 files = 27 files)
+Attribution is a lookup in `config/meters.yaml`, not an inference from the batch:
 - 08574078 → attributed to 0217130Y
 - 0855229G → attributed to 0020576V
 - 08552310 → attributed to 0046782G
@@ -82,19 +86,22 @@
 - 0855225S → attributed to 0803097E
 
 ### Special Case: 0134575W (1 meter × 4 files = 4 files)
-This is a **special meter, NOT linked to RCP** (Regroupement pour la Consommation
-Propre / self-consumption grouping). It is the only self-contained meter — its
-production breakdown is attributed to the meter itself rather than to a separate
-virtual meter. Files:
-- 1 Consumption Total (ebIX)
-- 1 Production Total (ebIX)
+This meter is **NOT linked to RCP** (Regroupement pour la Consommation Propre /
+self-consumption grouping). The provider declares it **`production-only`**: it has
+no consumption metering point at all, so it reports its production total *and* its
+VSE breakdown on the same id, with nothing to pair against. Files:
+- 1 Production Total (ebIX) — canonical, kept
 - 2 Production VSE breakdown files (attributed to `0134575W` itself)
+- 1 Consumption Total (ebIX) — **spurious, a provider fault**, skipped on ingest
 
 **Characteristics:**
 - Daily production: 804 kWh (exceeds main community aggregate of 668 kWh)
-- Has both consumption & production (grid connection point)
 - Gets breakdown data (participates in CEL trading)
 - Reports its production total *and* VSE breakdown on the same meter ID
+- The consumption file it also gets is not real consumption. It carries the real
+  `community_id`, so it was not filtered out of `segment='total'` queries and
+  inflated Sum(E66) consumption until the declaration named the meter
+  production-only. See PROVIDER_QUESTIONS.md and QUESTDB.md.
 
 ## File Count Calculation
 
@@ -103,10 +110,10 @@ virtual meter. Files:
 - 12 members without solar panels (consumers only)
 
 **E66 files** (ValidatedMeteredData_1.6):
-- Physical with production: 9 × 4 = 36 files
-- Physical without production: 12 × 3 = 36 files
-- Virtual (production breakdown): 9 × 3 = 27 files
-- Virtual special case (0134575W): 1 × 4 = 4 files
+- Consumption points, member produces: 9 × 4 = 36 files
+- Consumption-only points: 12 × 3 = 36 files
+- Production points (breakdown): 9 × 3 = 27 files
+- Production-only special case (0134575W): 1 × 4 = 4 files
 - **Subtotal: 36 + 36 + 27 + 4 = 103 files**
 
 **E31 files** (AggregatedMeteredData_1.3):
@@ -170,6 +177,10 @@ Example (E66 - ValidatedMeteredData):
 - Benefits:
   - Can handle missing files gracefully
   - Can handle variable file counts (different member counts)
-  - Auto-discovery runs before processing
   - Avoid race conditions
   - Better logging (one summary per batch)
+
+Attribution no longer needs the batch to be complete: it is a per-file lookup in
+`config/meters.yaml`, so a file arriving in a later wave — or retried after a
+failure — is attributed on its own. Batching is now only about the summary and the
+delivery report.

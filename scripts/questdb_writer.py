@@ -74,8 +74,8 @@ def rows_from_e66(parsed: MeteredData) -> List[tuple]:
     """Build cel_energy rows from a parsed E66 document.
 
     `parsed.meter_id` is already the meter the rows belong to: the parser
-    finishes the virtual-to-physical attribution, so there is nothing to resolve
-    here (the file's own meter is kept in cel_file_header.file_meter_id).
+    finishes the production-to-consumption attribution, so there is nothing to
+    resolve here (the file's own meter is kept in cel_file_header.file_meter_id).
 
     Total over ParseResult: a None or a SkippedDocument yields no rows rather
     than AttributeError, so a caller that skips the isinstance check writes
@@ -113,8 +113,8 @@ def row_from_header(header) -> tuple:
     """Build the single cel_file_header row describing one file (a FileHeader).
 
     `file_meter_id` is the file's own meter, `attributed_meter_id` the one its
-    rows were stored under -- they differ for a virtual meter's breakdown, which
-    is the provenance nothing recorded before.
+    rows were stored under -- they differ for a production metering point's
+    breakdown, which is the provenance nothing recorded before.
     """
     return (header.ts, header.file_name, header.delivery, header.document_type,
             header.direction, header.segment, header.document_id,

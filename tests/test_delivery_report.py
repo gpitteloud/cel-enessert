@@ -11,36 +11,30 @@ from decimal import Decimal
 
 import pytest
 
-from conftest import (SAMPLE_DIR, SAMPLE_MAPPINGS, SAMPLE_SELF_CONTAINED,
-                      make_e31_xml, make_e66_xml, meter_id)
+from conftest import SAMPLE_DIR, SAMPLE_METERS, make_e31_xml, make_e66_xml, meter_id
 from scripts.delivery_report import (attributed_meter, breakdown_checks,
-                                     compare_series, e31_slots, e66_slots,
-                                     headers_from_files, inventory,
-                                     iter_day_files, local_leg, main,
+                                     check_declared_pairs, compare_series,
+                                     e31_slots, e66_slots,
+                                     group_by_report_period, headers_from_files,
+                                     inventory, iter_day_files, local_leg, main,
                                      report_delivery, rewritten_keys,
                                      summed_over_meters)
-from scripts.discover_meter_mappings import (PeriodResolution,
-                                             group_by_report_period,
-                                             resolve_periods)
 from scripts.sdat_header import parse_header
 
 EBIX_TOTAL = '8716867000030'
 VSE_CEL = '2404050010123'
 VSE_GRID = '2404050010124'
 
-VIRTUAL = meter_id('08552310')           # in SAMPLE_MAPPINGS
-PHYSICAL = meter_id('0046782G')          # its mapped physical meter
+PRODUCTION = meter_id('08552310')        # a declared production metering point
+CONSUMPTION = meter_id('0046782G')       # the consumption meter it is paired with
 MEMBER = meter_id('0020576V')
 OTHER = meter_id('0050170B')
-SELF_CONTAINED = meter_id('0134575W')    # in SAMPLE_SELF_CONTAINED
+PRODUCTION_ONLY = meter_id('0134575W')   # declared production-only
 
 START = '2026-05-21T22:00:00Z'
 END = '2026-05-26T22:00:00Z'
 SLOT = '2026-05-21T22:00:00+00:00'       # the first slot of that interval
 NEXT_SLOT = '2026-05-21T22:15:00+00:00'
-
-RESOLVED = PeriodResolution(mappings=dict(SAMPLE_MAPPINGS),
-                            self_contained=set(SAMPLE_SELF_CONTAINED))
 
 
 def sdat_name(delivery='20260527', time='094500', doc='E66', tag='a'):
@@ -62,28 +56,36 @@ def e31(tag='a', **kwargs):
 
 
 def attribute(header):
-    return attributed_meter(header, RESOLVED.mappings, RESOLVED.self_contained)
+    return attributed_meter(header, SAMPLE_METERS)
 
 
 # --------------------------------------------------------------------------
 # Which meter a file's readings are counted under
 # --------------------------------------------------------------------------
 
-def test_a_mapped_virtual_meters_production_total_is_counted_nowhere():
-    """It duplicates its physical twin's total, and ingestion drops it -- so
+def test_a_paired_production_meters_total_is_counted_nowhere():
+    """It duplicates its consumption twin's total, and ingestion drops it -- so
     counting it here would report a gap the database does not have."""
-    assert attribute(e66(meter_id=VIRTUAL, point='production',
+    assert attribute(e66(meter_id=PRODUCTION, point='production',
                          product_code=EBIX_TOTAL, code_type='ebIXCode')) is None
 
 
-def test_a_breakdown_is_counted_under_the_physical_meter():
-    assert attribute(e66(meter_id=VIRTUAL, point='production',
-                         product_code=VSE_CEL)) == PHYSICAL
+def test_a_breakdown_is_counted_under_the_consumption_meter():
+    assert attribute(e66(meter_id=PRODUCTION, point='production',
+                         product_code=VSE_CEL)) == CONSUMPTION
 
 
-def test_a_self_contained_meter_keeps_its_own_breakdown():
-    assert attribute(e66(meter_id=SELF_CONTAINED, point='production',
-                         product_code=VSE_CEL)) == SELF_CONTAINED
+def test_a_production_only_meter_keeps_its_own_breakdown():
+    assert attribute(e66(meter_id=PRODUCTION_ONLY, point='production',
+                         product_code=VSE_CEL)) == PRODUCTION_ONLY
+
+
+def test_a_consumption_file_on_a_production_meter_is_counted_nowhere():
+    """Ingestion skips it as a provider fault, so the report must not count it
+    either -- otherwise the E66 side carries kWh the database does not hold."""
+    assert attribute(e66(meter_id=PRODUCTION_ONLY, point='consumption',
+                         product_code=EBIX_TOTAL,
+                         code_type='ebIXCode')) is None
 
 
 def test_an_unattributable_breakdown_is_counted_nowhere():
@@ -110,15 +112,15 @@ def test_an_ordinary_consumption_file_is_counted_under_its_own_meter():
 def test_meters_are_summed_slot_by_slot():
     headers = [e66(tag='a', meter_id=MEMBER, values=(1.0, 2.0)),
                e66(tag='b', meter_id=OTHER, values=(0.5, 0.25))]
-    e66_side = summed_over_meters(e66_slots(headers, RESOLVED))
+    e66_side = summed_over_meters(e66_slots(headers, SAMPLE_METERS))
     assert e66_side[('consumption', 'cel')] == {SLOT: Decimal('1.5'),
                                                 NEXT_SLOT: Decimal('2.25')}
 
 
-def test_a_virtual_meters_breakdown_lands_on_the_physical_meters_series():
-    headers = [e66(tag='a', meter_id=VIRTUAL, point='production',
+def test_a_production_breakdown_lands_on_the_consumption_meters_series():
+    headers = [e66(tag='a', meter_id=PRODUCTION, point='production',
                    product_code=VSE_CEL, values=(3.0,))]
-    assert set(e66_slots(headers, RESOLVED)) == {PHYSICAL}
+    assert set(e66_slots(headers, SAMPLE_METERS)) == {CONSUMPTION}
 
 
 def test_the_aggregate_side_reads_only_e31():
@@ -187,8 +189,8 @@ def test_a_meter_whose_legs_do_not_add_up_is_reported():
 
 
 def test_a_total_only_meter_is_not_checked():
-    """Every RCP meter and 0134575W's consumption report a total and no split:
-    the identity cannot hold for them by construction."""
+    """Every RCP meter reports a total and no split: the identity cannot hold for
+    them by construction."""
     assert breakdown_checks(
         {MEMBER: {('consumption', 'total'): {SLOT: Decimal('2.000')}}}) == []
 
@@ -213,7 +215,7 @@ def test_the_same_value_written_twice_is_a_no_op():
     """QuestDB skips a byte-identical row, so the write order does not matter."""
     headers = [overlapping((1.0,), END, 'a'),
                overlapping((1.0,), '2026-06-26T22:00:00Z', 'b')]
-    rewrites = rewritten_keys(headers, resolve_periods(headers))
+    rewrites = rewritten_keys(headers, SAMPLE_METERS)
     assert (rewrites.identical, rewrites.differing) == (1, [])
 
 
@@ -222,8 +224,7 @@ def test_a_revised_value_written_twice_names_both_files():
     any code may assume -- so it is reported instead."""
     first = overlapping((1.0,), END, 'a')
     second = overlapping((2.0,), '2026-06-26T22:00:00Z', 'b')
-    rewrites = rewritten_keys([first, second],
-                              resolve_periods([first, second]))
+    rewrites = rewritten_keys([first, second], SAMPLE_METERS)
     assert rewrites.identical == 0
     assert len(rewrites.differing) == 1
     assert first.file_name in rewrites.differing[0]
@@ -258,6 +259,44 @@ def test_the_report_names_the_files_that_were_not_ingested(caplog):
         report_delivery('20260527', [e66(meter_id=MEMBER)],
                         failed=['20260527_094500_broken.xml'])
     assert '20260527_094500_broken.xml' in caplog.text
+
+
+def pair_totals(production_values, consumption_values):
+    """Both files of one declared pair, each carrying its production total."""
+    return [e66(tag='v', meter_id=PRODUCTION, point='production',
+                product_code=EBIX_TOTAL, code_type='ebIXCode',
+                values=production_values),
+            e66(tag='p', meter_id=CONSUMPTION, point='production',
+                product_code=EBIX_TOTAL, code_type='ebIXCode',
+                values=consumption_values)]
+
+
+def test_a_declared_pair_reporting_the_same_total_is_confirmed():
+    assert check_declared_pairs(pair_totals((5.0, 7.0), (5.0, 7.0)),
+                                SAMPLE_METERS) == []
+
+
+def test_a_declared_pair_whose_totals_disagree_is_reported():
+    """The equality discovery used to pair on. Nothing derives the pairing now, so
+    a disagreement means the declaration itself puts two sites together."""
+    disagreement, = check_declared_pairs(pair_totals((5.0, 7.0), (5.0, 9.0)),
+                                         SAMPLE_METERS)
+    assert 'differ on 1 of 2 slot(s)' in disagreement
+
+
+def test_a_pair_with_only_one_file_present_is_not_reported():
+    """A delivery arrives in waves, so half a pair is normal, not a finding."""
+    assert check_declared_pairs(pair_totals((5.0,), (5.0,))[:1],
+                                SAMPLE_METERS) == []
+
+
+def test_a_disagreeing_pair_is_logged_as_an_error(caplog):
+    with caplog.at_level(logging.INFO):
+        report_delivery('20260527', pair_totals((5.0, 7.0), (5.0, 9.0)),
+                        SAMPLE_METERS)
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert PRODUCTION in errors[0].getMessage()
 
 
 def test_the_report_survives_a_file_it_cannot_place(caplog):
@@ -336,9 +375,8 @@ def golden_delivery(delivery):
 
 def periods_of(headers):
     """{period: (E66 sums, E31 series)} as the report compares them."""
-    resolved = resolve_periods(headers)
     return {
-        period: (summed_over_meters(e66_slots(group, resolved[period])),
+        period: (summed_over_meters(e66_slots(group, SAMPLE_METERS)),
                  e31_slots(group))
         for period, group in group_by_report_period(headers).items()
     }

@@ -1,0 +1,41 @@
+# The community's metering points, as the provider declares them - EXAMPLE.
+#
+# The real file is config/meters.yaml, gitignored because it holds real meter
+# ids. NOT derived from a delivery and NOT auto-generated: this is the source of
+# truth attribution reads (see scripts/meters.py), and the job refuses to start
+# without it, so deploy it alongside api_config.yaml.
+#
+# A VSE national meter id is 33 characters and is never sliced: a value shorter
+# than 20 characters is rejected at load, because that is the shape of the
+# suffix-keyed mapping cache this file replaced.
+#
+# Three sections, each a pure lookup:
+#
+#   consumption-only        a member with no production metering point
+#   consumption-production  a member with both. A site that produces has TWO
+#                           metering point ids: the consumption one reports what
+#                           it draws, the production one what it feeds in plus
+#                           the cel/grid split of it. Everything is stored under
+#                           the consumption id, so one member is one meter in the
+#                           database.
+#   production-only         a production metering point with no consumption at
+#                           all. The provider nonetheless sends consumption files
+#                           for these; they are discarded as a provider fault
+#                           (see PROVIDER_QUESTIONS.md).
+#
+# An id may appear in exactly one section, and no id may be repeated -- both are
+# checked at load, and either stops the job rather than mis-filing a member's
+# production under someone else.
+
+consumption-only:
+  - "CH1011101234500000000000000036273"
+  - "CH1011101234500000000000000050170"
+
+consumption-production:
+  - consumption: "CH1011101234500000000000000020576"
+    production:  "CH1011101234500000000000008552290"
+  - consumption: "CH1011101234500000000000000046782"
+    production:  "CH1011101234500000000000008552310"
+
+production-only:
+  - "CH1011101234500000000000000134575"

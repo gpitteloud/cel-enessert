@@ -13,7 +13,7 @@ Monitors Swiss local energy communities (CEL) using provider XML files (Validate
 - ✅ CEL Local vs Grid energy exchange per meter
 - ✅ Community-level aggregate statistics
 - ✅ 15-minute resolution data (96 intervals/day)
-- ✅ Physical and virtual meter data attribution
+- ✅ Consumption and production metering point attribution
 
 **For complete technical details**, see **[PARSING_GUIDE.md](PARSING_GUIDE.md)** - explains file types, meter types, product codes, data quality flags, and more.
 
@@ -112,7 +112,7 @@ Grafana (displays dashboards)
 │   ├── parse_sdat_e31_aggregated.py   # E31 parser (community aggregates)
 │   ├── models.py                      # MeteredData, MetricType, classification
 │   ├── sdat_header.py                 # One parse per file: header + observations
-│   ├── discover_meter_mappings.py     # Auto-discover physical-virtual mappings
+│   ├── meters.py                      # The declared metering points, validated
 │   ├── questdb_schema.sql             # Authoritative DDL
 │   ├── questdb_init.py                # Applies + verifies the schema
 │   ├── questdb_writer.py              # Writes rows over PG-wire
@@ -121,7 +121,7 @@ Grafana (displays dashboards)
 │   └── delivery_report.py             # What a delivery contained, per observation
 ├── config/
 │   ├── api_config.yaml                # DSN and project settings
-│   └── meter_mappings.yaml            # Physical-virtual meter mappings (auto-generated)
+│   └── meters.yaml                    # The provider's metering points (required)
 ├── logs/
 │   └── job.log                        # Processing logs
 ├── archive/                            # Processed XML files
@@ -331,10 +331,10 @@ find /volume1/docker/cel/archive -name "*.xml" -mtime +180 -delete
 1. **[README.md](README.md)** ⭐ - This file (overview and quick start)
 2. **[PARSING_GUIDE.md](PARSING_GUIDE.md)** 📘 - **Complete technical reference** (AUTHORITATIVE)
    - File types (E66 vs E31)
-   - Meter types (physical vs virtual)
+   - Metering point types (consumption vs production)
    - Product codes (ebIX, VSE)
    - Data quality (Condition 21)
-   - Meter mapping discovery
+   - The declared meters, and how a file is attributed
 3. **[QUESTDB.md](QUESTDB.md)** 🗄️ - **Storage reference** (AUTHORITATIVE for the schema)
    - Why the dedup keys are what they are
    - Why replay order is a correctness requirement
@@ -356,6 +356,6 @@ find /volume1/docker/cel/archive -name "*.xml" -mtime +180 -delete
 
 ---
 
-**Version:** 3.0 (E66 + E31 support, auto-discovery, batch processing, QuestDB storage)  
+**Version:** 3.0 (E66 + E31 support, declared meters, batch processing, QuestDB storage)  
 **Last updated:** 2026-08-06  
 **Deployed on:** Synology NAS

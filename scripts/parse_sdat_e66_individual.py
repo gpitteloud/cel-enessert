@@ -6,10 +6,14 @@ The XML is already read into a FileHeader (see sdat_header); what is left here i
 the one decision E66 needs and E31 does not -- which meter a production breakdown
 belongs to. That decision is *finished* here, so MeteredData.meter_id is the id
 the rows are stored under and no later stage re-derives it.
+
+Every rule below is a lookup in the declared meters (see scripts/meters.py), so
+one file is decidable on its own: a late or retried file needs no batch around it.
 """
 import logging
 from typing import Optional
 
+from scripts.meters import Meters
 from scripts.models import (MeteredData, ParseResult, SkippedDocument,
                             is_production_breakdown, is_production_total)
 from scripts.sdat_header import FileHeader
@@ -17,75 +21,82 @@ from scripts.sdat_header import FileHeader
 logger = logging.getLogger(__name__)
 
 
-def duplicates_a_physical_total(header: FileHeader, meter_mappings: dict) -> bool:
-    """True for a mapped virtual meter's production total.
+def duplicates_the_consumption_total(header: FileHeader, meters: Meters) -> bool:
+    """True for a paired production meter's ebIX production total.
 
-    It is identical to its physical meter's total -- that equality is how the two
-    are paired in the first place -- so storing both would double the community's
-    production. A self-contained meter is not in the mappings, so it keeps its own
-    total.
+    The consumption meter of the same member reports that total too, identically,
+    so storing both would double the community's production. A production-only
+    meter has no twin and keeps its own total.
     """
     return (is_production_total(header.metric_type)
-            and header.file_meter_id in (meter_mappings or {}))
+            and meters.is_paired_production_meter(header.file_meter_id))
 
 
-def resolve_production_owner(meter_id: str, meter_mappings: dict,
-                             self_contained_meters: set) -> Optional[str]:
-    """The physical meter a production breakdown belongs to, or None if unknown.
+def consumption_on_a_production_meter(header: FileHeader,
+                                      meters: Meters) -> bool:
+    """True for a consumption file bearing a declared production metering point.
 
-    A separate virtual meter's breakdown goes to its mapped physical twin; a
-    self-contained meter carries the breakdown on the same id as its total and
-    owns it. Unknown means a new member: nothing is guessed.
+    A production metering point measures what a site feeds in; it has no
+    consumption to report. The provider nonetheless sends consumption files for
+    0134575W, and those readings are not a member's consumption -- see
+    PROVIDER_QUESTIONS.md. Stated for every production metering point rather than
+    only the production-only ones: a paired one sending consumption would be the
+    same fault, and today none does, so this changes nothing for them.
     """
-    physical = (meter_mappings or {}).get(meter_id)
-    if physical:
-        return physical
-    if meter_id in (self_contained_meters or set()):
-        return meter_id
-    return None
+    return (header.metering_point_type == 'consumption'
+            and meters.is_production_metering_point(header.file_meter_id))
 
 
-def parse_e66(header: FileHeader, meter_mappings: dict = None,
-              self_contained_meters: set = None) -> ParseResult:
+def parse_e66(header: FileHeader,
+              meters: Optional[Meters] = None) -> ParseResult:
     """
     Turn an E66 FileHeader into the rows it should be stored as.
 
     Args:
         header: the parsed file, observations included
-        meter_mappings: virtual meter id -> physical meter id (full ids)
-        self_contained_meters: meter ids carrying their own production breakdown
+        meters: the declared meters; without them a production breakdown cannot
+            be attributed and its file fails
 
     Returns:
         MeteredData with document_type='E66';
         SkippedDocument if the document is valid but deliberately not ingested
-        (a mapped virtual meter's duplicate production total -- an expected,
-        non-error outcome for ~9 files per delivery);
+        (a paired production meter's duplicate total, ~9 files per delivery, or a
+        consumption file on a production metering point);
         None if the file has no meter id or its breakdown cannot be attributed.
     """
+    meters = meters if meters is not None else Meters.empty()
+
     meter_id = header.file_meter_id
     if not meter_id:
         logger.error(f"{header.file_name}: no consumption or production meter id")
         return None
 
-    if duplicates_a_physical_total(header, meter_mappings):
-        # Not an error: reported as an intentional skip so the caller logs it as
-        # expected and still archives the file.
+    # Both drops below are intentional, so they are reported as skips: the caller
+    # logs them as expected and still archives the file.
+    if consumption_on_a_production_meter(header, meters):
         return SkippedDocument(
-            reason=(f"virtual meter {meter_id} production total duplicates "
-                    f"physical {meter_mappings[meter_id]}"),
+            reason=(f"{meter_id} is a production metering point, so this "
+                    f"consumption file is not a member's consumption"),
+            meter_id=meter_id,
+        )
+
+    if duplicates_the_consumption_total(header, meters):
+        return SkippedDocument(
+            reason=(f"production meter {meter_id} repeats the production total "
+                    f"of consumption meter "
+                    f"{meters.consumption_by_production[meter_id]}"),
             meter_id=meter_id,
         )
 
     if is_production_breakdown(header.metric_type):
-        owner = resolve_production_owner(
-            meter_id, meter_mappings, self_contained_meters)
+        owner = meters.consumption_meter_for(meter_id)
         if owner is None:
-            logger.error(f"Unknown virtual meter {meter_id} - no mapping found "
-                         f"in auto-discovery. Skipping {header.file_name}.")
+            logger.error(f"{describe_undeclared(meter_id, meters)}. "
+                         f"Skipping {header.file_name}.")
             return None
         if owner != meter_id:
-            logger.info(f"Virtual meter {meter_id} -> attributing production "
-                        f"breakdown to physical meter {owner}")
+            logger.info(f"Production meter {meter_id} -> attributing production "
+                        f"breakdown to consumption meter {owner}")
         meter_id = owner
 
     if header.metric_type is None:
@@ -107,3 +118,17 @@ def parse_e66(header: FileHeader, meter_mappings: dict = None,
         meter_id=meter_id,
         rcp=header.rcp,
     )
+
+
+def describe_undeclared(meter_id: str, meters: Meters) -> str:
+    """Why a production breakdown could not be attributed.
+
+    A declared consumption-only member sending one is a wrong declaration; an
+    unknown id is a meter we were never told about. Both need the provider, but
+    not the same question, so they do not share a message.
+    """
+    if meters.is_consumption_only(meter_id):
+        return (f"{meter_id} is declared consumption-only but reports a "
+                f"production breakdown")
+    return (f"Meter {meter_id} reports a production breakdown and is not "
+            f"declared in meters.yaml")

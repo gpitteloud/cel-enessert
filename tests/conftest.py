@@ -15,6 +15,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.meters import Meters      # noqa: E402  (needs sys.path above)
+
 # Directory of real (gitignored) sample files, used by golden-file tests that
 # skip when the data is not present (e.g. clean checkout / CI without data).
 SAMPLE_DIR = REPO_ROOT / "input" / "all"
@@ -31,7 +33,7 @@ def real_files(pattern):
 
 
 # The 25-char prefix every real meter id in the community shares; a full id is
-# 33 chars. Mappings are keyed on the full id -- ids are never sliced.
+# 33 chars. The declaration is keyed on the full id -- ids are never sliced.
 METER_ID_PREFIX = 'CH10111012345000000000000'
 
 
@@ -40,18 +42,23 @@ def meter_id(suffix):
     return METER_ID_PREFIX + suffix
 
 
-# Real discovered meter mappings for a representative day (virtual -> physical).
-# Only needed so production-breakdown E66 files parse instead of returning None.
-SAMPLE_MAPPINGS = {
-    meter_id(virtual): meter_id(physical) for virtual, physical in {
-        '0855229G': '0020576V', '08574078': '0217130Y', '08552310': '0046782G',
-        '0855227M': '00846565', '0855223Y': '01192538', '08552213': '0125445D',
-        '0855219K': '01650626', '0857405E': '0208254A', '0855225S': '0803097E',
-    }.items()
-}
-# Meters carrying their own production breakdown (a consumption file exists for
-# them, so they are not virtual).
-SAMPLE_SELF_CONTAINED = {meter_id('0134575W')}
+# The community as the provider declares it, with the real ids' shape: nine
+# members who produce, twelve who only consume, and the one production metering
+# point that has no consumption (0134575W) yet gets consumption files anyway.
+SAMPLE_METERS = Meters(
+    consumption_by_production={
+        meter_id(production): meter_id(consumption)
+        for production, consumption in {
+            '0855229G': '0020576V', '08574078': '0217130Y', '08552310': '0046782G',
+            '0855227M': '00846565', '0855223Y': '01192538', '08552213': '0125445D',
+            '0855219K': '01650626', '0857405E': '0208254A', '0855225S': '0803097E',
+        }.items()
+    },
+    production_only=frozenset({meter_id('0134575W')}),
+    consumption_only=frozenset(meter_id(s) for s in (
+        '0036273C', '0050170B', '0060545I', '0062412W', '0078872J', '0164750O',
+        '0198918Z', '0199054X', '02291991', '0229599I', '0832199P', '0858140M')),
+)
 
 
 RSM_OPEN_E66 = (
@@ -82,7 +89,7 @@ def _observations(values, start_seq=1):
 def _e66_header(doc_type, business_reason, reason_code_type, start, end):
     """ValidatedMeteredData header: the DocumentType (dispatch), the
     BusinessReasonType (CEL vs RCP) and the ReportPeriod (== Interval in real
-    files, so discovery groups on it)."""
+    files, and what the delivery report groups on)."""
     doc_type_elem = (
         f'<rsm:DocumentType><rsm:ebIXCode>{doc_type}</rsm:ebIXCode></rsm:DocumentType>'
         if doc_type is not None else ''

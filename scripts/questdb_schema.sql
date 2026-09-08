@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS cel_file_header (
   receiver_role       SYMBOL,      -- CEM (CEL) | DEC (RCP)
   period_start        TIMESTAMP,   -- ReportPeriod == Interval in every real file
   period_end          TIMESTAMP,
-  file_meter_id       SYMBOL,      -- the file's OWN meter (may be the virtual one)
+  file_meter_id       SYMBOL,      -- the file's OWN metering point (production or consumption)
   attributed_meter_id SYMBOL,      -- the meter the observation rows were stored under
   metering_point_type SYMBOL,      -- consumption | production | NULL for E31
   flow_characteristic SYMBOL,      -- E17 | E18, E31 only

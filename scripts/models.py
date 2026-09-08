@@ -99,12 +99,12 @@ def is_rcp(business_reason: Optional[str]) -> bool:
 
 
 def is_production_total(metric_type: Optional[MetricType]) -> bool:
-    """The ebIX production total: what a physical producer reports."""
+    """The ebIX production total: what a producing member reports."""
     return metric_type is MetricType.PRODUCTION_TOTAL
 
 
 def is_production_breakdown(metric_type: Optional[MetricType]) -> bool:
-    """A production cel/grid split: what a virtual (or self-contained) meter reports."""
+    """A production cel/grid split: what a production metering point reports."""
     return (metric_type is not None
             and metric_type.direction == 'production'
             and metric_type.segment in ('cel', 'grid'))
@@ -115,11 +115,13 @@ class SkippedDocument:
     """A document that was understood but deliberately NOT ingested.
 
     Returned instead of ``None`` so callers can tell an *expected* drop apart
-    from a *failure*. The only current case is a mapped virtual meter's ebIX
-    production total, which duplicates its physical meter's total (~9 files per
-    daily delivery). Without this distinction those drops were logged as
-    "Could not parse (unknown type or invalid)" and left in the incoming folder,
-    looking like a daily error and never clearing.
+    from a *failure*. Two cases: a paired production metering point's ebIX
+    production total, which duplicates its consumption meter's total (~9 files
+    per daily delivery), and a consumption file sent for a production metering
+    point, which the provider emits and which is not a member's consumption.
+    Without this distinction those drops were logged as "Could not parse (unknown
+    type or invalid)" and left in the incoming folder, looking like a daily error
+    and never clearing.
     """
     reason: str
     meter_id: Optional[str] = None
@@ -163,8 +165,8 @@ class MeteredData:
     code_type: Optional[str] = None
 
     # --- E66 only ---
-    # The meter the rows are stored under: already the physical meter for a
-    # virtual meter's production breakdown, so no caller re-derives it.
+    # The meter the rows are stored under: already the consumption meter for a
+    # production metering point's breakdown, so no caller re-derives it.
     meter_id: Optional[str] = None
     rcp: bool = False  # is the meter a member of a RCP
 

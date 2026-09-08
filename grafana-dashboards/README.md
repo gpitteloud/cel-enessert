@@ -181,27 +181,35 @@ provider-side residuals:
 
 A gap of the *wrong sign* on production — sum(E66) ≈ 1.6× E31 — would instead
 mean an ingest regression: `condition` promoted to a dedup key (revised slots
-forking into two rows) or duplicate virtual-meter totals creeping back in. Both
+forking into two rows) or duplicate production-meter totals creeping back in. Both
 are prevented at ingest, so a stale gap is cured by a full re-replay through the
 current parser — **in ascending delivery order**, since the last write wins.
 
 #### Meter attribution — why production totals aren't double-counted
 
-Each producer has a **physical** meter and a **virtual** (`085…`) meter. The
-virtual meter reports a production **total identical** to the physical meter's
-(that equality is how the two are paired during discovery). The parser therefore
-**drops the virtual meter's total on ingest** and keeps only the physical one,
-while re-attributing the virtual meter's CEL/Grid **breakdown** to the physical
-`meter_id`. Net effect: every producer's consumption *and* production live under
-one physical ID, and `sum(value)` over
-`segment = 'total' AND direction = 'production'` counts each producer once. (The
-self-contained meter `0134575W` carries its own total + breakdown and is exempt
-from this drop.)
+Each producing member has **two metering points**: a **consumption** one and a
+**production** one (`085…`). Which id pairs with which is declared by the provider
+in `config/meters.yaml` — it is nowhere in the XML. The production metering point
+reports a production **total identical** to its consumption twin's, so the parser
+**drops that copy on ingest** and keeps the twin's, while storing the production
+metering point's CEL/Grid **breakdown** under the consumption `meter_id`. Net
+effect: a member's consumption *and* production live under one id, and `sum(value)`
+over `segment = 'total' AND direction = 'production'` counts each producer once.
+`0134575W` is declared `production-only` — it has no consumption twin, so its own
+total is the canonical one and is kept.
 
-Those ~9 dropped files per delivery are an expected outcome, not failures: the
+Those ~10 dropped files per delivery are an expected outcome, not failures: the
 parser returns a `SkippedDocument`, the watcher logs it at INFO and archives the
-file (`Skipped by design:` / `Skipped by design: 9` in the batch summary). Only
-genuine failures stay in `/data/incoming`.
+file (`Skipped by design: 10` in the batch summary). They are the 9 duplicate
+production totals plus the spurious consumption file the provider sends for
+`0134575W`. Only genuine failures stay in `/data/incoming`.
+
+A dashboard note, since it moves the numbers: before the declaration existed the
+pairing was derived from each batch, and a wave carrying the production totals with
+no breakdown file (the monthly half of `20260605`) paired nothing and stored nine
+production totals under their own ids. If you are comparing against a screenshot
+taken before the replay, `production/total` is now lower by that double count — see
+`QUESTDB.md`.
 
 ## Installation
 

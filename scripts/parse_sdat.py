@@ -10,7 +10,9 @@ mis-named or renamed file is still routed correctly.
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Optional
 
+from scripts.meters import Meters
 from scripts.models import ParseResult
 from scripts.parse_sdat_e31_aggregated import parse_e31
 from scripts.parse_sdat_e66_individual import parse_e66
@@ -19,16 +21,15 @@ from scripts.sdat_header import FileHeader, parse_header
 logger = logging.getLogger(__name__)
 
 
-def metered_data_from_header(header: FileHeader, meter_mappings: dict = None,
-                             self_contained_meters: set = None) -> ParseResult:
+def metered_data_from_header(header: FileHeader,
+                             meters: Optional[Meters] = None) -> ParseResult:
     """Dispatch an already-read file to the E66 or E31 decoder.
 
     The batch path uses this directly: it has read every header once already, and
     reading a delivery twice is the cost this split exists to avoid.
     """
     if header.document_type == 'E66':
-        return parse_e66(header, meter_mappings=meter_mappings,
-                         self_contained_meters=self_contained_meters)
+        return parse_e66(header, meters=meters)
     if header.document_type == 'E31':
         return parse_e31(header)
     logger.error(f"{header.file_name}: unsupported or missing DocumentType "
@@ -36,8 +37,7 @@ def metered_data_from_header(header: FileHeader, meter_mappings: dict = None,
     return None
 
 
-def parse_sdat(xml_file, meter_mappings: dict = None,
-               self_contained_meters: set = None) -> ParseResult:
+def parse_sdat(xml_file, meters: Optional[Meters] = None) -> ParseResult:
     """Read one SDAT file and decode it, for a caller holding only a path.
 
     Returns:
@@ -52,13 +52,11 @@ def parse_sdat(xml_file, meter_mappings: dict = None,
     except OSError as e:
         logger.error(f"{xml_file.name}: cannot read: {e}")
         return None
-    return parse_sdat_bytes(
-        data, xml_file.name, meter_mappings=meter_mappings,
-        self_contained_meters=self_contained_meters)
+    return parse_sdat_bytes(data, xml_file.name, meters=meters)
 
 
-def parse_sdat_bytes(data: bytes, filename: str, meter_mappings: dict = None,
-                     self_contained_meters: set = None) -> ParseResult:
+def parse_sdat_bytes(data: bytes, filename: str,
+                     meters: Optional[Meters] = None) -> ParseResult:
     """Same as parse_sdat, but from bytes already in memory.
 
     For XML that is not a file on disk -- an archive zip member read with
@@ -73,6 +71,4 @@ def parse_sdat_bytes(data: bytes, filename: str, meter_mappings: dict = None,
     except ValueError as e:
         logger.error(f"{filename}: cannot read header: {e}")
         return None
-    return metered_data_from_header(
-        header, meter_mappings=meter_mappings,
-        self_contained_meters=self_contained_meters)
+    return metered_data_from_header(header, meters=meters)

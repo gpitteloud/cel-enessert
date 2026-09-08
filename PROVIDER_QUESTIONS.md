@@ -10,7 +10,9 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - **File types**: E66 (individual meters) vs E31 (community aggregates)
 - **Delivery pattern**: Daily at 09:45-09:50, 5-day coverage with 4-day overlap
 - **Data stability**: Overlapping days are identical (0% change observed)
-- **Meter types**: Physical meters (consumption + production total) vs Virtual meters (production breakdown only)
+- **Metering points**: a producing member has a **consumption** metering point
+  (consumption total + breakdown, production total) and a **production** one
+  (the same production total, plus the production breakdown)
 - **Condition 21**: VSE breakdown data is *usually* estimated (Condition 21) and
   totals are *usually* measured — but this is **not absolute**: the provider
   **revises a slot's condition across overlapping deliveries** (a given 15-min
@@ -19,10 +21,13 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
   a series label (it would split one slot into two series and double-count it).
 - **Flow characteristics**: E17 (consumption) and E18 (production) in E31 files
 - **Community ID**: 101110-002726, Type CT01
-- **Physical-virtual mappings**: 9 discovered pairs by matching production totals
+- **The declared meter list**: the provider supplies which consumption id pairs
+  with which production id (9 pairs), confirming what we had inferred by matching
+  production totals. See section 3.
 - **E31 stability**: Always 6 E31 files regardless of member count
-- **E31 production = sum of physical E66 production**: exact match once virtual
-  meters' duplicate production totals are excluded (e.g. 2026-06-15: both 2558.6 kWh)
+- **E31 production = sum of E66 production totals**: exact match once the
+  production metering points' duplicate totals are excluded (e.g. 2026-06-15: both
+  2558.6 kWh)
 
 ### What We Need From You ❓
 
@@ -112,17 +117,31 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 
 ---
 
-## 3. Virtual Meters and Meter Mappings
+## 3. Metering Points and the Declared Meter List
+
+**ANSWERED — and it settles the vocabulary.** What we had been calling a "virtual"
+meter is the site's **production metering point**; the "physical" meter is its
+**consumption metering point**. A producing member has two ids, one of each.
 
 **What we confirmed:**
-- Physical meters provide: consumption total + breakdown, production total only
-- Virtual meters provide: production breakdown (CEL Local vs Grid)
-- Virtual meters identified by suffix starting with "085"
-- We auto-discovered 9 physical-to-virtual pairs by matching production totals
+- A consumption metering point reports: consumption total + breakdown, and the
+  production total
+- A production metering point reports: the same production total, plus the
+  production breakdown (CEL Local vs Grid) that only it carries
+- Production metering point ids start with `085`
+- The pairing is **nowhere in the XML** — a production file carries only its own
+  `ProductionMeteringPoint/VSENationalID` and a `Community` block
 
-**Discovered mappings:**
+**ANSWERED — the provider now supplies the list**, so we no longer infer it. It
+lives in `config/meters.yaml` (see PARSING_GUIDE.md) with three sections:
+`consumption-only`, `consumption-production`, `production-only`. Before that, the
+pairing was derived per delivery from the fact that both ids report the same
+production total value for value — which needed the whole delivery in hand and so
+could not attribute a file arriving in a later wave.
+
+**Declared pairs (9), confirming what we had inferred:**
 ```
-Physical → Virtual
+consumption → production
 0217130Y → 08574078
 0020576V → 0855229G
 0046782G → 08552310
@@ -135,28 +154,56 @@ Physical → Virtual
 ```
 
 **Questions:**
-9. **Official confirmation:** Can you confirm these mappings are correct?
+9. **ANSWERED** by the declared list above, which matches the 9 pairs we had
+   inferred. Remaining: please tell us **before** a delivery when the list changes
+   (a new member, a member installing solar), since the job reads it as the source
+   of truth and will refuse to attribute an id it has not been told about.
 
-10. **Virtual meter purpose:** Are virtual meters created specifically to provide production VSE breakdowns because physical meters don't measure this directly?
+10. **Production metering point purpose:** Is the second metering point created
+    specifically to carry the production VSE breakdown, because the consumption
+    metering point does not measure it directly?
 
-11. **Meter 0134575W - special self-contained meter:** This meter has unusual characteristics:
-    - Has both consumption and production (like physical meter)
-    - Gets production breakdown (like virtual meter)
+11. **Meter 0134575W:** This meter has unusual characteristics:
+    - Reports its production total *and* VSE breakdown on the same meter ID
     - Daily production: 804 kWh (exceeds entire community aggregate of 668 kWh)
-    - No matching pair — reports its production total *and* VSE breakdown on the same meter ID
+    - Also receives a consumption total file
 
-    **ANSWERED**: This meter is **NOT linked to RCP** (Regroupement pour la
-    Consommation Propre). The earlier RCP hypothesis is discarded. It is a
-    special self-contained meter; its breakdown is attributed to itself.
+    **ANSWERED (twice)**: It is **NOT linked to RCP** (Regroupement pour la
+    Consommation Propre) — the earlier RCP hypothesis is discarded. It is declared
+    **`production-only`**: a production metering point with no consumption
+    metering point at all, so its own production total is the canonical one and
+    its breakdown is attributed to itself.
+
+    **Which makes the consumption file a fault — see Q11a below.**
 
     **Remaining questions**:
     - What exactly does this meter represent, if not an RCP?
     - Will other meters of this kind appear (it is currently the only one)?
 
+11a. **Spurious consumption files for `0134575W` — please stop sending them.**
+    Since the meter is production-only, the daily consumption total file it
+    receives (ebIX `8716867000030`, direction consumption) reports consumption for
+    a metering point that has none.
+
+    - It is **not** empty or zero-filled: over 2026-04-30..2026-08-22 it carried
+      real-looking values, 5270 of 9216 slots non-zero.
+    - It carries the real `community_id`, so unlike the community-less RCP meters
+      it was **not** filtered out of community-scoped queries and inflated our
+      Sum(E66) consumption by ~2%.
+    - We now discard these files on ingest (archived, not failed).
+
+    **Questions**: is this a known defect? Is the data behind it another metering
+    point's consumption that has been mislabelled — in which case whose? And is any
+    other meter in the community affected?
+
 12. **New members:** When a new member joins:
-    - Will they automatically get both physical and virtual meter IDs?
+    - Will they automatically get both a consumption and a production metering
+      point id?
     - Will new files simply appear in the next delivery?
-    - Do you provide advance notification with meter IDs?
+    - Do you provide advance notification with meter IDs? **This one now matters
+      more than it did**: attribution reads the declared list, so an id that is not
+      in it has its production breakdown held back for retry rather than stored
+      under a guess.
 
 ---
 
@@ -196,12 +243,12 @@ Physical → Virtual
 
 16. **E31 vs E66 consistency:** Should E31 community totals exactly match the sum of E66 individual meters?
     - **PARTIALLY ANSWERED (our side):** For **production**, E31 total matches the
-      sum of E66 *physical* production totals **exactly** (e.g. 2026-06-15:
-      E31 = 2558.6 kWh vs sum(E66) = 2558.6 kWh, 0.00% diff), once we stop
-      double-counting the virtual meters (each virtual meter reports the same
-      production total as its physical meter; we now keep only the physical one).
+      sum of E66 production totals **exactly** (e.g. 2026-06-15: E31 = 2558.6 kWh
+      vs sum(E66) = 2558.6 kWh, 0.00% diff), once we stop double-counting: a
+      production metering point reports the same production total as its
+      consumption twin, so we keep one copy.
     - **Remaining question:** confirm that E31 production total is defined as the
-      sum of physical meters' production totals (not something independently
+      sum of the members' production totals (not something independently
       estimated), so the exact match is guaranteed rather than coincidental.
 
 16a. **E31 consumption is zero from 2026-06-01 onward:** In the delivered files,
@@ -227,11 +274,11 @@ Physical → Virtual
 16c. **E31 production exceeds sum(E66) by ~9-10% from 2026-07-01 (meter
     `0046782G`):** Meter `0046782G` reports production `0.000` for **every**
     15-min interval from data date **2026-06-23** onward (and also 2026-06-08 ..
-    2026-06-17), on **both** its physical ebIX total (`8716867000030`) and its
-    virtual twin `08552310`'s VSE CEL/Grid breakdown
+    2026-06-17), on **both** its own ebIX total (`8716867000030`) and its paired
+    production metering point `08552310`'s VSE CEL/Grid breakdown
     (`2404050010123` / `2404050010124`). The other 9 producers report normally.
     - Through **2026-06-30** this was self-consistent: E31 production total
-      equalled sum(E66 physical totals) **exactly** (ratio 1.000 every day),
+      equalled sum(E66 production totals) **exactly** (ratio 1.000 every day),
       i.e. E31 excluded this meter too.
     - From **2026-07-01** E31 production is systematically **higher** than
       sum(E66): ratio 0.890-0.937 every day, a shortfall of 30-60 kWh/day
@@ -294,7 +341,7 @@ Physical → Virtual
 24. **Documentation:** Is there official documentation about:
     - VSE code definitions and usage
     - Condition code meanings (especially Condition 21)
-    - Virtual meter concept and purpose
+    - The two-metering-point model and its purpose
     - Expected file delivery patterns
 
 ## 9. Support and Troubleshooting
@@ -362,7 +409,8 @@ If you need to prioritize, these are most critical:
 3. **Q2** - Import strategy: process all files or only latest?
 4. **Q5** - Will file count (109 files) change when members join/leave?
 5. **Q6** - Will Condition 21 data become validated in the future?
-6. **Q9** - Confirm our discovered physical→virtual meter mappings are correct
+6. **Q11a** - The consumption files for production-only `0134575W` are spurious:
+   known defect, or mislabelled data belonging to another metering point?
 7. **Q13** - Official VSE code definitions (2404050010123, 2404050010124)
 8. **Q15** - E31 intended use case
 9. **Q16** - Should E31 totals match sum of E66 meters?
@@ -389,13 +437,17 @@ For your reference, our parser:
 
 **Batch Processing:**
 - Waits for complete daily delivery (~109 files in 5-minute window)
-- Refreshes meter mappings before processing each batch
-- Handles new member detection automatically
+- Attribution is a per-file lookup in the declared meter list, so a file arriving
+  in a later wave is handled on its own; the batch is only for the summary
 
 **E66 Files (103/day):**
-- Physical meters: Processes consumption (total + breakdown) and production (total only)
-- Virtual meters: Auto-discovers mappings by matching production totals, attributes breakdown to physical meters
-- Supports all 9 current member pairs + handles new members dynamically
+- Consumption metering points: consumption (total + breakdown) and the production
+  total
+- Production metering points: the production breakdown is stored under the paired
+  consumption id, so one member is one meter; the duplicate production total is
+  dropped
+- Covers the 9 declared pairs; an id not in the declared list is held back for
+  retry rather than stored under a guess
 
 **E31 Files (6/day):**
 - Community aggregates stored separately with flow characteristics
@@ -409,10 +461,10 @@ For your reference, our parser:
 **Confirmed File Breakdown (example: community with 21 members):**
 ```
 E66 (ValidatedMeteredData_1.6): 103 files (varies by membership)
-  Physical meters with production:     9 × 4 files = 36
-  Physical meters without production: 12 × 3 files = 36
-  Virtual meters (production):         9 × 3 files = 27
-  Special virtual meter (0134575W):    1 × 4 files =  4
+  Consumption points, member produces: 9 × 4 files = 36
+  Consumption-only points:            12 × 3 files = 36
+  Production points (breakdown):       9 × 3 files = 27
+  Production-only (0134575W):          1 × 4 files =  4
                                                Total: 103
 
 E31 (AggregatedMeteredData_1.3): 6 files (always constant)
@@ -434,6 +486,6 @@ This implementation works well, but answers to the above questions will help us 
 Please send responses to: [YOUR CONTACT INFO]
 
 Related to: CEL Community 101110-002726
-Physical meter: CH101110123450000000000000217130Y (and 8 other members)
+Consumption metering point: CH101110123450000000000000217130Y (and 8 other members)
 
 Thank you for your help in clarifying these points!

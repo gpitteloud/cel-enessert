@@ -93,7 +93,7 @@ CREATE TABLE cel_file_header (            -- what a file IS: one row per file
   receiver_role       SYMBOL,
   period_start        TIMESTAMP,   -- ReportPeriod == Interval
   period_end          TIMESTAMP,
-  file_meter_id       SYMBOL,      -- the file's OWN meter (may be virtual)
+  file_meter_id       SYMBOL,      -- the file's OWN metering point
   attributed_meter_id SYMBOL,      -- the meter its rows were stored under
   metering_point_type SYMBOL,
   flow_characteristic SYMBOL,      -- E31 only
@@ -332,9 +332,30 @@ confirmed in the raw XML:
 - `0858140M` reads zero on 82 of 84 days.
 
 Note that `08552310` has no rows in `cel_energy` at all, by design:
-`meter_mappings.yaml` maps virtual `08552310` → physical `0046782G`, and
-ingestion attributes the virtual meter's rows to the physical one. They are one
-meter.
+`config/meters.yaml` declares it as the production metering point paired with
+consumption meter `0046782G`, and ingestion stores its rows under that id. They
+are one member, so no query needs to know a site has two metering points.
+
+Two corrections landed with that declaration, both of which move these numbers:
+
+- The consumption files the provider sends for `0134575W` are spurious — it is a
+  production-only metering point — and are now skipped. Over the sample window
+  that drops Sum(E66) `consumption/total` by 392 kWh (−2.2%). It carried the real
+  `community_id`, so unlike the eight community-less meters it was **not** filtered
+  out of total-scoped queries. **This widens the E31-vs-Sum(E66) consumption gap
+  rather than closing it** — Sum(E66) already ran under E31 from 2026-07, and these
+  rows were partly masking that. The validation panel will look worse; it is right.
+- A production metering point's ebIX total duplicates its consumption twin's and
+  is dropped. Discovery decided that from the batch, so a wave carrying the totals
+  **without** any breakdown file (the monthly half of `20260605`) paired nothing
+  and stored nine production totals under their own ids. That double count is
+  gone: Sum(E66) `production/total` drops by 7923 kWh (−15.5%) over the samples,
+  which **closes** a gap rather than widening one.
+
+Both are `segment='total'` only. Every `segment='cel'` and `segment='grid'` sum is
+unchanged to the decimal, so the CEL balance checks in
+`validate_daily_balance_questdb.py` and the local leg in `delivery_report.py` read
+exactly as before.
 
 The E31 panels show the aggregate difference. When it is non-zero,
 `toolbox/diagnose_validation_gap.py` breaks it down per day and per meter, which

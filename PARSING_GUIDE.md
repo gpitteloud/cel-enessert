@@ -1,7 +1,7 @@
 # CEL Energy Data Parsing Guide
 
-**Version**: 1.0  
-**Date**: 2026-06-26
+**Version**: 1.1  
+**Date**: 2026-09-08
 
 ---
 
@@ -12,8 +12,8 @@
 3. [Metering Concepts](#metering-concepts)
 4. [Energy Codes Explained](#energy-codes-explained)
 5. [File Types and Structure](#file-types-and-structure)
-6. [Physical vs Virtual Meters](#physical-vs-virtual-meters)
-7. [Meter Mapping Discovery](#meter-mapping-discovery)
+6. [Consumption vs Production Metering Points](#consumption-vs-production-metering-points)
+7. [The Declared Meters](#the-declared-meters)
 8. [Data Processing Flow](#data-processing-flow)
 9. [Data Quality Flags](#data-quality-flags)
 10. [Open Questions for Provider](#open-questions-for-provider)
@@ -86,95 +86,101 @@ Members **with solar panels** - consume and produce energy
 
 **Example meters**: `0217130Y`, `0020576V`, `0046782G`, etc.
 
-**Note**: Production breakdown (CEL vs Grid) is provided via **virtual meters**
+**Note**: their production breakdown (CEL vs Grid) arrives on a **second metering
+point id** — see below. A producing member is one member, two ids.
 
 ---
 
-### Physical vs Virtual Meters
+### Consumption vs Production Metering Points
 
-This is a **key concept** for understanding the data structure:
+This is a **key concept** for understanding the data structure. A site that
+produces has **two metering point ids**, and each SDAT file declares which kind it
+carries: `ConsumptionMeteringPoint/VSENationalID` or
+`ProductionMeteringPoint/VSENationalID`.
 
-#### Physical Meters
+#### Consumption metering point
 
-**Purpose**: Measure actual total energy flows at the physical meter installation
-
-**What they measure**:
+**What its files carry**:
 - ✅ **Total consumption** (all energy consumed, regardless of source)
 - ✅ **Consumption breakdown** (CEL Local vs Grid split)
 - ✅ **Total production** (all energy produced by solar panels)
 
-**What they DON'T measure directly**:
-- ❌ **Production breakdown** (CEL Local vs Grid split - provided via virtual meters)
+**What they DON'T carry**:
+- ❌ **Production breakdown** (CEL Local vs Grid split — on the production
+  metering point instead)
 
 **Identifier pattern**: 
 - Last 8 characters (suffix): e.g., `0217130Y`, `0046782G`
 - Full format: `CH101110123450000000000000217130Y`
 
-#### Virtual Meters
+This is the id everything is **stored under**, so one member is one meter in the
+database.
 
-**Purpose**: Provide VSE breakdown **for production only** (CEL Local vs Grid split)
+#### Production metering point
 
-**Why needed**: Physical meters provide consumption breakdown directly in their files, but production breakdown requires virtual meters.
-
-**What they contain**:
+**What its files carry**:
 - Production CEL Local (VSE code `2404050010123`)
 - Production Grid (VSE code `2404050010124`)
-- Production Total (ebIX code `8716867000030` - used to match with physical meter)
+- Production Total (ebIX code `8716867000030`) — the **same values** as its
+  consumption twin reports, so this copy is dropped on ingest
 
-**Identifier pattern**: no logic depends on it — the id is opaque and a meter is
-classified by the series it reports (see [Discovery Algorithm](#discovery-algorithm)).
-Observed only: today's virtual ids happen to carry `085` in the last 8 characters,
-e.g. `CH10111012345000000000000008574078`.
+**Identifier pattern**: no logic depends on it — the id is opaque, and which id
+pairs with which is read from the declared list, never inferred from the string.
+Observed only: today's production ids happen to carry `085` in the last 8
+characters, e.g. `CH10111012345000000000000008574078`.
 
-**Important**: Virtual meter values are **estimated/calculated** (see Condition 21), not directly measured.
+**Important**: production breakdown values are **estimated/calculated** (see
+Condition 21), not directly measured.
 
-#### Example Pairing
+#### Example pairing
 
-**Member with meter suffix `0217130Y`:**
+**Member with consumption meter suffix `0217130Y`:**
 
 ```
-Physical Meter: CH101110123450000000000000217130Y
+Consumption metering point: CH101110123450000000000000217130Y
 ├─ Consumption Total: 123.45 kWh
 ├─ Consumption CEL Local: 78.90 kWh (estimated)
 ├─ Consumption Grid: 44.55 kWh (estimated)
-└─ Production Total: 234.56 kWh
+└─ Production Total: 234.56 kWh          ← kept, this is the canonical copy
 
-Virtual Meter: CH10111012345000000000000008574078
-├─ Production CEL Local: 123.45 kWh (estimated, attributed to physical)
-├─ Production Grid: 111.11 kWh (estimated, attributed to physical)
-└─ Production Total: 234.56 kWh (matches physical!)
+Production metering point: CH10111012345000000000000008574078
+├─ Production CEL Local: 123.45 kWh (estimated, stored under 0217130Y)
+├─ Production Grid: 111.11 kWh (estimated, stored under 0217130Y)
+└─ Production Total: 234.56 kWh          ← identical, dropped as a duplicate
 ```
 
-**Key Insight**: Virtual meter's production total matches physical meter's production total. This is how we discover the pairing!
+That equality is real and useful, but it is **not** how the pairing is
+established — the provider declares it. See
+[The Declared Meters](#the-declared-meters).
 
-#### Self-Contained Meters (newer pattern)
+#### Production-only metering points
 
-Meter suffix `0134575W` (joined ~July 2026) reports its production breakdown
-**on the same meter ID** as the production total, instead of via a separate
-`085`-prefixed virtual meter.
+Meter suffix `0134575W` (appeared ~July 2026) reports its production breakdown
+**on the same meter ID** as its production total, because it has no consumption
+metering point to pair with. The provider declares it `production-only`.
 
-`0134575W` is a **special meter, not linked to RCP** (Regroupement pour la
-Consommation Propre / self-consumption grouping). As of July 2026 it is the
-**only** self-contained meter — the sole case whose production breakdown is
-attributed to the meter itself rather than to a separate virtual meter.
+`0134575W` is **not linked to RCP** (Regroupement pour la Consommation Propre /
+self-consumption grouping). As of July 2026 it is the only one of its kind.
 
 ```
 Meter: CH101110123450000000000000134575W
-├─ Production Total:     851.234 kWh (ebIX 8716867000030)
+├─ Production Total:     851.234 kWh (ebIX 8716867000030)   ← canonical, kept
 ├─ Production CEL Local: 124.148 kWh (VSE 2404050010123, estimated)
 └─ Production Grid:      727.086 kWh (VSE 2404050010124, estimated)
                          (124.148 + 727.086 = 851.234 ✓)
 ```
 
-**Key differences from the virtual-meter pattern**:
-- No separate virtual meter — total and breakdown share one meter ID
-- No production-total matching needed — the breakdown is attributed to the
-  meter **itself**
+**Key differences from the paired pattern**:
+- One id, not two — total and breakdown share it, and the breakdown is stored
+  under the meter **itself**
+- Its production total is the only copy, so it is **kept**, not dropped
 
-**How it's handled**: it has a consumption file, so it is not virtual, so its
-breakdown is its own — the classification rule separates it with no special case.
-Discovery returns it in the self-contained set and the parser attributes the
-breakdown to the meter itself. See [Meter Mapping Discovery](#meter-mapping-discovery).
+**⚠️ The provider also sends it a consumption total file, and that file is
+spurious** — a production-only metering point has no consumption. It is not
+zero-filled either: over 2026-04-30..2026-08-22 it carried real-looking values on
+5270 of 9216 slots, and because it bears the real `community_id` it was **not**
+filtered out of community-scoped queries. Ingestion discards it as an intentional
+skip (archived, not failed). Tracked as Q11a in `PROVIDER_QUESTIONS.md`.
 
 ---
 
@@ -302,10 +308,10 @@ YYYYMMDD_HHMMSS_<sender>_E66_<receiver>_<uuid>.xml
 
 **E66 File Distribution**:
 ```
-Physical meters with production:     9 × 4 files = 36 files
-Physical meters without production: 12 × 3 files = 36 files
-Virtual meters (production):         9 × 3 files = 27 files
-Special virtual meter (0134575W):    1 × 4 files =  4 files
+Consumption points, member produces: 9 × 4 files = 36 files
+Consumption-only points:            12 × 3 files = 36 files
+Production points (breakdown):       9 × 3 files = 27 files
+Production-only (0134575W):          1 × 4 files =  4 files
                                               Total: 103 files
 ```
 
@@ -370,113 +376,112 @@ Production (E18):
 
 ---
 
-## Physical vs Virtual Meters
+## Consumption vs Production Metering Points
 
-### Why Two Types?
+### Why two ids?
 
-**Physical meters** at each household measure:
-- ✅ **Total flows**: Total consumption in, total production out
-- ❌ **NOT source/destination split**: Where energy came from or went to
+A **consumption metering point**'s files carry:
+- ✅ **Total flows**: total consumption in, total production out
+- ✅ **Consumption breakdown**: where the consumed energy came from
+- ❌ **NOT the production breakdown**: where the produced energy went
 
-**Virtual meters** provide:
-- ✅ **VSE breakdown**: CEL Local vs Grid split for production
-- ❌ **NOT real measurements**: These are estimated/calculated values
+A **production metering point**'s files carry:
+- ✅ **VSE production breakdown**: CEL Local vs Grid split for production
+- ✅ A **duplicate** of the consumption twin's production total
+- ❌ **NOT real measurements** of the breakdown: those are estimated/calculated
 
 **RCP meters** (Regroupement pour la Consommation Propre) — *hypothetical*:
 - ✅ **Grid connection point**: Measures net exchange for multiple units
-- ✅ **Both consumption & production**: Functions like physical meter
+- ✅ **Both consumption & production**
 - ✅ **Gets breakdown data**: Participates in CEL trading
 - Example: Apartment building with shared solar, only net grid exchange metered
 - ⚠️ **No RCP meter is confirmed in the data.** `0134575W` was once assumed to be
-  RCP but is **not** — it is a self-contained meter (see [Self-Contained Meters](#self-contained-meters-newer-pattern)).
+  RCP but is **not** — it is a production-only metering point (see
+  [Production-only metering points](#production-only-metering-points)).
 
-### The Mapping Challenge
+### The pairing is declared, not inferred
 
-**Problem**: Provider delivers files with both physical and virtual meters, but doesn't tell us which virtual meter corresponds to which physical meter.
+**The linkage is nowhere in the XML.** A production file carries its own
+`ProductionMeteringPoint/VSENationalID` and a `Community` block, and nothing that
+names the consumption metering point of the same site.
 
-**Our solution**: Auto-discovery from the delivery itself — the series each meter
-reports say what kind of meter it is, and its production total says whose it is.
+**So the provider declares it**, in `config/meters.yaml`. Attribution is then a
+per-file lookup: which meter a file's rows belong to depends only on that file and
+the declaration, never on what else is in the batch.
 
-### Discovery Algorithm
+> **Why this replaced auto-discovery.** The pairing used to be *derived* from each
+> delivery: a production metering point's ebIX total repeats its twin's slot for
+> slot, and that exact `Decimal` equality identified the pair. It worked — 39
+> sample delivery dates, 43 report-period groups, all resolved, 9 pairs stable
+> May→August — but it needed **the whole delivery in hand**. Deliveries routinely
+> arrive in waves hours apart, and a late or retried file processed on its own
+> paired against nothing, so its breakdown could not be attributed at all. The
+> declaration removes that whole class of problem, along with the report-period
+> grouping, the ambiguity reporting and the mappings cache it required.
+>
+> It also removed a latent double count. Whether a production total was a duplicate
+> was decided from the derived mapping, so a wave carrying the totals with **no**
+> breakdown file (the monthly half of `20260605`) paired nothing and stored nine
+> production totals under their own ids. With the declaration the question is
+> answered per file: is this id the production side of a declared pair?
 
-Everything below is per **report period**, over CEL files only, on **full 33-char
-meter ids** (never a suffix, never a prefix test). A delivery is not one report
-period — `20260807` carries a month and 5 days — and comparing a monthly total
-with a 5-day one would pair the wrong meters.
+### The declaration
 
-**Step 1 — classify structurally**, from the set of `(metering point, segment)`
-series a meter reports:
+**Location**: `/app/config/meters.yaml` (deploy artifact, gitignored because it
+holds real meter ids; `config/meters.yaml.example` is the tracked template)
 
-```python
-has_breakdown   = a (production, cel) or (production, grid) file exists
-has_consumption = any consumption file exists
+Three sections, each a pure lookup:
 
-virtual           = has_breakdown and not has_consumption   # pair to a physical
-self_contained    = has_breakdown and has_consumption       # owns its breakdown
-physical_producer = has (production, total) and not virtual
+```yaml
+consumption-only:
+  - CH101110123450000000000000036273C     # a member with no production
+
+consumption-production:
+  - consumption: CH101110123450000000000000046782G
+    production:  CH10111012345000000000000008552310
+
+production-only:
+  - CH101110123450000000000000134575W     # no consumption metering point
 ```
 
-A virtual meter has **no consumption file at all** — that absence is the
-discriminator, and it holds for all 9 in every period measured. `0134575W` is
-separated by the same rule with no special case.
+**It is validated at startup, and every error raises** (`scripts/meters.py`):
+a missing file, an unknown section name, an id shorter than 20 characters, a pair
+missing a key, a meter paired with itself, a repeated production id, one
+consumption meter in two pairs, the same id in two sections. The job **refuses to
+start** rather than ingest a delivery whose breakdowns land on the wrong member —
+which no later query could detect.
 
-**Step 2 — pair on the whole observation vector**. A virtual meter's ebIX
-production total repeats its physical twin's, slot for slot, so within the group
-the vectors are compared for **exact `Decimal` equality** — no tolerance, no
-sums, no sampling. Assignment is one-to-one:
+An id shorter than 20 characters is rejected specifically because the mappings
+cache this file replaced was keyed on the 8-character suffix. Full 33-char ids
+only; ids are never sliced.
 
-```python
-for v in virtual:
-    candidates = [p for p in physical_producers if vector(p) == vector(v)]
-    # exactly one, not already claimed -> mappings[v] = p
-    # zero, several, or already claimed -> report an ambiguity, map nothing
-```
+### Attribution: four rules, no batch context
 
-Exact equality works because the grouping guarantees identical slot counts, and
-one-to-one assignment is what keeps a second claim from silently storing one
-member's production under another's meter. Ambiguities are reported, never
-guessed: a wrong pairing cannot be told apart afterwards.
+| File | The file's meter is | Outcome |
+|------|---------------------|---------|
+| production breakdown (`cel`/`grid`) | the production side of a pair | stored under the **consumption** meter |
+| production breakdown | `production-only` | stored under **itself** |
+| production breakdown | undeclared | `FAILED`, ERROR logged, kept for retry |
+| ebIX `production_total` | the production side of a pair | `SKIPPED` — duplicates the twin's total |
+| ebIX `production_total` | the consumption side of a pair, or `production-only` | ingested (canonical) |
+| **any consumption file** | a declared production metering point | `SKIPPED` — provider fault |
 
-A group is **complete** when every virtual meter paired and nothing was
-ambiguous. Only a complete group is written to `config/meter_mappings.yaml`; an
-incomplete one falls back to what that file already records.
+The last rule is general rather than specific to `0134575W`: a consumption file
+bearing *any* production metering point id cannot be real. Paired production
+metering points get no consumption files today, so it changes nothing for them
+while covering `0134575W` and any repeat of the same fault.
 
-**Example discovery** (delivery `20260610`, one report period):
-```
-9 virtual meters, 1 self-contained (0134575W), 10 physical producers
-CH10111012345000000000000008552310 -> CH101110123450000000000000046782G
-...
-9 mappings, 0 ambiguities
-```
-
-Including the case a sum-based matcher would get wrong: virtual `…08552310`
-reports nothing but zeros and still resolves, because `0046782G` is the only
-other all-zero producer in the group.
-
-### Two Kinds of Production Breakdown
-
-When the parser encounters a production file carrying VSE breakdown codes
-(`2404050010123` / `2404050010124`), it decides where to attribute the
-breakdown in this order:
-
-1. **Separate virtual meter** — the meter id is in the discovered mappings →
-   attribute to its paired physical meter.
-2. **Self-contained meter** — the meter is in the self-contained set → attribute
-   the breakdown to itself.
-3. **Unknown** — neither of the above → the file is treated as a failure and
-   logged as an error (indicates a genuinely new, unrecognized meter), so it
-   stays in the incoming folder and is retried on the next batch.
-
-Both inputs come from the same discovery pass and are passed to the parser, which
-resolves the owner itself: `MeteredData.meter_id` is already the meter the rows
-belong to. The file's own meter id is kept in `cel_file_header.file_meter_id`.
+`MeteredData.meter_id` is already the meter the rows belong to — the parser
+finishes the attribution, so nothing downstream resolves anything. The file's own
+id is kept in `cel_file_header.file_meter_id`, and what it was attributed to in
+`cel_file_header.attributed_meter_id`.
 
 ### Intentional skips are not errors
 
-A mapped virtual meter also delivers an ebIX **production total** that is
-identical to its physical meter's (that equality is how discovery pairs them).
-Ingesting both would double the community production total, so the parser drops
-the virtual copy — about **9 files per daily delivery**.
+Two of the rules above drop a file on purpose, about **10 files per daily
+delivery**: the 9 duplicate production totals, plus the spurious consumption file
+for `0134575W`. Ingesting the duplicates would double the community production
+total.
 
 This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 (`scripts/models.py`) rather than `None`:
@@ -485,78 +490,78 @@ This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 |---------------|---------|-------------------|
 | `MeteredData` | parsed | write to QuestDB, archive (`FileOutcome.INGESTED`) |
 | `SkippedDocument` | valid, deliberately not ingested | log at **INFO**, archive (`FileOutcome.SKIPPED`) |
-| `None` | genuine failure (malformed, unknown meter, missing fields) | log at WARNING/ERROR, **not archived** (`FileOutcome.FAILED`); the next run moves it to `incoming/failed/` and re-downloads it |
+| `None` | genuine failure (malformed, undeclared meter, missing fields) | log at WARNING/ERROR, **not archived** (`FileOutcome.FAILED`); the next run moves it to `incoming/failed/` and re-downloads it |
 
 Skipped files are archived like ingested ones because the decision is permanent
 — leaving them in `/data/incoming` would make them reappear (and be re-reported)
 on every delivery. The batch summary counts them separately:
 
 ```
-Ingested: 100, Skipped by design: 9, Errors: 0
+Ingested: 99, Skipped by design: 10, Errors: 0
 ```
 
-> **History**: Before July 2026 all members used the separate-virtual-meter
-> pattern (case 1). Meter `0134575W` introduced the self-contained pattern
-> (case 2); before the parser handled it, its 2 daily production-breakdown files
-> were skipped with `Unknown virtual meter 0134575W`.
+A delivery carrying two report periods has one set per wave, so 20 is equally
+expected there.
 
-### Discovered Mappings
+> **History**: before July 2026 every producing member used the two-metering-point
+> pattern. `0134575W` arrived with no consumption metering point, and before the
+> parser handled that its 2 daily production-breakdown files were skipped as an
+> unknown meter.
 
-Current community mappings (as of June 2026):
+### The current declaration
 
-| Physical Meter | Virtual Meter | Status |
-|----------------|---------------|--------|
-| `0217130Y` | `08574078` | ✓ Confirmed |
-| `0020576V` | `0855229G` | ✓ Confirmed |
-| `0046782G` | `08552310` | ✓ Confirmed |
-| `00846565` | `0855227M` | ✓ Confirmed |
-| `01192538` | `0855223Y` | ✓ Confirmed |
-| `0125445D` | `08552213` | ✓ Confirmed |
-| `01650626` | `0855219K` | ✓ Confirmed |
-| `0208254A` | `0857405E` | ✓ Confirmed |
-| `0803097E` | `0855225S` | ✓ Confirmed |
+Current community declaration, shown by suffix (the file holds full 33-char ids):
 
-**Self-contained meter**: `0134575W` (joined ~July 2026) is **not** a virtual
-meter and has no mapping entry. It reports its production total *and* its VSE
-production breakdown on the same meter ID, so its breakdown is attributed to
-itself. It is **not linked to RCP** and is currently the only such meter. See
-[Self-Contained Meters](#self-contained-meters-newer-pattern).
+| Consumption metering point | Production metering point | Status |
+|----------------------------|---------------------------|--------|
+| `0217130Y` | `08574078` | ✓ Declared, matches what discovery inferred |
+| `0020576V` | `0855229G` | ✓ Declared, matches |
+| `0046782G` | `08552310` | ✓ Declared, matches |
+| `00846565` | `0855227M` | ✓ Declared, matches |
+| `01192538` | `0855223Y` | ✓ Declared, matches |
+| `0125445D` | `08552213` | ✓ Declared, matches |
+| `01650626` | `0855219K` | ✓ Declared, matches |
+| `0208254A` | `0857405E` | ✓ Declared, matches |
+| `0803097E` | `0855225S` | ✓ Declared, matches |
+
+**Consumption-only** (12): `0036273C`, `0050170B`, `0060545I`, `0062412W`,
+`0078872J`, `0164750O`, `0198918Z`, `0199054X`, `02291991`, `0229599I`,
+`0832199P`, `0858140M`.
+
+**Production-only** (1): `0134575W`. See
+[Production-only metering points](#production-only-metering-points).
 
 ---
 
-## Meter Mapping Discovery
+## The Declared Meters
 
-### When Discovery Runs
+### The equality check did not disappear — it moved
 
-Once per delivery batch, on the batch's own files — never at startup, never
-against the archive. The batch reads every file's header once (`sdat_header.load_headers`)
-and discovery works off those headers, so nothing is parsed twice and a new member
-is picked up by the delivery that introduces them.
+Trusting a declaration means a wrong line in it would misattribute silently, so
+the value equality that used to *derive* the pairing now *confirms* it. It lives in
+the delivery report (`scripts/delivery_report.check_declared_pairs`), **not** in
+the ingest path:
 
-A run that spans two report periods discovers each separately; a file whose period
-discovery could not resolve falls back to the recorded mappings.
+- Per report period, for each declared pair whose **two** production totals are
+  both present in the group, the observation vectors are compared for exact
+  `Decimal` equality. A disagreement is logged at **ERROR**, naming both files and
+  how many slots differ.
+- A pair with only one of its files present yields nothing. Deliveries arrive in
+  waves, so half a pair is normal, and reporting it would bury the real finding.
+- The report is a diagnostic wrapped in try/except, so it can **never** fail the
+  ingestion it describes. Ingestion stays strictly per-file.
 
-### The YAML file is a record, not the source of truth
+### When the declaration is read
 
-**Location**: `/app/config/meter_mappings.yaml`
+Once, at startup, by `SDATProcessor.from_config`. There is nothing to refresh per
+batch and nothing cached: the same `Meters` object serves every file of every
+delivery in the run.
 
-**Structure** — flat `virtual: physical`, on full meter ids:
-```yaml
-meter_mappings:
-  CH10111012345000000000000008574078: CH101110123450000000000000217130Y
-  CH10111012345000000000000008552310: CH101110123450000000000000046782G
-  # ... etc
-```
-
-Only **complete** period discoveries are written to it (every virtual meter paired,
-nothing ambiguous), and the difference against what it held is logged: a new mapping
-at INFO, a disappeared one at WARNING, a *changed* one at **ERROR** — a breakdown
-moving to a different physical meter is either a provider change or a mis-pairing,
-and both are worth an error line.
-
-A file whose keys are not full-length meter ids is from the previous suffix-keyed
-format and is **ignored outright** rather than half-trusted: a partial id attributes
-a breakdown to nothing.
+A new member therefore needs the declaration updated **before** their files
+arrive. Until then their production breakdown fails (ERROR, kept in
+`/data/incoming`) and is ingested on the retry after the update — nothing is lost
+and nothing is stored under a guess. Their consumption files are unaffected: a
+consumption file is attributed to its own meter whether or not it is declared.
 
 ---
 
@@ -580,7 +585,7 @@ a breakdown to nothing.
                  ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  Parser Container (cel-parser)                              │
-│  ├─ Meter mapping discovery                                 │
+│  ├─ Declared meters (config/meters.yaml, read at startup)   │
 │  ├─ E66 parser (parse_sdat_e66_individual.py)                          │
 │  ├─ E31 parser (parse_sdat_e31_aggregated.py)                    │
 │  └─ Batch processor (sdat_processor.py)                     │
@@ -604,10 +609,13 @@ a breakdown to nothing.
 ### Batch Processing Flow
 
 **Why batch processing?**
-- ✅ All files present before processing (solves new member detection)
-- ✅ Discovery finds both physical and virtual meters together
-- ✅ Avoids race conditions
-- ✅ Better performance (one discovery per delivery, not per file)
+- ✅ Avoids race conditions (a file still being written is not parsed)
+- ✅ One summary and one delivery report per delivery, not per file
+- ✅ Amortises the archive scan and the header pass over the whole delivery
+
+Note what is **no longer** a reason: attribution does not need the batch to be
+complete. It is a per-file lookup in the declared meters, so a file arriving in a
+later wave — or retried after a failure — is attributed on its own.
 
 **Process**:
 
@@ -626,8 +634,8 @@ a breakdown to nothing.
    └─ If new delivery: process previous batch immediately
 
 4. Batch processing:
-   ├─ Refresh meter mappings (discovery from incoming + archive)
-   ├─ Process all files with updated mappings
+   ├─ Read every file's header once (sdat_header.load_headers)
+   ├─ Attribute each file via the declared meters
    ├─ Write rows to QuestDB
    └─ Archive processed files (a failed write keeps the file for retry)
 
@@ -649,9 +657,10 @@ See [QUESTDB.md](QUESTDB.md#chronological-replay-is-a-correctness-requirement).
 
 **For each E66 file**:
 
-1. **Parse XML** → Extract meter ID, product code, observations
-2. **Determine type** → Physical or virtual meter?
-3. **Apply mapping** → If virtual, attribute to physical meter
+1. **Parse XML** → Extract meter ID, metering point type, product code, observations
+2. **Look up the meter** → is this id declared, and as what?
+3. **Attribute** → a production breakdown goes to the paired consumption meter (or
+   to itself, if production-only); a duplicate or spurious file is skipped
 4. **Classify** → `product_code` + metering point → `direction` + `segment`
 5. **Write** → `INSERT` into `cel_energy`
 6. **Archive** → Move file to `/data/archive`
@@ -736,7 +745,7 @@ fed in chronological order.
 
 **Meaning** (per SDAT specifications):
 - **Estimated/Calculated data**
-- NOT directly measured by physical meter
+- NOT directly measured at the metering point
 - Calculated using an algorithm/estimation method
 
 **Where we see Condition 21**:
@@ -746,7 +755,7 @@ fed in chronological order.
 
 **Example**:
 ```
-Physical Meter 0217130Y:
+Meter 0217130Y:
 ├─ Consumption Total: 123.45 kWh         (NO condition flag - measured!)
 ├─ Consumption CEL: 78.90 kWh            (Condition 21 - estimated!)
 └─ Consumption Grid: 44.55 kWh           (Condition 21 - estimated!)
@@ -795,13 +804,21 @@ Physical Meter 0217130Y:
 
 4. **Delivery completion signal**: Is there a marker file or signal that indicates all files have been delivered? This would help us process files as a complete batch.
 
-**Meter Mappings**:
+**Metering points**:
 
-5. **Official mapping**: Can you provide the official mapping of physical meter ID → virtual meter ID for all community members? We've discovered them by matching production totals, but would like to confirm.
+5. ~~**Official mapping**~~ — **ANSWERED**: the provider supplies the list of
+   metering points, now `config/meters.yaml`, and the 9 declared pairs match what we
+   had inferred by matching production totals. Remaining ask: notify us **before**
+   the delivery in which the list changes.
 
-6. **New members**: When a new member joins, will they automatically get a physical and virtual meter pair? How soon after joining do files appear?
+6. **New members**: When a new member joins, will they automatically get both a
+   consumption and a production metering point id? How soon after joining do files
+   appear?
 
-7. **Virtual meter 0134575W**: This virtual meter has no matching physical meter in our data. Is this intentional? What does it represent?
+7. **Meter 0134575W**: **ANSWERED** — it is declared `production-only`, a
+   production metering point with no consumption. Remaining: what does it
+   represent, and why does it also receive a consumption total file, which cannot
+   be real? See `PROVIDER_QUESTIONS.md` Q11a.
 
 **Data Quality**:
 
@@ -867,9 +884,15 @@ Physical Meter 0217130Y:
 
 **E31**: Document type for community aggregated data (AggregatedMeteredData format)
 
-**Physical Meter**: Actual meter installed at member's household, measures total flows
+**Consumption metering point**: the id a member's consumption is metered under; it
+also reports the production total. Everything is stored under this id.
 
-**Virtual Meter**: Software/estimated meter providing VSE breakdown for production
+**Production metering point**: a producing site's second id, carrying the VSE
+production breakdown and a duplicate of the production total. Its rows are stored
+under the paired consumption id.
+
+**Declared meters**: `config/meters.yaml`, the provider's list of which id is which
+and which pairs with which. Attribution reads it; nothing infers it.
 
 **VSE National Code**: Swiss national standard code for energy products (e.g., 2404050010123 = CEL Local)
 
@@ -890,6 +913,7 @@ revisions land
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-06-26 | Initial version - comprehensive parsing guide |
+| 1.1 | 2026-09-08 | Provider-declared `config/meters.yaml` replaces auto-discovery; physical/virtual renamed to consumption/production metering point; `0134575W` is production-only and its consumption files are discarded |
 
 ---
 
@@ -900,57 +924,57 @@ revisions land
 **Data received** (4 files):
 
 ```
-File 1: Consumption Total (Physical meter)
+File 1: Consumption Total (consumption metering point)
   Meter: CH101110123450000000000000217130Y
   Code: ebIX 8716867000030
   Value: 123.45 kWh
   Condition: (none - measured)
 
-File 2: Consumption CEL Local (Physical meter)  
+File 2: Consumption CEL Local (consumption metering point)
   Meter: CH101110123450000000000000217130Y
   Code: VSE 2404050010123
   Value: 78.90 kWh
   Condition: 21 (estimated)
 
-File 3: Consumption Grid (Physical meter)
+File 3: Consumption Grid (consumption metering point)
   Meter: CH101110123450000000000000217130Y
   Code: VSE 2404050010124
   Value: 44.55 kWh
   Condition: 21 (estimated)
 
-File 4: Production Total (Physical meter)
+File 4: Production Total (consumption metering point)
   Meter: CH101110123450000000000000217130Y
   Code: ebIX 8716867000030
   Value: 234.56 kWh
   Condition: (none - measured)
 ```
 
-**Virtual meter files** (3 files):
+**Production metering point files** (3 files):
 
 ```
-File 5: Production CEL Local (Virtual meter)
-  Meter: CH10111012345000000000000008574078  ← Virtual!
+File 5: Production CEL Local (production metering point)
+  Meter: CH10111012345000000000000008574078  ← the member's second id
   Code: VSE 2404050010123
   Value: 123.45 kWh
   Condition: 21 (estimated)
-  → Attributed to physical meter 0217130Y
+  → declared as paired with 0217130Y, so stored under 0217130Y
 
-File 6: Production Grid (Virtual meter)
-  Meter: CH10111012345000000000000008574078  ← Virtual!
+File 6: Production Grid (production metering point)
+  Meter: CH10111012345000000000000008574078
   Code: VSE 2404050010124
   Value: 111.11 kWh
   Condition: 21 (estimated)
-  → Attributed to physical meter 0217130Y
+  → stored under 0217130Y
 
-File 7: Production Total (Virtual meter)
-  Meter: CH10111012345000000000000008574078  ← Virtual!
+File 7: Production Total (production metering point)
+  Meter: CH10111012345000000000000008574078
   Code: ebIX 8716867000030
-  Value: 234.56 kWh  ← Matches physical!
+  Value: 234.56 kWh  ← identical to File 4
   Condition: (none - measured)
-  → Used for mapping discovery
+  → SKIPPED: the declared pair means File 4 is the canonical copy
 ```
 
-**Final data in QuestDB** (all attributed to physical meter `0217130Y`):
+**Final data in QuestDB** (all stored under consumption meter `0217130Y`):
 
 ```
 Consumption:
@@ -960,8 +984,8 @@ Consumption:
 
 Production:
 ├─ Total: 234.56 kWh (measured)
-├─ CEL Local: 123.45 kWh (estimated, from virtual meter)
-└─ Grid: 111.11 kWh (estimated, from virtual meter)
+├─ CEL Local: 123.45 kWh (estimated, from the production metering point)
+└─ Grid: 111.11 kWh (estimated, from the production metering point)
 ```
 
 **Member dashboard shows**:

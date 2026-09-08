@@ -1,28 +1,28 @@
 """Tests for sdat_processor - the daily batch that ingests a delivery.
 
-Written BEFORE the ingestion redesign, so they pin what the batch does today:
-which files are archived, which are kept for retry, and where a virtual meter's
-production breakdown ends up. The attribution assertions are expected to change
-shape when the parser stops splicing meter IDs; the archiving and outcome
-assertions are not.
+What is pinned here is the batch's contract: which files are archived, which are
+kept for retry, and where a production breakdown ends up. Attribution itself is a
+lookup in the declared meters (see test_meters.py), so nothing below depends on
+what else is in the batch -- which is the property the discovery it replaced did
+not have.
 """
 from pathlib import Path
 import zipfile
 
 import pytest
 
-from conftest import (SAMPLE_MAPPINGS, SAMPLE_SELF_CONTAINED, make_e31_xml,
-                      make_e66_xml, meter_id)
+from conftest import SAMPLE_METERS, make_e31_xml, make_e66_xml, meter_id
+from scripts.meters import Meters
 from scripts.sdat_processor import (FileOutcome, SDATProcessor,
                                     archive_batch_as_zip, group_by_date)
 
 EBIX_TOTAL = '8716867000030'
 VSE_CEL = '2404050010123'
 
-VIRTUAL = meter_id('08552310')          # in SAMPLE_MAPPINGS
-PHYSICAL = meter_id('0046782G')         # its mapped physical meter
+PRODUCTION = meter_id('08552310')        # a declared production metering point
+CONSUMPTION = meter_id('0046782G')       # the consumption meter it is paired with
 MEMBER = meter_id('0020576V')
-SELF_CONTAINED = meter_id('0134575W')   # in SAMPLE_SELF_CONTAINED
+PRODUCTION_ONLY = meter_id('0134575W')   # declared production-only
 
 
 def sdat_name(delivery='20260522', time='094500', doc='E66', tag='a1b2c3d4'):
@@ -31,14 +31,12 @@ def sdat_name(delivery='20260522', time='094500', doc='E66', tag='a1b2c3d4'):
 
 @pytest.fixture
 def processor(tmp_path, fake_questdb):
-    """A processor with injected dependencies: no network, no discovery."""
+    """A processor with injected dependencies: no network, no config file."""
     incoming = tmp_path / 'incoming'
     archive = tmp_path / 'archive'
     incoming.mkdir()
     archive.mkdir()
-    return SDATProcessor(incoming, archive, fake_questdb.writer,
-                         meter_mappings=dict(SAMPLE_MAPPINGS),
-                         self_contained_meters=set(SAMPLE_SELF_CONTAINED))
+    return SDATProcessor(incoming, archive, fake_questdb.writer, SAMPLE_METERS)
 
 
 def drop(processor, xml, **name_kwargs):
@@ -60,30 +58,38 @@ def test_constructor_does_no_io(tmp_path, fake_questdb):
     """
     missing = tmp_path / 'does-not-exist'
     p = SDATProcessor(missing, missing, fake_questdb.writer)
-    assert p.meter_mappings is None and p.self_contained_meters is None
+    assert p.meters == Meters.empty()
 
 
-def test_from_config_reads_paths_and_builds_a_writer():
+def test_from_config_reads_paths_and_the_declaration(tmp_path):
+    meters_file = tmp_path / 'meters.yaml'
+    meters_file.write_text(f'production-only:\n  - "{PRODUCTION_ONLY}"\n')
     config = {'questdb': {'dsn': 'postgresql://fake'},
               'processing': {'incoming_path': '/data/incoming',
                              'archive_path': '/data/archive',
-                             'meter_mapping_file': '/app/config/meter_mappings.yaml'}}
+                             'meters_file': str(meters_file)}}
     p = SDATProcessor.from_config(config)
     assert p.incoming_dir == Path('/data/incoming')
     assert p.archive_dir == Path('/data/archive')
-    assert p.mapping_cache_file == Path('/app/config/meter_mappings.yaml')
+    assert p.meters.production_only == {PRODUCTION_ONLY}
     assert p.questdb.dsn == 'postgresql://fake'
 
 
-def test_injected_mappings_are_not_read_from_the_cache(processor, tmp_path):
-    """An empty mapping is a choice, not a missing value.
+def test_from_config_refuses_to_run_without_a_declaration():
+    """Starting without it would ingest a delivery whose breakdowns fail one by
+    one -- 27 files a day, and nothing saying why."""
+    config = {'processing': {'incoming_path': '/data/incoming',
+                             'archive_path': '/data/archive'}}
+    with pytest.raises(ValueError, match='meters_file'):
+        SDATProcessor.from_config(config)
 
-    `is None` rather than truthiness, so a test (or a run with no virtual
-    meters) cannot silently fall back to the recorded mappings.
-    """
-    processor.meter_mappings = {}
-    processor.mapping_cache_file = tmp_path / 'never-read.yaml'
-    assert processor.cached_mappings() == {}
+
+def test_from_config_refuses_a_declaration_that_is_not_there(tmp_path):
+    config = {'processing': {'incoming_path': '/data/incoming',
+                             'archive_path': '/data/archive',
+                             'meters_file': str(tmp_path / 'absent.yaml')}}
+    with pytest.raises(FileNotFoundError):
+        SDATProcessor.from_config(config)
 
 
 # --------------------------------------------------------------------------
@@ -132,39 +138,50 @@ def test_e31_file_lands_in_the_aggregate_table(processor, fake_questdb):
     assert fake_questdb.row_count('cel_energy') == 0
 
 
-def test_virtual_meter_production_total_is_skipped_not_failed(processor, fake_questdb):
-    """The virtual meter repeats its physical twin's production total, so the
-    copy is dropped -- deliberately, and the file is still archived."""
+def test_paired_production_total_is_skipped_not_failed(processor, fake_questdb):
+    """The production metering point repeats its consumption twin's production
+    total, so the copy is dropped -- deliberately, and the file is still
+    archived."""
     path = drop(processor, make_e66_xml(
-        meter_id=VIRTUAL, point='production',
+        meter_id=PRODUCTION, point='production',
         product_code=EBIX_TOTAL, code_type='ebIXCode'))
     assert processor.process_sdat_file(path) is FileOutcome.SKIPPED
     assert fake_questdb.row_count('cel_energy') == 0
 
 
-def test_production_breakdown_is_stored_under_the_physical_meter(processor, fake_questdb):
-    """The rows of a virtual meter's breakdown belong to the physical meter."""
+def test_production_breakdown_is_stored_under_the_consumption_meter(processor, fake_questdb):
+    """One member is one meter in the database, whichever of their two metering
+    points a file came from."""
     path = drop(processor, make_e66_xml(
-        meter_id=VIRTUAL, point='production', product_code=VSE_CEL,
+        meter_id=PRODUCTION, point='production', product_code=VSE_CEL,
         code_type='VSENationalCode', values=(3.0,)))
     assert processor.process_sdat_file(path) is FileOutcome.INGESTED
     stored = {r['meter_id'] for r in fake_questdb.rows['cel_energy'].values()}
-    assert stored == {PHYSICAL}
+    assert stored == {CONSUMPTION}
 
 
-def test_self_contained_meter_keeps_its_own_breakdown(processor, fake_questdb):
-    """0134575W reports the total and the breakdown on the same ID, so its
-    breakdown is attributed to itself rather than to a virtual twin."""
+def test_production_only_meter_keeps_its_own_breakdown(processor, fake_questdb):
+    """0134575W has no consumption twin, so its breakdown is its own."""
     path = drop(processor, make_e66_xml(
-        meter_id=SELF_CONTAINED, point='production', product_code=VSE_CEL,
+        meter_id=PRODUCTION_ONLY, point='production', product_code=VSE_CEL,
         code_type='VSENationalCode', values=(3.0,)))
     assert processor.process_sdat_file(path) is FileOutcome.INGESTED
     stored = {r['meter_id'] for r in fake_questdb.rows['cel_energy'].values()}
-    assert stored == {SELF_CONTAINED}
+    assert stored == {PRODUCTION_ONLY}
 
 
-def test_unknown_virtual_meter_fails_rather_than_guessing(processor):
-    """A new member appears as an unmapped breakdown file. Failing keeps it in
+def test_a_consumption_file_on_a_production_meter_is_skipped(processor, fake_questdb):
+    """A provider fault, understood: archived like any other intentional skip, so
+    it clears from incoming instead of being re-reported every delivery."""
+    path = drop(processor, make_e66_xml(
+        meter_id=PRODUCTION_ONLY, point='consumption',
+        product_code=EBIX_TOTAL, code_type='ebIXCode'))
+    assert processor.process_sdat_file(path) is FileOutcome.SKIPPED
+    assert fake_questdb.row_count('cel_energy') == 0
+
+
+def test_undeclared_meter_fails_rather_than_guessing(processor):
+    """A new member appears as an undeclared breakdown file. Failing keeps it in
     incoming for the next delivery instead of storing it on the wrong meter."""
     path = drop(processor, make_e66_xml(
         meter_id=meter_id('09999999'), point='production',
@@ -220,7 +237,7 @@ def test_an_unreadable_file_is_logged_as_failed(processor, fake_questdb):
 
 @pytest.mark.parametrize('xml, outcome', [
     (make_e66_xml(meter_id=MEMBER, values=(1.0,)), 'ingested'),
-    (make_e66_xml(meter_id=VIRTUAL, point='production',
+    (make_e66_xml(meter_id=PRODUCTION, point='production',
                   product_code=EBIX_TOTAL, code_type='ebIXCode'), 'skipped'),
     (make_e66_xml(meter_id=MEMBER, values=()), 'failed'),
 ])
@@ -235,13 +252,15 @@ def test_every_readable_file_gets_a_header_row(processor, fake_questdb, xml, out
 
 
 def test_the_header_row_keeps_the_files_own_meter(processor, fake_questdb):
-    """The rows went to the physical meter; the file belongs to the virtual one."""
+    """The rows went to the consumption meter; the file belongs to the production
+    metering point."""
     path = drop(processor, make_e66_xml(
-        meter_id=VIRTUAL, point='production', product_code=VSE_CEL,
+        meter_id=PRODUCTION, point='production', product_code=VSE_CEL,
         code_type='VSENationalCode', values=(3.0,)))
     processor.process_sdat_file(path)
     row = list(fake_questdb.rows['cel_file_header'].values())[0]
-    assert (row['file_meter_id'], row['attributed_meter_id']) == (VIRTUAL, PHYSICAL)
+    assert (row['file_meter_id'],
+            row['attributed_meter_id']) == (PRODUCTION, CONSUMPTION)
 
 
 def test_reprocessing_a_file_leaves_one_header_row_and_two_log_rows(processor, fake_questdb):
@@ -260,7 +279,7 @@ def test_reprocessing_a_file_leaves_one_header_row_and_two_log_rows(processor, f
 def test_batch_archives_what_it_handled_and_keeps_what_failed(processor):
     good = drop(processor, make_e66_xml(meter_id=MEMBER, values=(1.0,)), tag='good')
     skipped = drop(processor, make_e66_xml(
-        meter_id=VIRTUAL, point='production', product_code=EBIX_TOTAL,
+        meter_id=PRODUCTION, point='production', product_code=EBIX_TOTAL,
         code_type='ebIXCode'), tag='skip')
     broken = drop(processor, 'not xml', tag='bad')
 
@@ -272,31 +291,44 @@ def test_batch_archives_what_it_handled_and_keeps_what_failed(processor):
         assert sorted(zf.namelist()) == sorted([good.name, skipped.name])
 
 
-def test_a_batch_discovers_its_own_mappings(tmp_path, fake_questdb):
-    """With no cache and no injected mappings, the delivery itself says where a
-    virtual meter's breakdown belongs: the virtual repeats its physical twin's
-    production total value for value, and nothing else in the group does."""
-    incoming, archive = tmp_path / 'incoming', tmp_path / 'archive'
-    incoming.mkdir()
-    archive.mkdir()
-    processor = SDATProcessor(incoming, archive, fake_questdb.writer)
-
+def test_a_members_two_metering_points_land_on_one_meter(processor, fake_questdb):
+    """Both files of a producing member, as a delivery carries them: the
+    production metering point's total is dropped as a duplicate, its breakdown
+    goes to the consumption meter, and the consumption meter's own total stays."""
     def write(tag, **kwargs):
-        (incoming / sdat_name(tag=tag)).write_text(
-            make_e66_xml(point='production', **kwargs), encoding='utf-8')
+        drop(processor, make_e66_xml(point='production', **kwargs), tag=tag)
 
     total = (5.0, 7.0)
-    write('v1', meter_id=VIRTUAL, product_code=EBIX_TOTAL,
+    write('v1', meter_id=PRODUCTION, product_code=EBIX_TOTAL,
           code_type='ebIXCode', values=total)
-    write('v2', meter_id=VIRTUAL, product_code=VSE_CEL, values=(2.0, 3.0))
-    write('p1', meter_id=PHYSICAL, product_code=EBIX_TOTAL,
+    write('v2', meter_id=PRODUCTION, product_code=VSE_CEL, values=(2.0, 3.0))
+    write('p1', meter_id=CONSUMPTION, product_code=EBIX_TOTAL,
           code_type='ebIXCode', values=total)
 
     processor.process_sdat_files()
 
     stored = {(r['meter_id'], r['segment'])
               for r in fake_questdb.rows['cel_energy'].values()}
-    assert stored == {(PHYSICAL, 'total'), (PHYSICAL, 'cel')}
+    assert stored == {(CONSUMPTION, 'total'), (CONSUMPTION, 'cel')}
+
+
+def test_one_file_of_a_delivery_ingests_on_its_own(tmp_path, fake_questdb):
+    """The retry case discovery could not serve: value-equality pairing needed the
+    consumption meter's total in the same batch, so a production file arriving in
+    a later wave -- or left in incoming after a failure -- was unattributable."""
+    incoming, archive = tmp_path / 'incoming', tmp_path / 'archive'
+    incoming.mkdir()
+    archive.mkdir()
+    processor = SDATProcessor(incoming, archive, fake_questdb.writer,
+                              SAMPLE_METERS)
+    (incoming / sdat_name(tag='late')).write_text(
+        make_e66_xml(meter_id=PRODUCTION, point='production',
+                     product_code=VSE_CEL, values=(2.0, 3.0)), encoding='utf-8')
+
+    processor.process_sdat_files()
+
+    stored = {r['meter_id'] for r in fake_questdb.rows['cel_energy'].values()}
+    assert stored == {CONSUMPTION}
 
 
 def test_each_delivery_date_gets_its_own_zip(processor):

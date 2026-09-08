@@ -16,8 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import (FakeQuestDB, real_files, SAMPLE_MAPPINGS,
-                      SAMPLE_SELF_CONTAINED)
+from conftest import FakeQuestDB, real_files, SAMPLE_METERS
 from scripts.models import MeteredData, MetricType, Observation
 from scripts import questdb_writer
 from scripts.questdb_writer import (E31_COLUMNS, E66_COLUMNS, HEADER_COLUMNS,
@@ -155,11 +154,11 @@ def test_rows_from_e66_shape():
 
 def test_rows_from_e66_stores_the_meter_the_parser_resolved():
     """Attribution is finished in the parser, so the writer stores meter_id as
-    given -- a production breakdown already carries its physical meter."""
-    physical = 'CH101110123450000000000000046782G'
-    rows = rows_from_e66(e66([(TS, '1.000')], meter_id=physical,
+    given -- a production breakdown already carries its consumption meter."""
+    consumption = 'CH101110123450000000000000046782G'
+    rows = rows_from_e66(e66([(TS, '1.000')], meter_id=consumption,
                              metric_type=MetricType.PRODUCTION_LOCAL))
-    assert dict(zip(E66_COLUMNS, rows[0]))['meter_id'] == physical
+    assert dict(zip(E66_COLUMNS, rows[0]))['meter_id'] == consumption
 
 
 def test_rows_from_e31_shape():
@@ -189,8 +188,8 @@ def test_missing_observations_yields_no_rows():
 # What a file is: cel_file_header
 # --------------------------------------------------------------------------
 
-VIRTUAL = 'CH10111012345000000000000008552310'
-PHYSICAL = 'CH101110123450000000000000046782G'
+PRODUCTION = 'CH10111012345000000000000008552310'
+CONSUMPTION = 'CH101110123450000000000000046782G'
 
 
 def header(**kwargs):
@@ -198,7 +197,7 @@ def header(**kwargs):
     fields = dict(
         file_name=E66_FILE, ts=datetime(2026, 5, 22, 9, 45), delivery='20260522',
         document_type='E66', metric_type=MetricType.PRODUCTION_LOCAL,
-        file_meter_id=VIRTUAL, attributed_meter_id=PHYSICAL,
+        file_meter_id=PRODUCTION, attributed_meter_id=CONSUMPTION,
         product_code='2404050010123', code_type='VSENationalCode',
         community_id='101110-002726',
         observations=[Observation(sequence=1, timestamp=TS, value=Decimal('1'),
@@ -209,11 +208,13 @@ def header(**kwargs):
 
 def test_header_row_records_the_meter_the_file_belongs_to_and_the_one_it_was_stored_under(
         fake_questdb):
-    """The capability the table adds: a virtual meter's breakdown is stored under
-    the physical meter, so the file's own meter used to be lost entirely."""
+    """The capability the table adds: a production metering point's breakdown is
+    stored under the consumption meter, so the file's own metering point used to be
+    lost entirely."""
     fake_questdb.writer.log_file_header(header())
     row = list(fake_questdb.rows['cel_file_header'].values())[0]
-    assert (row['file_meter_id'], row['attributed_meter_id']) == (VIRTUAL, PHYSICAL)
+    assert (row['file_meter_id'],
+            row['attributed_meter_id']) == (PRODUCTION, CONSUMPTION)
     assert (row['direction'], row['segment']) == ('production', 'cel')
     assert row['observation_count'] == 1
     assert 'outcome' not in row, 'what happened belongs in cel_ingest_log'
@@ -617,8 +618,7 @@ def _parse_real(paths):
 
     out = []
     for path in paths:
-        parsed = parse_sdat(path, meter_mappings=SAMPLE_MAPPINGS,
-                            self_contained_meters=SAMPLE_SELF_CONTAINED)
+        parsed = parse_sdat(path, SAMPLE_METERS)
         if isinstance(parsed, MeteredData):
             out.append(parsed)
     return out

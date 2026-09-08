@@ -16,7 +16,9 @@ project:
 # Data processing
 processing:
   incoming_path: "/data/incoming"
-  meter_mapping_file: "/app/config/meter_mappings.yaml"
+  # The provider's declared metering points. Required: the job refuses to start
+  # without it rather than ingesting breakdowns it cannot attribute.
+  meters_file: "/app/config/meters.yaml"
   archive_path: "/data/archive"
   # How far back the download looks for files we do not have yet. Deliveries
   # arrive in waves up to hours late, so the window has to exceed a single day.

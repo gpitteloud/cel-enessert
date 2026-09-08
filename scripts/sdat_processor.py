@@ -4,15 +4,13 @@ import zipfile
 from collections import defaultdict
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
 from scripts.delivery_report import report_delivery
-from scripts.discover_meter_mappings import (load_cached_mappings,
-                                             log_mapping_changes,
-                                             resolve_periods, save_mappings)
 from scripts.logger_config import configure_logging
+from scripts.meters import Meters, load_meters
 from scripts.models import SkippedDocument, MeteredData
 from scripts.parse_sdat import metered_data_from_header
 from scripts.questdb_writer import DEFAULT_DSN as QUESTDB_DEFAULT_DSN, QuestDBWriter
@@ -25,9 +23,10 @@ class FileOutcome(Enum):
     """Result of handling one file, and what the batch loop should do with it.
 
     SKIPPED is NOT an error: the file was understood and deliberately not
-    ingested (a mapped virtual meter's duplicate production total, ~9 per
-    delivery). It must still be archived, otherwise it stays in the incoming
-    folder forever and gets re-examined -- and re-reported -- every delivery.
+    ingested -- a paired production meter's duplicate production total (~9 per
+    delivery), or a consumption file on a production metering point. It must
+    still be archived, otherwise it stays in the incoming folder forever and gets
+    re-examined -- and re-reported -- every delivery.
     """
     INGESTED = 'ingested'   # written to QuestDB    -> archive
     SKIPPED = 'skipped'     # intentional, expected -> archive
@@ -59,21 +58,27 @@ class SDATProcessor:
     """
 
     def __init__(self, incoming_dir: Path, archive_dir: Path, writer,
-                 mapping_cache_file: Path = None, meter_mappings: dict = None,
-                 self_contained_meters: set = None):
+                 meters: Optional[Meters] = None):
         self.incoming_dir = Path(incoming_dir)
         self.archive_dir = Path(archive_dir)
         self.questdb = writer
-        self.mapping_cache_file = mapping_cache_file
-        # None means "use what the batch discovers, falling back to the recorded
-        # mappings"; an empty dict/set is an explicit choice and is left alone.
-        self.meter_mappings = meter_mappings
-        self.self_contained_meters = self_contained_meters
+        # The provider's declaration, the same for every file of every batch.
+        self.meters = meters if meters is not None else Meters.empty()
 
     @classmethod
     def from_config(cls, api_config):
-        """Build the processor production uses: paths from config, a real writer."""
+        """Build the processor production uses: paths from config, a real writer.
+
+        The declared meters are loaded here and nowhere else, so a declaration
+        error stops the job before a single file is read -- which is the point of
+        loading them eagerly rather than on first use.
+        """
         job_config = api_config.get('processing', {})
+        meters_file = job_config.get('meters_file')
+        if not meters_file:
+            raise ValueError(
+                "processing.meters_file is not configured: without the declared "
+                "meters no production breakdown can be attributed")
         writer = QuestDBWriter(
             api_config.get('questdb', {}).get('dsn') or QUESTDB_DEFAULT_DSN)
         logger.info("QuestDB writer ready")
@@ -81,49 +86,8 @@ class SDATProcessor:
             incoming_dir=Path(job_config.get('incoming_path')),
             archive_dir=Path(job_config.get('archive_path')),
             writer=writer,
-            mapping_cache_file=Path(job_config.get('meter_mapping_file')),
+            meters=load_meters(meters_file),
         )
-
-    def cached_mappings(self) -> dict:
-        """The recorded mappings, used only where discovery is not conclusive."""
-        if self.meter_mappings is not None:
-            return self.meter_mappings
-        if self.mapping_cache_file:
-            return load_cached_mappings(self.mapping_cache_file)
-        return {}
-
-    def resolve_meters(self, headers) -> dict:
-        """{report period: PeriodResolution} for one delivery.
-
-        Per report period, not per delivery: a delivery can carry two periods,
-        and a monthly total must never be compared with a 5-day one.
-        Discovery runs on the delivery itself, so a new member is picked up
-        without the cache; the cache only covers a period discovery could not
-        resolve.
-        """
-        cached = self.cached_mappings()
-        resolved = resolve_periods(headers, cached)
-
-        trusted = {}
-        for resolution in resolved.values():
-            if resolution.trusted:
-                trusted.update(resolution.mappings)
-        if trusted:
-            log_mapping_changes(trusted, cached)
-            if self.mapping_cache_file:
-                save_mappings(trusted, self.mapping_cache_file)
-        return resolved
-
-    def meters_for(self, header, resolved: dict):
-        """The mappings and self-contained meters that apply to one file.
-
-        A period discovery never saw -- an RCP file, or a single file processed on
-        its own -- falls back to the recorded mappings.
-        """
-        resolution = resolved.get(header.report_period)
-        if resolution is None:
-            return (self.cached_mappings(), self.self_contained_meters or set())
-        return resolution.mappings, resolution.self_contained
 
     def process_sdat_files(self):
         logger.info(f"=" * 80)
@@ -153,10 +117,9 @@ class SDATProcessor:
         logger.info(f"Processing {len(batch)} files delivered on {delivery_date}")
         logger.info(f"-" * 80)
 
-        # One read for the whole delivery: discovery, attribution and provenance
-        # all work off these headers, so no file is parsed twice.
+        # One read for the whole delivery: attribution, provenance and the
+        # report all work off these headers, so no file is parsed twice.
         headers = load_headers(batch)
-        resolved = self.resolve_meters(headers.values())
 
         for file_path in batch:
             # Check if file still exists (might have been manually deleted)
@@ -172,7 +135,7 @@ class SDATProcessor:
                     # load_headers already logged why it could not be read.
                     outcome = FileOutcome.FAILED
                 else:
-                    outcome = self.process_sdat_file(file_path, header, resolved)
+                    outcome = self.process_sdat_file(file_path, header)
 
                 # Ingested AND intentionally-skipped files are both archived.
                 if outcome.archivable:
@@ -196,7 +159,8 @@ class SDATProcessor:
             archive_batch_as_zip(archivable_files, delivery_date, self.archive_dir)
 
         try:
-            report_delivery(delivery_date, headers.values(), resolved, failed_files)
+            report_delivery(delivery_date, headers.values(), self.meters,
+                            failed_files)
         except Exception as e:
             # A diagnostic must never fail the ingestion it describes.
             logger.error(f"Could not report delivery {delivery_date}: {e}",
@@ -209,13 +173,13 @@ class SDATProcessor:
         return success_count
 
 
-    def process_sdat_file(self, file_path: Path, header=None,
-                          resolved: dict = None) -> FileOutcome:
+    def process_sdat_file(self, file_path: Path, header=None) -> FileOutcome:
         """Process a single XML file (E66 or E31)
 
-        `header` and `resolved` come from the batch, which has read every header
-        once already; given neither, the file is read on its own and the recorded
-        mappings apply.
+        `header` comes from the batch, which has read every header once already;
+        without it the file is read here. Attribution is a lookup in the declared
+        meters either way, so a file processed on its own decides the same as it
+        would inside its delivery.
 
         Returns:
             FileOutcome.INGESTED - parsed and written to QuestDB.
@@ -238,7 +202,7 @@ class SDATProcessor:
                 return FileOutcome.FAILED
 
         try:
-            outcome, rows_written = self._ingest(header, resolved or {})
+            outcome, rows_written = self._ingest(header)
         except Exception as e:
             logger.error(f"Error processing {file_path.name}: {e}", exc_info=True)
             outcome, rows_written = FileOutcome.FAILED, 0
@@ -252,15 +216,11 @@ class SDATProcessor:
         return outcome
 
 
-    def _ingest(self, header, resolved: dict):
+    def _ingest(self, header):
         """Parse one file's header into rows and write them: (outcome, rows)."""
-        meter_mappings, self_contained = self.meters_for(header, resolved)
         # Dispatch by document content (E66 vs E31), attribution included
-        parsed_data = metered_data_from_header(
-            header, meter_mappings=meter_mappings,
-            self_contained_meters=self_contained)
+        parsed_data = metered_data_from_header(header, meters=self.meters)
 
-        # total production is on both virtual and physical meters, so skip the virtual one
         if isinstance(parsed_data, SkippedDocument):
             logger.info(f"Skipped by design: {header.file_name} ({parsed_data.reason})")
             return FileOutcome.SKIPPED, 0

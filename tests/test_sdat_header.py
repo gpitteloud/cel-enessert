@@ -1,7 +1,7 @@
 """Tests for sdat_header - what one SDAT file is, read in a single pass.
 
 Every other stage now works off a FileHeader: routing (E66 vs E31, CEL vs RCP),
-discovery (which series a meter reports), attribution and provenance. So the
+attribution, the delivery report and provenance. So the
 paths are asserted here rather than through each consumer, and the golden test
 at the end checks them against a real delivery -- the header element is named
 after the document type, which is exactly the trap the root-anchored paths avoid.
@@ -68,8 +68,8 @@ def test_the_report_period_is_the_grouping_key():
 
 
 def test_observations_come_from_the_same_parse():
-    """The values are on the header so a batch reads each file once: discovery
-    pairs on them and validation compares them slot by slot."""
+    """The values are on the header so a batch reads each file once: the delivery
+    report compares them slot by slot without reparsing."""
     h = header(make_e66_xml(values=(1.5, 2.25), start='2026-05-21T22:00:00Z'))
     assert h.observation_count == 2
     assert [str(v) for v in h.values] == ['1.5', '2.25']

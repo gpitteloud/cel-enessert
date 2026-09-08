@@ -12,9 +12,9 @@ after the document type (``ValidatedMeteredData_HeaderInformation`` for E66,
 two code paths for identical content.
 
 The observations are carried on the same object: reading a file is the expensive
-part, and the batch needs both the metadata (to classify meters and to record
-provenance) and the values (to pair virtual meters and to validate the
-delivery), so nothing here is ever parsed twice.
+part, and the batch needs both the metadata (to attribute the readings and to
+record provenance) and the values (to validate the delivery), so nothing here is
+ever parsed twice.
 """
 import logging
 import xml.etree.ElementTree as ET
@@ -50,7 +50,7 @@ class FileHeader:
     receiver_role: Optional[str] = None      # CEM (CEL) | DEC (RCP)
     period_start: Optional[datetime] = None
     period_end: Optional[datetime] = None
-    file_meter_id: Optional[str] = None      # the file's OWN meter, virtual or not
+    file_meter_id: Optional[str] = None      # the file's OWN metering point id
     metering_point_type: Optional[str] = None    # consumption | production | None (E31)
     flow_characteristic: Optional[str] = None    # E17 | E18, E31 only
     community_id: Optional[str] = None       # absent on RCP files
@@ -64,8 +64,9 @@ class FileHeader:
     interval_start: Optional[str] = None     # ISO-8601, base of the observation clock
     rcp: bool = False
     observations: List[Observation] = field(default_factory=list, repr=False)
-    # Which meter the rows were finally stored under: a virtual meter's breakdown
-    # belongs to its physical twin, so this differs from file_meter_id there.
+    # Which meter the rows were finally stored under: a production metering
+    # point's breakdown belongs to the consumption meter of the same member, so
+    # this differs from file_meter_id there.
     attributed_meter_id: Optional[str] = None
 
     @property
