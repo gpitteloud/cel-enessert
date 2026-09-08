@@ -184,7 +184,7 @@ def pair_virtual_meters(headers: List[FileHeader], classes: MeterClasses
 def discover_mappings(headers: Iterable[FileHeader]) -> Dict[Tuple, PeriodDiscovery]:
     """Discover mappings for every report period present in a batch.
 
-    A delivery is not one report period: 20260807 carries a monthly group and a
+    A delivery is not one report period: it may carry a monthly group and a
     5-day group, whose totals must never be compared with each other.
     """
     results = {}

@@ -108,14 +108,6 @@ def last_archived_date(archive_dir: Path) -> date:
 
 def archived_names(archive_dir: Path, floor: date) -> set:
     """Names already inside a daily archive, looking no further back than `floor`.
-
-    Bounded on purpose: one zip lands per day, so scanning them all would be
-    hundreds of opens within a year. It is also unnecessary -- a batch is
-    archived into a zip named after the file's own YYYYMMDD prefix, so a
-    candidate with prefix P can only be inside P.zip, and candidates start at
-    the floor. That is at most DOWNLOAD_WINDOW_DAYS + 1 opens, forever. Zip
-    names sort as dates, so the rest are excluded by a string comparison
-    without being opened.
     """
     floor_prefix = floor.strftime('%Y%m%d')
     names = set()
@@ -137,10 +129,7 @@ def download_one(session: FTPSession, filename: str, target_dir: Path) -> bool:
     """Fetch one file, atomically and with retries. True if it landed.
 
     Written to <name>.part and renamed, so an interrupted transfer cannot leave a
-    truncated XML under its final name: such a file parses to nothing, gets
-    archived anyway, and then counts as already-downloaded, masking the good copy
-    permanently. The two 0-byte files in the corpus look exactly like that, which
-    is why the transfer is now retried rather than merely cleaned up after.
+    truncated XML under its final name.
     """
     partial = target_dir / (filename + '.part')
 
@@ -171,13 +160,6 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
                         window_days: int = DOWNLOAD_WINDOW_DAYS) -> int:
     """Download every SDAT file of the last `window_days` we do not already have.
 
-    Selection is by file NAME, not by date. Selecting by date lost data: the
-    cutoff was the newest archive zip, i.e. a delivery date, so the moment run N
-    archived 20260807.zip every file still to arrive that day failed
-    `> 20260807` and was never downloaded again -- silently, permanently. Real
-    deliveries arrive in up to four waves, as late as 16:24, so no schedule can
-    avoid that; per-file identity can.
-
     A file counts as already-had only once it is inside an archive zip, because
     archiving is what proves it was stored. A copy sitting in incoming or under
     failed/ proves the opposite -- it was never processed, or processing it
@@ -201,9 +183,8 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
         session.open()
         logger.info("Connected.")
 
-        # Materialised, so that reconnecting inside the loop below cannot leave
-        # a half-consumed listing behind.
         entries = with_retries("Listing the server",
+                 # Materialised, so that reconnecting inside the loop below cannot leave a half-consumed listing behind.
                                lambda: list(session.ftps.mlsd()),
                                before_retry=session.reopen)
         logger.info(f"{len(entries)} entries on the server")
@@ -236,15 +217,6 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
 
 def quarantine_leftovers(target_dir: Path) -> int:
     """Move XML left over from a previous run into failed/, and report it.
-
-    Aborting instead -- what this replaces -- meant a single unparseable file
-    stopped every later delivery: nothing was downloaded, so the "kept in the
-    source folder for retry" files had no next delivery to be retried with.
-
-    failed/ is a subdirectory of the incoming folder, not a sibling: /data
-    itself is not a mount, only /data/incoming and /data/archive are, so a
-    sibling would not survive the container being recreated. Every scan in the
-    codebase globs non-recursively, so a subdirectory is invisible to them.
     """
     leftovers = sorted(target_dir.glob('*.xml'))
     if not leftovers:

@@ -132,9 +132,7 @@ def _business_reason(root) -> Tuple[Optional[str], Optional[str]]:
 def _metering_point(root) -> Tuple[Optional[str], Optional[str]]:
     """(meter id, 'consumption'|'production'), or (None, None) for an aggregate."""
     for point_type in ('consumption', 'production'):
-        meter_id = _text(
-            root,
-            f'.//rsm:{point_type.capitalize()}MeteringPoint/rsm:VSENationalID')
+        meter_id = _text(root,f'.//rsm:{point_type.capitalize()}MeteringPoint/rsm:VSENationalID')
         if meter_id is not None:
             return meter_id, point_type
     return None, None
@@ -151,7 +149,7 @@ def parse_header(root, file_name: str) -> FileHeader:
     if metering_data is None:
         raise ValueError('no MeteringData element')
 
-    resolution_minutes = extract_resolution_minutes(metering_data, NS)
+    resolution_minutes = extract_resolution_minutes(metering_data)
     if resolution_minutes is None:
         raise ValueError('no usable Resolution')
 
@@ -161,7 +159,7 @@ def parse_header(root, file_name: str) -> FileHeader:
 
     business_reason, reason_code_type = _business_reason(root)
     file_meter_id, metering_point_type = _metering_point(root)
-    product_code, code_type = extract_product_code(metering_data, NS)
+    product_code, code_type = extract_product_code(metering_data)
     flow_characteristic = _text(
         root, './/rsm:AggregationCriteria/rsm:FlowCharacteristic')
     ts, delivery = ts_from_filename(file_name)
@@ -174,25 +172,20 @@ def parse_header(root, file_name: str) -> FileHeader:
         file_name=file_name,
         ts=ts,
         delivery=delivery,
-        document_type=_text(
-            root, './/rsm:InstanceDocument/rsm:DocumentType/rsm:ebIXCode'),
+        document_type=_text(root, './/rsm:InstanceDocument/rsm:DocumentType/rsm:ebIXCode'),
         document_id=_text(root, './/rsm:InstanceDocument/rsm:DocumentID'),
         creation=_timestamp(_text(root, './/rsm:InstanceDocument/rsm:Creation')),
         business_reason=business_reason,
         reason_code_type=reason_code_type,
         sender_role=_text(root, './/rsm:Sender/rsm:Role'),
         receiver_role=_text(root, './/rsm:Receiver/rsm:Role'),
-        period_start=_timestamp(
-            _text(root, './/rsm:ReportPeriod/rsm:StartDateTime')),
-        period_end=_timestamp(
-            _text(root, './/rsm:ReportPeriod/rsm:EndDateTime')),
+        period_start=_timestamp(_text(root, './/rsm:ReportPeriod/rsm:StartDateTime')),
+        period_end=_timestamp( _text(root, './/rsm:ReportPeriod/rsm:EndDateTime')),
         file_meter_id=file_meter_id,
         metering_point_type=metering_point_type,
         flow_characteristic=flow_characteristic,
         community_id=_text(metering_data, './/rsm:Community/rsm:CommunityID'),
-        community_type=_text(
-            metering_data,
-            './/rsm:Community/rsm:CommunityType/rsm:VSENationalCode'),
+        community_type=_text(metering_data, './/rsm:Community/rsm:CommunityType/rsm:VSENationalCode'),
         grid_area=_text(metering_data, './/rsm:MeteringGridArea/rsm:EICID'),
         product_code=product_code,
         code_type=code_type,
@@ -200,8 +193,7 @@ def parse_header(root, file_name: str) -> FileHeader:
         resolution_minutes=resolution_minutes,
         interval_start=interval_start,
         rcp=is_rcp(business_reason),
-        observations=parse_observations(
-            metering_data, NS, interval_start, resolution_minutes),
+        observations=parse_observations(metering_data, interval_start, resolution_minutes),
         attributed_meter_id=file_meter_id,
     )
 

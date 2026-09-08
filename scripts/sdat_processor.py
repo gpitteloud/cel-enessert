@@ -95,9 +95,9 @@ class SDATProcessor:
     def resolve_meters(self, headers) -> dict:
         """{report period: PeriodResolution} for one delivery.
 
-        Per report period, not per delivery: a delivery can carry two periods
-        (20260807 does), and a monthly total must never be compared with a 5-day
-        one. Discovery runs on the delivery itself, so a new member is picked up
+        Per report period, not per delivery: a delivery can carry two periods,
+        and a monthly total must never be compared with a 5-day one.
+        Discovery runs on the delivery itself, so a new member is picked up
         without the cache; the cache only covers a period discovery could not
         resolve.
         """
