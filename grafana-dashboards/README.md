@@ -198,10 +198,10 @@ over `segment = 'total' AND direction = 'production'` counts each producer once.
 `0134575W` is declared `production-only` — it has no consumption twin, so its own
 total is the canonical one and is kept.
 
-Those ~10 dropped files per delivery are an expected outcome, not failures: the
-parser returns a `SkippedDocument`, the watcher logs it at INFO and archives the
-file (`Skipped by design: 10` in the batch summary). They are the 9 duplicate
-production totals plus the spurious consumption file the provider sends for
+Those dropped files are an expected outcome, not failures: the parser returns a
+`SkippedDocument`, the watcher logs it at INFO and archives the file
+(`Skipped by design: N` in the batch summary). They are one duplicate production total
+per declared pair, plus the spurious consumption file the provider sends for
 `0134575W`. Only genuine failures stay in `/data/incoming`.
 
 A dashboard note, since it moves the numbers: before the declaration existed the

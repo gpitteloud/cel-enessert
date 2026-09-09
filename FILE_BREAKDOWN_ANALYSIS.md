@@ -17,8 +17,9 @@
 A producing member has **two metering point ids**, one per pattern above. Which
 pairs with which is declared in `config/meters.yaml`; see PARSING_GUIDE.md.
 
-**Example: Community with 21 members (9 with solar, 12 without):**
-- 109 files daily = 103 E66 + 6 E31
+**Example** — a community of 21 members, 9 of them with solar, delivered 109 files a
+day (103 E66 + 6 E31). The E66 count follows the membership and the declaration, so
+treat it as an illustration of the arithmetic below, not as today's figure.
 
 **For technical details on file structure, product codes, and data quality**, see **[PARSING_GUIDE.md](PARSING_GUIDE.md)**.
 

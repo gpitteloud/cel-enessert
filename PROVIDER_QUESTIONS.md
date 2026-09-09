@@ -22,8 +22,8 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - **Flow characteristics**: E17 (consumption) and E18 (production) in E31 files
 - **Community ID**: 101110-002726, Type CT01
 - **The declared meter list**: the provider supplies which consumption id pairs
-  with which production id (9 pairs), confirming what we had inferred by matching
-  production totals. See section 3.
+  with which production id, confirming what we had inferred by matching production
+  totals. See section 3.
 - **E31 stability**: Always 6 E31 files regardless of member count
 - **E31 production = sum of E66 production totals**: exact match once the
   production metering points' duplicate totals are excluded (e.g. 2026-06-15: both
@@ -45,7 +45,7 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - Files delivered daily with incrementing date ranges
 - Example: File delivered 2026-05-27 covers 2026-05-21 to 2026-05-26
 - This creates 4-day overlap between consecutive deliveries
-- **File count varies by membership**: For current community (21 members, 9 with solar): 109 files = 103 E66 + 6 E31 (always)
+- **File count varies by membership**: the E66 count tracks the members and their metering points and rises as the community grows; only the 6 E31 files are constant. See `config/meters.yaml` for the current membership rather than a figure quoted here.
 
 **Questions:**
 1. **Why 5 days per file?** Is this to provide data stability/corrections, or for technical reasons?
@@ -128,7 +128,8 @@ meter is the site's **production metering point**; the "physical" meter is its
   production total
 - A production metering point reports: the same production total, plus the
   production breakdown (CEL Local vs Grid) that only it carries
-- Production metering point ids start with `085`
+- Production metering point ids mostly start with `085`, but not all — `0862613T`
+  starts `086`, so nothing may key on the prefix
 - The pairing is **nowhere in the XML** — a production file carries only its own
   `ProductionMeteringPoint/VSENationalID` and a `Community` block
 
@@ -139,7 +140,8 @@ pairing was derived per delivery from the fact that both ids report the same
 production total value for value — which needed the whole delivery in hand and so
 could not attribute a file arriving in a later wave.
 
-**Declared pairs (9), confirming what we had inferred:**
+**Declared pairs, confirming what we had inferred** — a snapshot as of delivery
+`20260903`, not a fixed set; `config/meters.yaml` is the current list:
 ```
 consumption → production
 0217130Y → 08574078
@@ -149,12 +151,13 @@ consumption → production
 01192538 → 0855223Y
 0125445D → 08552213
 01650626 → 0855219K
-0208254A → 0857405E
+2064573  → 0862613T      <- appeared after the May-June window; found by re-reading
+0208254A → 0857405E         a delivery, not by being told (see Q9)
 0803097E → 0855225S
 ```
 
 **Questions:**
-9. **ANSWERED** by the declared list above, which matches the 9 pairs we had
+9. **ANSWERED** by the declared list above, which matches the pairs we had
    inferred. Remaining: please tell us **before** a delivery when the list changes
    (a new member, a member installing solar), since the job reads it as the source
    of truth and will refuse to attribute an id it has not been told about.
@@ -440,14 +443,14 @@ For your reference, our parser:
 - Attribution is a per-file lookup in the declared meter list, so a file arriving
   in a later wave is handled on its own; the batch is only for the summary
 
-**E66 Files (103/day):**
+**E66 Files (one set per metering point per day):**
 - Consumption metering points: consumption (total + breakdown) and the production
   total
 - Production metering points: the production breakdown is stored under the paired
   consumption id, so one member is one meter; the duplicate production total is
   dropped
-- Covers the 9 declared pairs; an id not in the declared list is held back for
-  retry rather than stored under a guess
+- Covers every declared pair; an id not in the declared list is held back for retry
+  rather than stored under a guess
 
 **E31 Files (6/day):**
 - Community aggregates stored separately with flow characteristics

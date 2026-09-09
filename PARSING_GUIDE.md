@@ -412,8 +412,8 @@ the declaration, never on what else is in the batch.
 > **Why this replaced auto-discovery.** The pairing used to be *derived* from each
 > delivery: a production metering point's ebIX total repeats its twin's slot for
 > slot, and that exact `Decimal` equality identified the pair. It worked — 39
-> sample delivery dates, 43 report-period groups, all resolved, 9 pairs stable
-> May→August — but it needed **the whole delivery in hand**. Deliveries routinely
+> sample delivery dates, 43 report-period groups, all resolved, no pair ever
+> repointing — but it needed **the whole delivery in hand**. Deliveries routinely
 > arrive in waves hours apart, and a late or retried file processed on its own
 > paired against nothing, so its breakdown could not be attributed at all. The
 > declaration removes that whole class of problem, along with the report-period
@@ -478,10 +478,14 @@ id is kept in `cel_file_header.file_meter_id`, and what it was attributed to in
 
 ### Intentional skips are not errors
 
-Two of the rules above drop a file on purpose, about **10 files per daily
-delivery**: the 9 duplicate production totals, plus the spurious consumption file
-for `0134575W`. Ingesting the duplicates would double the community production
-total.
+Two of the rules above drop a file on purpose: **one duplicate production total per
+declared pair**, plus the spurious consumption files for `0134575W`. Ingesting the
+duplicates would double the community production total.
+
+So the expected skip count is `declared pairs + 1` — read it off `config/meters.yaml`
+rather than memorising it. It rises whenever a member installs solar, and a run whose
+skip count suddenly *falls* is the signal worth chasing: it means a pair stopped being
+declared, or its two files no longer arrive together.
 
 This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 (`scripts/models.py`) rather than `None`:
@@ -497,38 +501,38 @@ Skipped files are archived like ingested ones because the decision is permanent
 on every delivery. The batch summary counts them separately:
 
 ```
-Ingested: 99, Skipped by design: 10, Errors: 0
+Ingested: 115, Skipped by design: 11, Errors: 0
 ```
 
-A delivery carrying two report periods has one set per wave, so 20 is equally
-expected there.
+Only `Errors` is expected to be 0 on every run; the other two follow the member count
+and the declaration. A delivery carrying two report periods has one skip set per wave,
+so twice `pairs + 1` is equally expected there.
 
 > **History**: before July 2026 every producing member used the two-metering-point
 > pattern. `0134575W` arrived with no consumption metering point, and before the
 > parser handled that its 2 daily production-breakdown files were skipped as an
 > unknown meter.
 
-### The current declaration
+### Reading the current declaration
 
-Current community declaration, shown by suffix (the file holds full 33-char ids):
+**`config/meters.yaml` is the list — this guide does not copy it.** Membership changes
+(a member joins, a member installs solar and gains a production metering point), so any
+figure reproduced here would be wrong by the time it mattered. To see what is declared
+right now:
 
-| Consumption metering point | Production metering point | Status |
-|----------------------------|---------------------------|--------|
-| `0217130Y` | `08574078` | ✓ Declared, matches what discovery inferred |
-| `0020576V` | `0855229G` | ✓ Declared, matches |
-| `0046782G` | `08552310` | ✓ Declared, matches |
-| `00846565` | `0855227M` | ✓ Declared, matches |
-| `01192538` | `0855223Y` | ✓ Declared, matches |
-| `0125445D` | `08552213` | ✓ Declared, matches |
-| `01650626` | `0855219K` | ✓ Declared, matches |
-| `0208254A` | `0857405E` | ✓ Declared, matches |
-| `0803097E` | `0855225S` | ✓ Declared, matches |
+```bash
+python3 -c "from scripts.meters import load_meters; \
+            m = load_meters('config/meters.yaml'); print(len(m.consumption_by_production), \
+            'pair(s),', len(m.consumption_only), 'consumption-only,', \
+            len(m.production_only), 'production-only')"
+```
 
-**Consumption-only** (12): `0036273C`, `0050170B`, `0060545I`, `0062412W`,
-`0078872J`, `0164750O`, `0198918Z`, `0199054X`, `02291991`, `0229599I`,
-`0832199P`, `0858140M`.
+`load_meters` logs the same three counts at startup, so a run's log records the
+declaration it actually used.
 
-**Production-only** (1): `0134575W`. See
+Every pair the provider has declared so far matched what discovery had inferred from
+equal production totals, and no pair has ever repointed — only been added. The one
+entry worth knowing by name is `0134575W`, the production-only meter; see
 [Production-only metering points](#production-only-metering-points).
 
 ---
@@ -572,8 +576,8 @@ consumption file is attributed to its own meter whether or not it is declared.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  FTP Server (Provider)                                      │
-│  ├─ 103 E66 files (individual meters)                       │
-│  └─ 6 E31 files (community aggregates)                      │
+│  ├─ N E66 files (individual meters; N tracks membership)    │
+│  └─ 6 E31 files (community aggregates; always 6)            │
 └────────────────┬────────────────────────────────────────────┘
                  │ Daily delivery (09:45-09:50)
                  ↓
@@ -807,9 +811,10 @@ Meter 0217130Y:
 **Metering points**:
 
 5. ~~**Official mapping**~~ — **ANSWERED**: the provider supplies the list of
-   metering points, now `config/meters.yaml`, and the 9 declared pairs match what we
+   metering points, now `config/meters.yaml`, and the declared pairs match what we
    had inferred by matching production totals. Remaining ask: notify us **before**
-   the delivery in which the list changes.
+   the delivery in which the list changes — the most recent pair to appear was found
+   by re-reading a delivery, not by being told.
 
 6. **New members**: When a new member joins, will they automatically get both a
    consumption and a production metering point id? How soon after joining do files
