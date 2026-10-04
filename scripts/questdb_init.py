@@ -59,6 +59,12 @@ def _split_statements(sql: str):
     return [s.strip() for s in without_comments.split(';') if s.strip()]
 
 
+# One attempt's limit. psycopg's own default is longer than --wait, so on a
+# server that accepts the TCP connection but does not answer yet, one attempt
+# would use up the whole wait.
+ATTEMPT_TIMEOUT = 5
+
+
 def connect_with_retry(psycopg, dsn: str, timeout: float, interval: float = 2.0):
     """Connect, retrying until `timeout` seconds have passed.
 
@@ -72,7 +78,8 @@ def connect_with_retry(psycopg, dsn: str, timeout: float, interval: float = 2.0)
     while True:
         attempt += 1
         try:
-            return psycopg.connect(dsn, autocommit=False)
+            return psycopg.connect(dsn, autocommit=False,
+                                   connect_timeout=ATTEMPT_TIMEOUT)
         except Exception as e:
             if time.monotonic() >= deadline:
                 logger.error(

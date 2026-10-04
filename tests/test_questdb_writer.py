@@ -693,3 +693,16 @@ def test_real_deliveries_contain_downward_revisions():
                 seen[key] = value
 
     assert downward > 0, 'expected the provider to revise some slots downward'
+
+
+def test_every_connection_attempt_is_bounded(monkeypatch):
+    """An unanswered connect must fail the file quickly, not hold the run."""
+    import sys
+    import types
+    calls = []
+    fake = types.ModuleType('psycopg')
+    fake.connect = lambda dsn, **kwargs: calls.append(kwargs) or object()
+    monkeypatch.setitem(sys.modules, 'psycopg', fake)
+    questdb_writer.QuestDBWriter('dsn')._connect()
+    assert calls == [{'autocommit': False,
+                      'connect_timeout': questdb_writer.CONNECT_TIMEOUT}]

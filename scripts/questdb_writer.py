@@ -169,6 +169,13 @@ def is_connection_error(exc: BaseException) -> bool:
                for cls in type(exc).__mro__)
 
 
+# One connection attempt's limit. psycopg's own default is over a minute, so a
+# QuestDB that accepts the connection but does not answer would hold every file
+# of a delivery that long, twice with the reconnect. Failing fast leaves the
+# file in incoming for the next run.
+CONNECT_TIMEOUT = 10
+
+
 class QuestDBWriter:
     """Thin INSERT wrapper holding one connection for the process lifetime."""
 
@@ -179,7 +186,8 @@ class QuestDBWriter:
     def _connect(self):
         if self._conn is None or self._conn.closed:
             import psycopg
-            self._conn = psycopg.connect(self.dsn, autocommit=False)
+            self._conn = psycopg.connect(self.dsn, autocommit=False,
+                                         connect_timeout=CONNECT_TIMEOUT)
         return self._conn
 
     def close(self):
