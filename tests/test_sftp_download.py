@@ -485,6 +485,15 @@ def test_an_empty_incoming_creates_no_failed_directory(dirs):
     assert not (incoming / 'failed').exists()
 
 
+def test_a_complete_run_with_nothing_new_says_so(dirs, ftp, caplog):
+    incoming, archive = dirs
+    ftp({})
+
+    with caplog.at_level('INFO', logger=sftp.logger.name):
+        assert download_sdat_files(incoming, archive) == 0
+    assert 'No new SDAT files on the server' in caplog.text
+
+
 # --------------------------------------------------------------------------
 # The entry point
 # --------------------------------------------------------------------------
@@ -551,3 +560,13 @@ def test_main_processes_what_it_downloaded(job, monkeypatch):
 
     assert (seen['target'], seen['archive'], seen['window']) == (incoming, archive, 7)
     assert seen['processed']
+
+
+def test_main_does_not_claim_the_server_is_empty_when_it_failed(job, ftp,
+                                                               caplog):
+    ftp({name('20260807'): b'x'}, connect_fails_first=99)
+
+    with caplog.at_level('INFO', logger=sftp.logger.name):
+        sftp.main()
+    assert 'Download run stopped' in caplog.text
+    assert 'No new SDAT files' not in caplog.text

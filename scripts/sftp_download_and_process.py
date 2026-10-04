@@ -205,7 +205,11 @@ def download_sdat_files(target_dir: Path, archive_dir: Path,
             if download_one(session, filename, target_dir):
                 count += 1
 
-        logger.info(f"Downloaded {count} new file(s)")
+        # Only here is "nothing new" known: a failure ends up in the except.
+        if count:
+            logger.info(f"Downloaded {count} new file(s)")
+        else:
+            logger.info("No new SDAT files on the server")
 
     except Exception as e:
         logger.error(f"Download run stopped after {count} file(s): {e}")
@@ -247,8 +251,6 @@ def main():
     nb_files = download_sdat_files(target_dir, archive_dir, window_days)
     if nb_files:
         SDATProcessor.from_config(api_config).process_sdat_files()
-    else:
-        logger.info("No new SDAT files on the server")
 
 
 if __name__ == '__main__':
