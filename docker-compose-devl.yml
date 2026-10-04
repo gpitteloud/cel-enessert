@@ -94,7 +94,7 @@ services:
       # QUESTDB.md). If it proves unusable, the fallback is Grafana's built-in
       # Postgres datasource against questdb:8812 -- remove this line in that case.
       - GF_INSTALL_PLUGINS=questdb-questdb-datasource
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel_energy_overview.json
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/cel-meter-energy-e66.json
       - GF_SERVER_ROOT_URL=https://grafana.oche22.ch
       - GF_SERVER_DOMAIN=grafana.oche22.ch
       - GF_LOG_LEVEL=warn

@@ -12,24 +12,24 @@ from decimal import Decimal
 import pytest
 
 from conftest import SAMPLE_DIR, SAMPLE_METERS, make_e31_xml, make_e66_xml, meter_id
-from scripts.delivery_report import (attributed_meter, breakdown_checks,
-                                     check_declared_pairs, compare_series,
+from scripts.delivery_report import (breakdown_checks,
+                                     check_customer_production, compare_series,
                                      e31_slots, e66_slots,
                                      group_by_report_period, headers_from_files,
                                      inventory, iter_day_files, local_leg, main,
                                      report_delivery, rewritten_keys,
-                                     summed_over_meters)
+                                     stored_meter, summed_over_meters)
 from scripts.sdat_header import parse_header
 
 EBIX_TOTAL = '8716867000030'
 VSE_CEL = '2404050010123'
 VSE_GRID = '2404050010124'
 
-PRODUCTION = meter_id('08552310')        # a declared production metering point
-CONSUMPTION = meter_id('0046782G')       # the consumption meter it is paired with
+PRODUCTION = meter_id('08552310')        # customer 9000115's production point
+CONSUMPTION = meter_id('0046782G')       # and its consumption point
 MEMBER = meter_id('0020576V')
 OTHER = meter_id('0050170B')
-PRODUCTION_ONLY = meter_id('0134575W')   # declared production-only
+UNCOUPLED = meter_id('0134575W')         # production point with no copy anywhere
 
 START = '2026-05-21T22:00:00Z'
 END = '2026-05-26T22:00:00Z'
@@ -55,54 +55,54 @@ def e31(tag='a', **kwargs):
                         sdat_name(doc='E31', tag=tag))
 
 
-def attribute(header):
-    return attributed_meter(header, SAMPLE_METERS)
+def stored(header):
+    return stored_meter(header, SAMPLE_METERS)
 
 
 # --------------------------------------------------------------------------
 # Which meter a file's readings are counted under
 # --------------------------------------------------------------------------
 
-def test_a_paired_production_meters_total_is_counted_nowhere():
-    """It duplicates its consumption twin's total, and ingestion drops it -- so
+def test_a_consumption_points_production_total_is_counted_nowhere():
+    """It is a copy of the production point's total, and ingestion drops it, so
     counting it here would report a gap the database does not have."""
-    assert attribute(e66(meter_id=PRODUCTION, point='production',
-                         product_code=EBIX_TOTAL, code_type='ebIXCode')) is None
+    assert stored(e66(meter_id=CONSUMPTION, point='production',
+                      product_code=EBIX_TOTAL, code_type='ebIXCode')) is None
 
 
-def test_a_breakdown_is_counted_under_the_consumption_meter():
-    assert attribute(e66(meter_id=PRODUCTION, point='production',
-                         product_code=VSE_CEL)) == CONSUMPTION
+def test_a_production_points_total_is_counted_under_itself():
+    assert stored(e66(meter_id=PRODUCTION, point='production',
+                      product_code=EBIX_TOTAL, code_type='ebIXCode')) == PRODUCTION
 
 
-def test_a_production_only_meter_keeps_its_own_breakdown():
-    assert attribute(e66(meter_id=PRODUCTION_ONLY, point='production',
-                         product_code=VSE_CEL)) == PRODUCTION_ONLY
+def test_a_breakdown_is_counted_under_its_own_production_point():
+    assert stored(e66(meter_id=PRODUCTION, point='production',
+                      product_code=VSE_CEL)) == PRODUCTION
 
 
 def test_a_consumption_file_on_a_production_meter_is_counted_nowhere():
     """Ingestion skips it as a provider fault, so the report must not count it
     either -- otherwise the E66 side carries kWh the database does not hold."""
-    assert attribute(e66(meter_id=PRODUCTION_ONLY, point='consumption',
-                         product_code=EBIX_TOTAL,
-                         code_type='ebIXCode')) is None
+    assert stored(e66(meter_id=UNCOUPLED, point='consumption',
+                      product_code=EBIX_TOTAL, code_type='ebIXCode')) is None
 
 
-def test_an_unattributable_breakdown_is_counted_nowhere():
-    """Ingestion fails such a file rather than guessing, so it stores no rows."""
-    assert attribute(e66(meter_id=meter_id('09999999'), point='production',
-                         product_code=VSE_CEL)) is None
+def test_an_undeclared_meter_is_counted_under_itself():
+    """Ingestion stores it with no customer, so the report counts it too."""
+    undeclared = meter_id('09999999')
+    assert stored(e66(meter_id=undeclared, point='production',
+                      product_code=VSE_CEL)) == undeclared
 
 
 def test_rcp_files_are_left_out():
     """RCP is a different domain sharing the folder; E31 does not cover it."""
     rcp = e66(meter_id=MEMBER, business_reason='E88',
               reason_code_type='ebIXCode', community_id=None)
-    assert rcp.rcp and attribute(rcp) is None
+    assert rcp.rcp and stored(rcp) is None
 
 
 def test_an_ordinary_consumption_file_is_counted_under_its_own_meter():
-    assert attribute(e66(meter_id=MEMBER, point='consumption')) == MEMBER
+    assert stored(e66(meter_id=MEMBER, point='consumption')) == MEMBER
 
 
 # --------------------------------------------------------------------------
@@ -117,10 +117,10 @@ def test_meters_are_summed_slot_by_slot():
                                                 NEXT_SLOT: Decimal('2.25')}
 
 
-def test_a_production_breakdown_lands_on_the_consumption_meters_series():
+def test_a_production_breakdown_lands_on_the_production_points_series():
     headers = [e66(tag='a', meter_id=PRODUCTION, point='production',
                    product_code=VSE_CEL, values=(3.0,))]
-    assert set(e66_slots(headers, SAMPLE_METERS)) == {CONSUMPTION}
+    assert set(e66_slots(headers, SAMPLE_METERS)) == {PRODUCTION}
 
 
 def test_the_aggregate_side_reads_only_e31():
@@ -261,42 +261,60 @@ def test_the_report_names_the_files_that_were_not_ingested(caplog):
     assert '20260527_094500_broken.xml' in caplog.text
 
 
-def pair_totals(production_values, consumption_values):
-    """Both files of one declared pair, each carrying its production total."""
-    return [e66(tag='v', meter_id=PRODUCTION, point='production',
-                product_code=EBIX_TOTAL, code_type='ebIXCode',
-                values=production_values),
-            e66(tag='p', meter_id=CONSUMPTION, point='production',
-                product_code=EBIX_TOTAL, code_type='ebIXCode',
-                values=consumption_values)]
+def production_total(meter, values, tag):
+    return e66(tag=tag, meter_id=meter, point='production',
+               product_code=EBIX_TOTAL, code_type='ebIXCode', values=values)
 
 
-def test_a_declared_pair_reporting_the_same_total_is_confirmed():
-    assert check_declared_pairs(pair_totals((5.0, 7.0), (5.0, 7.0)),
-                                SAMPLE_METERS) == []
+def customer_totals(production_values, copy_values):
+    """Customer 9000115's two production totals: its production point's own and
+    the copy its consumption point sends."""
+    return [production_total(PRODUCTION, production_values, 'v'),
+            production_total(CONSUMPTION, copy_values, 'p')]
 
 
-def test_a_declared_pair_whose_totals_disagree_is_reported():
-    """The equality discovery used to pair on. Nothing derives the pairing now, so
-    a disagreement means the declaration itself puts two sites together."""
-    disagreement, = check_declared_pairs(pair_totals((5.0, 7.0), (5.0, 9.0)),
-                                         SAMPLE_METERS)
+def test_a_customer_whose_totals_agree_is_confirmed():
+    assert check_customer_production(customer_totals((5.0, 7.0), (5.0, 7.0)),
+                                     SAMPLE_METERS) == []
+
+
+def test_a_customer_whose_totals_disagree_is_reported():
+    """Nothing else checks that customers.yaml groups the right meters: a
+    disagreement means it puts two sites under one customer."""
+    disagreement, = check_customer_production(
+        customer_totals((5.0, 7.0), (5.0, 9.0)), SAMPLE_METERS)
+    assert 'customer 9000115' in disagreement
     assert 'differ on 1 of 2 slot(s)' in disagreement
 
 
-def test_a_pair_with_only_one_file_present_is_not_reported():
-    """A delivery arrives in waves, so half a pair is normal, not a finding."""
-    assert check_declared_pairs(pair_totals((5.0,), (5.0,))[:1],
-                                SAMPLE_METERS) == []
+def test_a_customer_with_only_one_side_present_is_not_reported():
+    """A delivery arrives in waves, so one side alone is normal, not a finding."""
+    assert check_customer_production(customer_totals((5.0,), (5.0,))[:1],
+                                     SAMPLE_METERS) == []
 
 
-def test_a_disagreeing_pair_is_logged_as_an_error(caplog):
+def test_an_uncoupled_production_point_is_not_reported():
+    """0134575W's total has no copy on a consumption point to compare with."""
+    assert check_customer_production([production_total(UNCOUPLED, (5.0,), 'u')],
+                                     SAMPLE_METERS) == []
+
+
+def test_the_copy_is_compared_whichever_consumption_point_sends_it():
+    """9000106 owns two consumption points; one of them sends the copy, and the
+    declaration does not say which."""
+    totals = [production_total(meter_id('0855219K'), (5.0, 7.0), 'v'),
+              production_total(meter_id('01650626'), (5.0, 8.0), 'p')]
+    disagreement, = check_customer_production(totals, SAMPLE_METERS)
+    assert 'customer 9000106' in disagreement
+
+
+def test_a_disagreeing_customer_is_logged_as_an_error(caplog):
     with caplog.at_level(logging.INFO):
-        report_delivery('20260527', pair_totals((5.0, 7.0), (5.0, 9.0)),
+        report_delivery('20260527', customer_totals((5.0, 7.0), (5.0, 9.0)),
                         SAMPLE_METERS)
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert len(errors) == 1
-    assert PRODUCTION in errors[0].getMessage()
+    assert '9000115' in errors[0].getMessage()
 
 
 def test_the_report_survives_a_file_it_cannot_place(caplog):

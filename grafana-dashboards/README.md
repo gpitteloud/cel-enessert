@@ -1,6 +1,6 @@
 # CEL Grafana Dashboards
 
-Production dashboards for CEL community energy monitoring. Both read SQL from
+Production dashboards for CEL community energy monitoring. All read SQL from
 QuestDB through the `questdb-questdb-datasource` plugin.
 
 ## Table & column schema
@@ -18,7 +18,8 @@ Shared columns:
 - `direction` = `consumption` \| `production`
 - `segment` = `cel` \| `grid` \| `total`  (total = cel + grid)
 - `product_code` (`8716867000030` = total, `2404050010123` = CEL, `2404050010124` = grid), `code_type`, `community_id`
-- E66 also: `meter_id`; E31 also: `community_type`, `grid_area`
+- E66 also: `meter_id`, `customer_id` (owner from `config/customers.yaml`; NULL
+  for the RCP meters); E31 also: `community_type`, `grid_area`
 - `value` is `DECIMAL(12,3)`
 
 > **Panels filter on `segment`, not `product_code`.** They are the same
@@ -110,25 +111,28 @@ built for it: the **stat** panels (Total Consumption / Total Production) and the
 
 ## Available Dashboards
 
-### 1. cel_energy_overview.json
-**Individual meter dashboard** — per-meter consumption and production. This is
-the default home dashboard.
+### 1. cel-meter-energy-e66.json
+**Meter dashboard** — one metering point, consumption or production. This is the
+default home dashboard.
 
-- Meter selector dropdown, populated by
-  `SELECT DISTINCT meter_id FROM cel_energy WHERE segment = 'total' AND direction = 'consumption' ORDER BY meter_id`,
-  with `regex: .*([0-9A-Z]{8})$` reducing each ID to its 8-char suffix
-- Daily consumption / production charts, CEL + Grid split (kW)
-- Total consumption / production stats (kWh)
-- CEL % gauges (share of consumption / production from CEL)
-- Energy balance line chart (net production − consumption, kW)
+- Meter drop-down listing every community meter, both directions, labelled
+  e.g. `0046782G (consumption)`. The query returns one string per meter,
+  `<8-char suffix> (<direction>)|<full id>`, and the regex
+  `/^(?<text>[^|]+)\|(?<value>.+)$/` splits it with named groups: the label
+  is the part before `|`, the value is the full id, so panels match with
+  `meter_id = '$meter_id'`.
+- A hidden `direction` variable, read from the meter's own rows, for the titles
+- Power chart, CEL + Grid stacked (kW)
+- Total stat (kWh) and CEL % gauge
 
-Reads `cel_energy`, filtered by `segment` / `direction` / `meter_id`. The meter
-filter is `meter_id LIKE '%$meter_id'`, matching the variable's 8-char suffix
-against the full ID. If the variable is ever switched to `includeAll`, change
-these to `$__conditionalAll` at the same time — not before, since `LIKE` is what
-matches today's single-select behaviour exactly.
+A meter stores only its own direction, so the power chart carries two pairs of
+queries, consumption (A, B: From CEL / From Grid) and production (C, D: To CEL /
+To Grid), and one pair is always empty. That keeps each direction's names and
+colours without a query per direction. There is no energy balance: one meter has
+nothing to balance against. A customer's meters together, balance included, are
+on dashboard 3.
 
-### 2. grafana-dashboard-e31-v2.json
+### 2. cel-community-energy-e31.json
 **Community aggregate dashboard** — community-level totals and statistics.
 
 - Total community consumption / production (kWh)
@@ -185,31 +189,89 @@ forking into two rows) or duplicate production-meter totals creeping back in. Bo
 are prevented at ingest, so a stale gap is cured by a full re-replay through the
 current parser — **in ascending delivery order**, since the last write wins.
 
-#### Meter attribution — why production totals aren't double-counted
+#### Customers and meters — why production totals aren't double-counted
 
-Each producing member has **two metering points**: a **consumption** one and a
-**production** one (`085…`). Which id pairs with which is declared by the provider
-in `config/meters.yaml` — it is nowhere in the XML. The production metering point
-reports a production **total identical** to its consumption twin's, so the parser
-**drops that copy on ingest** and keeps the twin's, while storing the production
-metering point's CEL/Grid **breakdown** under the consumption `meter_id`. Net
-effect: a member's consumption *and* production live under one id, and `sum(value)`
+A customer owns one or more **metering points**, each either **consumption** or
+**production** (`085…`). Which customer owns which is declared by the provider,
+kept in `config/customers.yaml` — it is nowhere in the XML. Every meter is stored
+under its own `meter_id`, with its `customer_id`.
+
+A producing customer's consumption point reports a **copy** of the production
+total its production point reports too, so the parser **drops the copy on
+ingest**. Net effect: each meter holds only its own direction, and `sum(value)`
 over `segment = 'total' AND direction = 'production'` counts each producer once.
-`0134575W` is declared `production-only` — it has no consumption twin, so its own
-total is the canonical one and is kept.
+`0134575W`'s total has no copy, so it is simply kept.
+
+This is why the meter dashboard shows one direction per meter. The customer
+dashboard shows both.
 
 Those dropped files are an expected outcome, not failures: the parser returns a
 `SkippedDocument`, the watcher logs it at INFO and archives the file
-(`Skipped by design: N` in the batch summary). They are one duplicate production total
-per declared pair, plus the spurious consumption file the provider sends for
-`0134575W`. Only genuine failures stay in `/data/incoming`.
+(`Skipped by design: N` in the batch summary). They are one production-total copy
+per consumption point of a producing customer, plus the spurious consumption file
+the provider sends for `0134575W`. Only genuine failures stay in `/data/incoming`.
 
-A dashboard note, since it moves the numbers: before the declaration existed the
-pairing was derived from each batch, and a wave carrying the production totals with
-no breakdown file (the monthly half of `20260605`) paired nothing and stored nine
-production totals under their own ids. If you are comparing against a screenshot
-taken before the replay, `production/total` is now lower by that double count — see
-`QUESTDB.md`.
+### 3. cel-customer-energy-e66.json
+**Customer dashboard** — everything one customer owns, across all their metering
+points.
+
+- `customer_id` drop-down
+  (`SELECT DISTINCT customer_id FROM cel_energy WHERE customer_id IS NOT NULL`).
+  Filtering on it also leaves out the RCP meters, so no `community_id` constant is
+  needed.
+- Customer summary: consumption (From CEL + From Grid) and production (To CEL +
+  To Grid) stacked in kW, total stats, CEL % gauges, energy balance — summed over
+  all of the customer's meters
+- **Consumption meters** row: one stacked CEL + grid panel per consumption meter
+- **Production meters** row: the same per production meter. For a customer that
+  does not produce, it shows one empty panel
+
+The per-meter panels repeat over two hidden multi-value variables, `cons_meter`
+and `prod_meter` (`SELECT DISTINCT meter_id ... WHERE customer_id = '$customer_id'
+AND direction = '...'`). Their regex applies to the **text** only, so the label
+is the 8-char suffix and the value stays the full id: panels match with
+`meter_id = '$cons_meter'`, not `LIKE`.
+
+The file is in the classic schema like the other two, which has no way to hide
+a row whose panels are empty.
+
+## Reference dashboards and experiments
+
+The JSON files here are the **reference** dashboards: versioned in git, provisioned
+into the Grafana folder **CEL Reference**, and **locked** (`allowUiUpdates: false`).
+A delivery overwrites them, and only them. Each file is named after its uid
+(`<uid>.json`); the title shown in Grafana is the JSON `title`, not the file name.
+
+Experiments happen in Grafana, not in git:
+
+1. Open a reference dashboard, then **Save as** (or Settings → Save as copy) into
+   the folder **CEL Workspace**. Grafana refuses a plain save on a provisioned
+   dashboard, so this is the only way to keep a change.
+2. Edit the copy freely. Every save is a version (Settings → Versions), so an
+   experiment can be rolled back.
+3. To adopt an experiment, export it (Share → Export → JSON), fold the change
+   into the reference file **keeping the reference's uid**, commit, and deploy.
+
+What to keep in mind:
+
+- **CEL Workspace is not provisioned, so its dashboards exist only in Grafana's
+  database** (`/volume1/docker/cel/grafana-data`). Back that volume up; git does
+  not have them.
+- **Never put an exported copy into this folder** unless it is meant to become a
+  reference: anything here is provisioned, and a copy would show up twice.
+- **Copies do not follow the reference.** An improved reference reaches existing
+  copies only if the user makes a new copy.
+
+Create the **CEL Workspace** folder once, in the UI (Dashboards → New → New
+folder).
+
+`../grafana-workspace/` holds two experiments, changed versions of the meter and
+E31 dashboards. They have
+their own uids (`<reference uid>-workspace`) and a `(workspace)` title, so they
+sit beside the references instead of replacing them. Import each one once into
+CEL Workspace (see Manual import); after that they live in Grafana only. That
+folder is outside the provisioned path on purpose: the provider reads its
+directory recursively.
 
 ## Installation
 
@@ -229,20 +291,24 @@ Editing a file on the mounted path is enough — no restart or API reload needed
 To deploy an edit, copy the file to the NAS path:
 
 ```bash
-scp cel_energy_overview.json grafana-dashboard-e31-v2.json \
+scp cel-meter-energy-e66.json cel-community-energy-e31.json \
+    cel-customer-energy-e66.json \
     <nas>:/volume1/docker/cel/grafana-dashboards/
 ```
 
-> Provisioning adds and updates dashboards but does **not** delete ones removed
-> from disk. A dashboard that has been renamed or retired must be deleted by hand
-> in the Grafana UI, or it lingers as a stale copy.
+> With `disableDeletion: false`, removing a file from disk should delete its
+> dashboard; check the Grafana log the first time. A dashboard imported by hand
+> was never provisioned, so provisioning never touches it: delete it in the UI.
 
 > The default home dashboard is set in docker-compose via
-> `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` → `cel_energy_overview.json`.
+> `GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH` → `cel-meter-energy-e66.json`.
 > That env var is read only at container start, so changing it needs a Grafana
 > container restart (the dashboards themselves do not).
 
 ### Manual import
+
+An imported dashboard is not provisioned, so it is not a reference: import into
+**CEL Workspace**.
 
 1. Open Grafana: https://grafana.oche22.ch (or `http://<synology-ip>:3000`)
 2. Log in
@@ -329,7 +395,7 @@ first (in ascending delivery order).
    suite asserts every JSON in this folder is listed, so an unlisted one fails
    rather than going untested.
 3. Copy it to `/volume1/docker/cel/grafana-dashboards/`.
-4. It auto-loads into the "CEL" folder within ~10s (no restart).
+4. It auto-loads into the "CEL Reference" folder within ~10s (no restart).
 
 ## More information
 

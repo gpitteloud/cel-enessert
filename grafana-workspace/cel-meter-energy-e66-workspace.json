@@ -2,27 +2,7 @@
   "apiVersion": "dashboard.grafana.app/v2",
   "kind": "Dashboard",
   "metadata": {
-    "name": "cel-energy-overview",
-    "namespace": "default",
-    "uid": "589e3197-eeb3-48b2-b549-ec15e0806495",
-    "resourceVersion": "1790256549481988",
-    "generation": 14,
-    "creationTimestamp": "2026-08-06T13:53:28Z",
-    "labels": {
-      "grafana.app/deprecatedInternalID": "197002407796736"
-    },
-    "annotations": {
-      "grafana.app/createdBy": "access-policy:service",
-      "grafana.app/managedBy": "classic-file-provisioning",
-      "grafana.app/managerAllowsEdits": "true",
-      "grafana.app/managerId": "CEL Dashboards",
-      "grafana.app/saved-from-ui": "Grafana v13.2.0 (f681b1359f)",
-      "grafana.app/sourceChecksum": "8e6f3ffd2c2842b9659fcf0d25a84534",
-      "grafana.app/sourcePath": "/var/lib/grafana/dashboards/cel_energy_overview.json",
-      "grafana.app/sourceTimestamp": "1788727239000",
-      "grafana.app/updatedBy": "user:bfrszpu8kzcw0e",
-      "grafana.app/updatedTimestamp": "2026-09-24T13:29:09Z"
-    }
+    "name": "cel-meter-energy-e66-workspace"
   },
   "spec": {
     "annotations": [
@@ -1494,7 +1474,7 @@
       "hideTimepicker": false,
       "fiscalYearStartMonth": 0
     },
-    "title": "CEL Energy Overview",
+    "title": "CEL Meter Energy E66 (workspace)",
     "variables": [
       {
         "kind": "QueryVariable",

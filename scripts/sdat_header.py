@@ -64,10 +64,8 @@ class FileHeader:
     interval_start: Optional[str] = None     # ISO-8601, base of the observation clock
     rcp: bool = False
     observations: List[Observation] = field(default_factory=list, repr=False)
-    # Which meter the rows were finally stored under: a production metering
-    # point's breakdown belongs to the consumption meter of the same member, so
-    # this differs from file_meter_id there.
-    attributed_meter_id: Optional[str] = None
+    # The customer owning file_meter_id, set by parse_e66 from customers.yaml.
+    customer_id: Optional[str] = None
 
     @property
     def report_period(self) -> Tuple[Optional[datetime], Optional[datetime]]:
@@ -195,7 +193,6 @@ def parse_header(root, file_name: str) -> FileHeader:
         interval_start=interval_start,
         rcp=is_rcp(business_reason),
         observations=parse_observations(metering_data, interval_start, resolution_minutes),
-        attributed_meter_id=file_meter_id,
     )
 
 

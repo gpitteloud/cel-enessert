@@ -2,27 +2,7 @@
   "apiVersion": "dashboard.grafana.app/v2",
   "kind": "Dashboard",
   "metadata": {
-    "name": "cel-community-e31-v2",
-    "namespace": "default",
-    "uid": "e034d8d1-545b-4019-8ab2-f2c3c26c88d7",
-    "resourceVersion": "1790204642329980",
-    "generation": 25,
-    "creationTimestamp": "2026-08-06T13:53:28Z",
-    "labels": {
-      "grafana.app/deprecatedInternalID": "197001661210624"
-    },
-    "annotations": {
-      "grafana.app/createdBy": "access-policy:service",
-      "grafana.app/managedBy": "classic-file-provisioning",
-      "grafana.app/managerAllowsEdits": "true",
-      "grafana.app/managerId": "CEL Dashboards",
-      "grafana.app/saved-from-ui": "Grafana v13.2.0 (f681b1359f)",
-      "grafana.app/sourceChecksum": "07133fdf4f3d421d384509dc095124ef",
-      "grafana.app/sourcePath": "/var/lib/grafana/dashboards/grafana-dashboard-e31-v2.json",
-      "grafana.app/sourceTimestamp": "1787128993000",
-      "grafana.app/updatedBy": "user:bfrszpu8kzcw0e",
-      "grafana.app/updatedTimestamp": "2026-09-23T23:04:02Z"
-    }
+    "name": "cel-community-energy-e31-workspace"
   },
   "spec": {
     "annotations": [
@@ -2422,7 +2402,7 @@
       "weekStart": "monday",
       "fiscalYearStartMonth": 0
     },
-    "title": "CEL Community Aggregates E31 v2",
+    "title": "CEL Community Energy E31 (workspace)",
     "variables": []
   }
 }

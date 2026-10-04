@@ -10,7 +10,7 @@
 | Repo path | NAS target |
 |-----------|------------|
 | `scripts/*.py`, `scripts/questdb_schema.sql` | `/volume1/docker/cel/scripts/` |
-| `config/api_config.yaml`, `config/meters.yaml` | `/volume1/docker/cel/config/` |
+| `config/api_config.yaml`, `config/customers.yaml` | `/volume1/docker/cel/config/` |
 | `grafana-dashboards/*.json` | `/volume1/docker/cel/grafana-dashboards/` |
 | `grafana-provisioning/**` | `/volume1/docker/cel/grafana-provisioning/` |
 | `docker-compose.yml` | Pasted into the Portainer stack, not copied |
@@ -42,12 +42,16 @@ rather than rendering an empty panel on the NAS.
 scp scripts/*.py scripts/questdb_schema.sql \
     synology:/volume1/docker/cel/scripts/
 
-scp config/api_config.yaml \
+scp config/api_config.yaml config/customers.yaml \
     synology:/volume1/docker/cel/config/
 
 scp grafana-dashboards/*.json \
     synology:/volume1/docker/cel/grafana-dashboards/
 ```
+
+**Delete any NAS dashboard file that is not in `grafana-dashboards/`**: two
+provisioned files with one uid conflict. Restart Grafana when the home dashboard
+path or the provider changes.
 
 Copy only what changed. In particular, **check `config/api_config.yaml` against
 the NAS copy before overwriting it** — the NAS copy is the live configuration and
@@ -83,12 +87,13 @@ docker logs cel-questdb-init
 
 A non-zero exit means the live schema does not match the DDL, and the parser will
 **refuse to start** rather than write into a table whose dedup keys or decimal
-precision differ. That refusal is the point: an auto-created table has no DEDUP
+precision differ, or that lacks a column the writer needs (a table created
+before `customer_id` existed, say). That refusal is the point: an auto-created table has no DEDUP
 and a default `DECIMAL(18,3)`, which silently double-counts overlapping
 deliveries.
 
 Note that `questdb_init.py` applies missing tables but does not migrate an
-existing one. Changing a dedup key or a column type on a populated table means
+existing one. Changing a dedup key, a column type or the column list on a populated table means
 dropping and rebuilding it, then replaying the archive **in ascending delivery
 order** — see [QUESTDB.md](QUESTDB.md#chronological-replay-is-a-correctness-requirement).
 
@@ -135,22 +140,22 @@ docker exec -it cel-parser python3 \
 2026-08-06 14:30:02 CEST - __main__ - INFO - Archived 20260806_094741_..._E31_....xml to /data/archive/...
 ```
 
-`config/meters.yaml` is not optional: the job **refuses to start** without it,
-by design, rather than ingesting production breakdowns it cannot attribute. It is
-gitignored (it holds real meter ids), so it is not in a fresh clone — copy it from
-the running config, or build it from `config/meters.yaml.example`.
+`config/customers.yaml` is not optional: the job **refuses to start** without
+it, by design, rather than storing rows with no customer and production totals
+twice. It is gitignored (it holds real meter ids), so it is not in a fresh clone
+— copy it from the running config (format: `config/customers.yaml.example`).
 
 `Skipped by design: N` in the batch summary is **expected, not an error**, and covers
 two cases:
 
-- a production metering point's ebIX production total duplicates its consumption
-  twin's, so the parser drops it — **one file per declared pair**;
-- the consumption files the provider sends for the production-only meter `0134575W`
+- a producing customer's consumption point sends a copy of the production total
+  its production point carries, so the parser drops the copy — **one file per
+  consumption point that sends one**;
+- the consumption files the provider sends for the production meter `0134575W`
   are spurious (1 file).
 
-So the expected count is `declared pairs + 1`; check it against `config/meters.yaml`
-rather than against a number from a previous deploy, since it rises whenever a member
-installs solar. Those files are archived. Only genuine failures stay in
+So the expected count follows `config/customers.yaml` rather than a number from
+a previous deploy: it rises whenever a customer installs solar. Those files are archived. Only genuine failures stay in
 `/data/incoming`. A delivery carrying two report periods (the monthly wave of
 `20260605`) has one set per wave, so twice that is equally expected there.
 

@@ -45,15 +45,15 @@ LOG_TABLE = 'cel_ingest_log'
 
 # Column order per table; must match questdb_schema.sql. The designated
 # timestamp comes first, as in the schema.
-E66_COLUMNS = ('ts', 'meter_id', 'direction', 'segment', 'product_code',
+E66_COLUMNS = ('ts', 'meter_id', 'customer_id', 'direction', 'segment', 'product_code',
                'community_id', 'value', 'condition', 'source_file', 'rcp')
 E31_COLUMNS = ('ts', 'direction', 'segment', 'product_code', 'community_id',
                'value', 'code_type', 'community_type', 'grid_area', 'condition', 'source_file')
 HEADER_COLUMNS = ('ts', 'file_name', 'delivery', 'document_type', 'direction',
                   'segment', 'document_id', 'creation', 'business_reason',
                   'reason_code_type', 'sender_role', 'receiver_role',
-                  'period_start', 'period_end', 'file_meter_id',
-                  'attributed_meter_id', 'metering_point_type',
+                  'period_start', 'period_end', 'meter_id',
+                  'customer_id', 'metering_point_type',
                   'flow_characteristic', 'product_code', 'code_type',
                   'community_id', 'observation_count')
 LOG_COLUMNS = ('ts', 'delivery', 'file_name', 'document_type', 'rows_written',
@@ -73,9 +73,8 @@ def _ts(iso: str) -> datetime:
 def rows_from_e66(parsed: MeteredData) -> List[tuple]:
     """Build cel_energy rows from a parsed E66 document.
 
-    `parsed.meter_id` is already the meter the rows belong to: the parser
-    finishes the production-to-consumption attribution, so there is nothing to
-    resolve here (the file's own meter is kept in cel_file_header.file_meter_id).
+    `parsed.meter_id` is the file's own meter and `parsed.customer_id` its
+    owner, both resolved by the parser, so there is nothing to look up here.
 
     Total over ParseResult: a None or a SkippedDocument yields no rows rather
     than AttributeError, so a caller that skips the isinstance check writes
@@ -85,7 +84,8 @@ def rows_from_e66(parsed: MeteredData) -> List[tuple]:
         return []
 
     return [
-        (_ts(obs.timestamp), parsed.meter_id, parsed.metric_type.direction,
+        (_ts(obs.timestamp), parsed.meter_id, parsed.customer_id,
+         parsed.metric_type.direction,
          parsed.metric_type.segment, parsed.product_code, parsed.community_id,
          obs.value, obs.condition, parsed.filename, parsed.rcp)
         for obs in parsed.observations
@@ -112,15 +112,14 @@ def rows_from_e31(parsed: MeteredData) -> List[tuple]:
 def row_from_header(header) -> tuple:
     """Build the single cel_file_header row describing one file (a FileHeader).
 
-    `file_meter_id` is the file's own meter, `attributed_meter_id` the one its
-    rows were stored under -- they differ for a production metering point's
-    breakdown, which is the provenance nothing recorded before.
+    `meter_id` is the file's own meter, the one its rows are stored under, and
+    `customer_id` the customer owning it.
     """
     return (header.ts, header.file_name, header.delivery, header.document_type,
             header.direction, header.segment, header.document_id,
             header.creation, header.business_reason, header.reason_code_type,
             header.sender_role, header.receiver_role, header.period_start,
-            header.period_end, header.file_meter_id, header.attributed_meter_id,
+            header.period_end, header.file_meter_id, header.customer_id,
             header.metering_point_type, header.flow_characteristic,
             header.product_code, header.code_type, header.community_id,
             header.observation_count)

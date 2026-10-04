@@ -43,8 +43,8 @@ def parse_sdat(xml_file, meters: Optional[Meters] = None) -> ParseResult:
     Returns:
         MeteredData (document_type 'E66' or 'E31'); a SkippedDocument when the
         file is valid but deliberately not ingested (see parse_e66); or None if
-        the file cannot be read, is an unsupported document type, or cannot be
-        attributed.
+        the file cannot be read, is an unsupported document type, or reports
+        against its meter's role with nothing else carrying it.
     """
     xml_file = Path(xml_file)
     try:

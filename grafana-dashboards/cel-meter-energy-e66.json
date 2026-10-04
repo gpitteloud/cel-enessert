@@ -1,0 +1,460 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "datasource",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "One metering point from cel_energy (E66), consumption or production: each meter stores only its own direction, which the hidden $direction variable reads for the titles. A customer's meters together are on CEL Customer Energy E66. Every read is scoped to community_id, the meter dropdown included: the meters that carry no <Community> element are the RCP self-consumption meters, and without the filter they would sit in the dropdown next to the community members. The dropdown shows the 8-char suffix and the direction, split from one string by the regex's named groups; its value is the full id, so panels match with =. Two conventions the plugin forces and that are easy to break: every output column is cast to DOUBLE (there is no DECIMAL converter), and series are named via byFrameRefID overrides because the plugin prefixes each frame with its refId, which makes byName match nothing. See QUESTDB.md.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "description": "A meter reports one direction only, so of the two pairs of queries -- consumption (A, B) and production (C, D) -- one returns nothing. Both are kept so each direction keeps its own names and colours. kW from 15-min kWh slots: average per 15-min slot FIRST, and only then scale by 4. sum(value) * 4 over a bucket wider than 15 min would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW). The inner SAMPLE BY 15m is what pins the slot width regardless of the outer bucket.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "kwatt"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From CEL"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From Grid"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "C"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To CEL"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "D"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To Grid"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND community_id = '101110-002726'\n    AND meter_id = '$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND community_id = '101110-002726'\n    AND meter_id = '$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'production'\n    AND community_id = '101110-002726'\n    AND meter_id = '$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "C",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'production'\n    AND community_id = '101110-002726'\n    AND meter_id = '$meter_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "D",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Power - ${meter_id:text} (${direction})",
+      "type": "timeseries",
+      "interval": "15m"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "kwatth"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total ${direction}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total ${direction}\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND community_id = '101110-002726'\n  AND meter_id = '$meter_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Total ${direction}",
+      "type": "stat",
+      "description": "Returns the per-bucket series and lets the panel's reduceOptions sum it: the stat panel's graphMode:area sparkline needs the series, not a pre-reduced scalar. cast(... AS DOUBLE) on the output column: the Grafana plugin's converter map handles only BOOL/INT2/FLOAT4/FLOAT8/TIMESTAMP, so a DECIMAL column arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters."
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CEL % of ${direction}"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 3,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 1,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of ${direction}\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND community_id = '101110-002726'\n  AND meter_id = '$meter_id'\n  AND segment in ('cel', 'grid')",
+          "refId": "A",
+          "selectedFormat": 1
+        }
+      ],
+      "title": "CEL % of ${direction}",
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the dashboard's time range. sum(value) is the plain total: cel_energy holds kWh per 15-min slot, a quantity that falls as well as rises, so it must never be treated as a counter. Gauges need format: TABLE and a query returning exactly one row -- a bucketed query would be reduced with lastNotNull and report the newest bucket instead of the range total."
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "cel",
+    "energy",
+    "questdb"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
+        },
+        "definition": "SELECT DISTINCT concat(right(meter_id, 8), ' (', direction, ')|', meter_id) AS meter FROM cel_energy WHERE community_id = '101110-002726' AND segment = 'total' ORDER BY meter",
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "name": "meter_id",
+        "options": [],
+        "query": "SELECT DISTINCT concat(right(meter_id, 8), ' (', direction, ')|', meter_id) AS meter FROM cel_energy WHERE community_id = '101110-002726' AND segment = 'total' ORDER BY meter",
+        "refresh": 1,
+        "regex": "/^(?<text>[^|]+)\\|(?<value>.+)$/",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query",
+        "label": "Meter"
+      },
+      {
+        "current": {},
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
+        },
+        "definition": "SELECT DISTINCT direction FROM cel_energy WHERE community_id = '101110-002726' AND meter_id = '$meter_id' AND segment = 'total'",
+        "hide": 2,
+        "includeAll": false,
+        "multi": false,
+        "name": "direction",
+        "options": [],
+        "query": "SELECT DISTINCT direction FROM cel_energy WHERE community_id = '101110-002726' AND meter_id = '$meter_id' AND segment = 'total'",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query",
+        "label": "Direction"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "CEL Meter Energy E66",
+  "uid": "cel-meter-energy-e66",
+  "version": 1,
+  "weekStart": ""
+}

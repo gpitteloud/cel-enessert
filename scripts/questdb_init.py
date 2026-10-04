@@ -41,6 +41,13 @@ EXPECTED_DECIMAL = {
     'cel_community_energy': ('value', 12, 3),
 }
 
+# Payload columns the writer needs that no dedup key covers. A table created
+# from the schema before customers.yaml lacks them, and every write would fail.
+EXPECTED_COLUMNS = {
+    'cel_energy': {'customer_id'},
+    'cel_file_header': {'meter_id', 'customer_id'},
+}
+
 
 def _split_statements(sql: str):
     """Split a SQL script into statements, dropping comments and blanks.
@@ -155,6 +162,15 @@ def verify(conn) -> list:
                     f"{table}.{column}: type={actual!r}, expected {expected} "
                     f"(a DOUBLE here loses exact arithmetic; a smaller scale "
                     f"rounds values silently)")
+
+        for table, expected in EXPECTED_COLUMNS.items():
+            if table not in tables:
+                continue
+            missing = expected - set(columns[table])
+            if missing:
+                problems.append(
+                    f"{table}: column(s) missing {sorted(missing)} (created from "
+                    f"an older schema; drop it and run questdb_init again)")
 
     return problems
 

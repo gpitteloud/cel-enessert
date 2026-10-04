@@ -9,13 +9,15 @@
 - E31 files (AggregatedMeteredData_1.3 format) - always 6 files (community aggregates)
 
 **File count formula:**
-- Consumption-only member: 3 E66 files (consumption: total + CEL + Grid)
-- Producing member, consumption metering point: 4 E66 files (+ production total)
-- Producing member, production metering point: 3 E66 files (production breakdown)
+- Consumption point of a customer that does not produce: 3 E66 files
+  (consumption: total + CEL + Grid)
+- Consumption point of a producing customer: 4 E66 files (+ a copy of the
+  production total)
+- Production metering point: 3 E66 files (production total + breakdown)
 - Community aggregates: 6 E31 files (fixed)
 
-A producing member has **two metering point ids**, one per pattern above. Which
-pairs with which is declared in `config/meters.yaml`; see PARSING_GUIDE.md.
+A customer owns one or more metering point ids, in the roles above. Which
+customer owns which is declared in `config/customers.yaml`; see PARSING_GUIDE.md.
 
 **Example** — a community of 21 members, 9 of them with solar, delivered 109 files a
 day (103 E66 + 6 E31). The E66 count follows the membership and the declaration, so
@@ -37,7 +39,7 @@ treat it as an illustration of the arithmetic below, not as today's figure.
 1. Consumption Total (ebIX 8716867000030)
 2. Consumption CEL Local breakdown (VSE 2404050010123)
 3. Consumption Grid breakdown (VSE 2404050010124)
-4. Production Total (ebIX 8716867000030)
+4. Production Total (ebIX 8716867000030)  -- a copy, skipped on ingest
 ```
 
 ### Pattern 3: Production Metering Points (production breakdown) - 3 files
@@ -49,7 +51,9 @@ treat it as an illustration of the arithmetic below, not as today's figure.
 
 ## Breakdown by Meter Type (E66 files only)
 
-### Consumption Metering Points, member produces (9 meters × 4 files = 36 files)
+One sample delivery; `config/customers.yaml` is the current list.
+
+### Consumption Metering Points, customer produces (9 meters × 4 files = 36 files)
 - 0217130Y (user)
 - 0020576V
 - 0046782G
@@ -60,7 +64,7 @@ treat it as an illustration of the arithmetic below, not as today's figure.
 - 0208254A
 - 0803097E
 
-### Consumption-Only Metering Points (12 meters × 3 files = 36 files)
+### Consumption Metering Points, customer does not produce (12 meters × 3 files = 36 files)
 - 0036273C
 - 0050170B
 - 0060545I
@@ -75,24 +79,24 @@ treat it as an illustration of the arithmetic below, not as today's figure.
 - 0858140M
 
 ### Production Metering Points (9 meters × 3 files = 27 files)
-Attribution is a lookup in `config/meters.yaml`, not an inference from the batch:
-- 08574078 → attributed to 0217130Y
-- 0855229G → attributed to 0020576V
-- 08552310 → attributed to 0046782G
-- 0855227M → attributed to 00846565
-- 0855223Y → attributed to 01192538
-- 08552213 → attributed to 0125445D
-- 0855219K → attributed to 01650626
-- 0857405E → attributed to 0208254A
-- 0855225S → attributed to 0803097E
+Each is stored under its own id; the consumption point(s) its customer owns
+(from `config/customers.yaml`, not inferred from the batch):
+- 08574078 — customer of 0217130Y
+- 0855229G — customer of 0020576V
+- 08552310 — customer of 0046782G
+- 0855227M — customer of 00846565
+- 0855223Y — customer of 01192538
+- 08552213 — customer of 0125445D
+- 0855219K — customer of 01650626 (and of 02291991, which reports no copy)
+- 0857405E — customer of 0208254A
+- 0855225S — customer of 0803097E
 
 ### Special Case: 0134575W (1 meter × 4 files = 4 files)
 This meter is **NOT linked to RCP** (Regroupement pour la Consommation Propre /
-self-consumption grouping). The provider declares it **`production-only`**: it has
-no consumption metering point at all, so it reports its production total *and* its
-VSE breakdown on the same id, with nothing to pair against. Files:
-- 1 Production Total (ebIX) — canonical, kept
-- 2 Production VSE breakdown files (attributed to `0134575W` itself)
+self-consumption grouping). It is a production point whose total has **no copy**:
+its customer's consumption point (`0832199P`) reports no production total. Files:
+- 1 Production Total (ebIX) — kept, the only copy
+- 2 Production VSE breakdown files (stored under `0134575W`, like any production point)
 - 1 Consumption Total (ebIX) — **spurious, a provider fault**, skipped on ingest
 
 **Characteristics:**
@@ -101,8 +105,8 @@ VSE breakdown on the same id, with nothing to pair against. Files:
 - Reports its production total *and* VSE breakdown on the same meter ID
 - The consumption file it also gets is not real consumption. It carries the real
   `community_id`, so it was not filtered out of `segment='total'` queries and
-  inflated Sum(E66) consumption until the declaration named the meter
-  production-only. See PROVIDER_QUESTIONS.md and QUESTDB.md.
+  inflated Sum(E66) consumption until the declaration named the meter a
+  production point. See PROVIDER_QUESTIONS.md and QUESTDB.md.
 
 ## File Count Calculation
 
@@ -111,10 +115,10 @@ VSE breakdown on the same id, with nothing to pair against. Files:
 - 12 members without solar panels (consumers only)
 
 **E66 files** (ValidatedMeteredData_1.6):
-- Consumption points, member produces: 9 × 4 = 36 files
-- Consumption-only points: 12 × 3 = 36 files
-- Production points (breakdown): 9 × 3 = 27 files
-- Production-only special case (0134575W): 1 × 4 = 4 files
+- Consumption points, customer produces: 9 × 4 = 36 files
+- Consumption points, customer does not: 12 × 3 = 36 files
+- Production points: 9 × 3 = 27 files
+- Special case (0134575W): 1 × 4 = 4 files
 - **Subtotal: 36 + 36 + 27 + 4 = 103 files**
 
 **E31 files** (AggregatedMeteredData_1.3):
@@ -181,7 +185,7 @@ Example (E66 - ValidatedMeteredData):
   - Avoid race conditions
   - Better logging (one summary per batch)
 
-Attribution no longer needs the batch to be complete: it is a per-file lookup in
-`config/meters.yaml`, so a file arriving in a later wave — or retried after a
-failure — is attributed on its own. Batching is now only about the summary and the
-delivery report.
+Storing a file does not need the batch to be complete: its customer and role
+are a per-file lookup in `config/customers.yaml`, so a file arriving in a later
+wave — or retried after a failure — is decided on its own. Batching is only
+about the summary and the delivery report.

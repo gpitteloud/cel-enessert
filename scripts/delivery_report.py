@@ -13,16 +13,17 @@ alone. `cel + grid = total` is already false at source for most of June -- in
 20260610, 21 of 22 consumption meters report a non-zero total with both
 breakdowns 0.000 -- so failing on it would abort every replay of that window.
 
-The report reproduces what was *stored*: a paired production meter's production
-total is left out and its breakdown counted under the consumption meter, exactly
-as parse_e66 decides it.
+The report reproduces what was *stored*: every file under its own meter, minus
+the files parse_e66 drops for reporting against their meter's role (a
+consumption point's copy of the production total, above all).
 
 It is also where the provider's declaration is checked. Ingestion trusts
-meters.yaml as a per-file lookup, so a wrong pair would misattribute in silence;
-here the two files of a declared pair are compared value by value -- the equality
-that used to *derive* the pairing now only has to confirm it. A pair whose files
-are not both in the delivery is not reported: waves arrive late, and that is
-normal rather than a finding.
+customers.yaml as a per-file lookup, so a meter listed under the wrong customer
+would go unnoticed. Here, the production total a customer's consumption point
+reports is compared slot by slot with the sum of the customer's production
+points' totals: the two must be the same energy. A customer whose files are not
+all in the delivery is not reported: waves arrive late, and that is normal
+rather than a finding.
 
 Usage (a delivery still in incoming, or already archived):
     python3 -m scripts.delivery_report 20260527 input/all
@@ -39,10 +40,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from scripts.logger_config import configure_logging
-from scripts.meters import Meters, load_meters
-from scripts.models import is_production_breakdown, is_production_total
-from scripts.parse_sdat_e66_individual import (
-    consumption_on_a_production_meter, duplicates_the_consumption_total)
+from scripts.meters import CONSUMPTION, PRODUCTION, Meters, load_meters
+from scripts.models import is_production_total
+from scripts.parse_sdat_e66_individual import reports_against_its_role
 from scripts.sdat_header import FileHeader, parse_header
 
 logger = logging.getLogger(__name__)
@@ -56,8 +56,8 @@ MAX_REPORTED_COLLISIONS = 5
 # Where the declared meters are, for a standalone run: the container path first,
 # then the checkout's own config/. Only the CLI looks them up -- ingestion passes
 # in the ones it used, so the report can never describe a different declaration.
-METERS_FILES = (Path('/app/config/meters.yaml'),
-                Path(__file__).resolve().parent.parent / 'config' / 'meters.yaml')
+METERS_FILES = (Path('/app/config/customers.yaml'),
+                Path(__file__).resolve().parent.parent / 'config' / 'customers.yaml')
 
 Series = Tuple[str, str]        # direction, segment
 Slots = Dict[str, Decimal]      # ISO-8601 slot -> value
@@ -103,7 +103,7 @@ class Rewrites:
 def group_by_report_period(headers: Iterable[FileHeader]
                            ) -> Dict[Tuple, List[FileHeader]]:
     """Group CEL files by report period. RCP files are left out: they carry only
-    ebIX totals, so they have no breakdown and no production metering point."""
+    ebIX totals, so they have no breakdown and no customer."""
     groups = defaultdict(list)
     for header in headers:
         if header.rcp:
@@ -117,22 +117,17 @@ def period_label(period: Tuple) -> str:
     return f"{start:%Y-%m-%d}..{end:%Y-%m-%d}" if start and end else str(period)
 
 
-def attributed_meter(header: FileHeader, meters: Meters) -> Optional[str]:
+def stored_meter(header: FileHeader, meters: Meters) -> Optional[str]:
     """The meter one file's rows are stored under, or None if it stores none.
 
-    The decision parse_e66 makes, through the same predicates: a paired
-    production meter's total duplicates its twin's and is dropped, a consumption
-    file on a production metering point is not a member's consumption, and a
-    breakdown belongs to the consumption meter.
+    The decision parse_e66 makes, through the same predicate: a file reporting
+    against its meter's role is dropped (skipped or failed), and every other
+    file is stored under its own meter.
     """
     if header.rcp or header.document_type != 'E66' or not header.file_meter_id:
         return None
-    if consumption_on_a_production_meter(header, meters):
+    if reports_against_its_role(header, meters):
         return None
-    if duplicates_the_consumption_total(header, meters):
-        return None
-    if is_production_breakdown(header.metric_type):
-        return meters.consumption_meter_for(header.file_meter_id)
     return header.file_meter_id
 
 
@@ -142,7 +137,7 @@ def e66_slots(headers: Iterable[FileHeader], meters: Meters
     by_meter: Dict[str, Dict[Series, Slots]] = defaultdict(
         lambda: defaultdict(dict))
     for header in headers:
-        meter = attributed_meter(header, meters)
+        meter = stored_meter(header, meters)
         if meter is None or header.metric_type is None:
             continue
         slots = by_meter[meter][(header.direction, header.segment)]
@@ -249,39 +244,52 @@ def production_totals(headers: Iterable[FileHeader]) -> Dict[str, FileHeader]:
     return totals
 
 
-def check_declared_pairs(headers: Iterable[FileHeader],
-                         meters: Meters) -> List[str]:
-    """Confirm each declared pair reports the same production total, or say how.
+def summed_values(files: Iterable[FileHeader]) -> Slots:
+    """{slot: value} added up over several files, slot by slot."""
+    total: Slots = {}
+    for header in files:
+        for obs in header.observations:
+            total[obs.timestamp] = total.get(obs.timestamp, ZERO) + obs.value
+    return total
 
-    This equality is what discovery used to *derive* the pairing from, and it is
-    the only evidence the two ids belong to the same site. Ingestion no longer
-    looks at it -- it trusts the declaration -- so it is checked once per report
-    period here instead, where a whole group is in hand and both files of a pair
-    can be compared slot by slot.
 
-    A pair with only one of its two files present yields nothing: a delivery
-    arrives in waves, so an absent file is normal and reporting it would bury the
-    real finding in noise.
+def check_customer_production(headers: Iterable[FileHeader],
+                              meters: Meters) -> List[str]:
+    """Confirm each customer's two production totals agree, or say how.
+
+    A customer who produces gets the production total twice: from a consumption
+    point (the copy ingestion drops) and from the production point(s), whose
+    totals are summed. They are the same energy, and this equality is the only
+    evidence that customers.yaml groups the right meters together. Ingestion
+    does not look at it, because it trusts the declaration, so it is checked
+    once per report period here, where a whole group is in hand.
+
+    Nothing is reported for a customer missing one side: either a wave has not
+    arrived yet, or no consumption point reports a copy at all (0134575W is not
+    coupled to one).
     """
     totals = production_totals(headers)
     disagreements = []
-    for production, consumption in sorted(
-            meters.consumption_by_production.items()):
-        left, right = totals.get(production), totals.get(consumption)
-        if left is None or right is None:
+    for customer in sorted(meters.customers):
+        production_meters = meters.meters_of(customer, PRODUCTION)
+        produced = [totals[m] for m in sorted(production_meters) if m in totals]
+        copies = [totals[m] for m in sorted(meters.meters_of(customer, CONSUMPTION))
+                  if m in totals]
+        if not copies or len(produced) != len(production_meters):
             continue
-        if len(left.values) != len(right.values):
+        left, right = summed_values(copies), summed_values(produced)
+        names = (f"({', '.join(h.file_name for h in copies)} vs "
+                 f"{', '.join(h.file_name for h in produced)})")
+        if set(left) != set(right):
             disagreements.append(
-                f"declared pair {production} -> {consumption}: production totals "
-                f"cover {len(left.values)} and {len(right.values)} slot(s) "
-                f"({left.file_name} vs {right.file_name})")
-        elif left.values != right.values:
-            differing = sum(1 for a, b in zip(left.values, right.values)
-                            if a != b)
+                f"customer {customer}: production totals cover {len(left)} and "
+                f"{len(right)} slot(s) {names}")
+            continue
+        differing = sum(1 for slot in left if left[slot] != right[slot])
+        if differing:
             disagreements.append(
-                f"declared pair {production} -> {consumption}: production totals "
-                f"differ on {differing} of {len(left.values)} slot(s) "
-                f"({left.file_name} vs {right.file_name})")
+                f"customer {customer}: production totals differ on {differing} "
+                f"of {len(left)} slot(s) {names}")
     return disagreements
 
 
@@ -294,7 +302,7 @@ def rewritten_keys(headers: Iterable[FileHeader], meters: Meters) -> Rewrites:
     seen: Dict[tuple, Tuple[Decimal, str]] = {}
     rewrites = Rewrites()
     for header in headers:
-        meter = attributed_meter(header, meters)
+        meter = stored_meter(header, meters)
         if meter is None:
             continue
         for obs in header.observations:
@@ -331,9 +339,9 @@ def report_period_group(period: Tuple, group: List[FileHeader],
 
     logger.info(f"Period {period_label(period)}: {len(group)} CEL file(s), "
                 f"{len(by_meter)} meter(s)")
-    for disagreement in check_declared_pairs(group, meters):
-        # The declaration is wrong, or two sites now report the same total. Either
-        # way a breakdown is being stored under a meter it does not belong to.
+    for disagreement in check_customer_production(group, meters):
+        # The declaration is wrong, or a meter now reports someone else's
+        # production. Either way a meter is filed under the wrong customer.
         logger.error(f"  {disagreement}")
 
     if not e31:
@@ -381,7 +389,7 @@ def report_delivery(delivery, headers: Iterable[FileHeader],
     """Log what one delivery contained and where it does not add up.
 
     `meters` is the declaration ingestion used, passed in rather than re-read, so
-    the report can never describe an attribution the database does not have.
+    the report can never describe a decision the database does not reflect.
     """
     # Filename order is the provider's send order, which is the order the
     # colliding writes happened in.
@@ -463,14 +471,14 @@ def declared_meters() -> Meters:
     """The declared meters for a standalone run, or none if the file is absent.
 
     Unlike ingestion, which stops when it cannot load them, a report with no
-    declaration is still worth having -- everything but the production breakdowns
-    is unaffected. The gap is logged, loudly, so no number is read as complete.
+    declaration is still worth having. The gap is logged loudly, because without
+    it no file is dropped and every production total counts twice.
     """
     for path in METERS_FILES:
         if path.exists():
             return load_meters(path)
     logger.error(f"No declared meters found ({', '.join(str(p) for p in METERS_FILES)}): "
-                 f"production breakdowns will be reported as attributed nowhere")
+                 f"production totals will be counted twice")
     return Meters.empty()
 
 

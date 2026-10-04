@@ -2,10 +2,10 @@
 """
 E66 (ValidatedMeteredData_1.6) -> MeteredData: individual meter readings.
 
-The XML is already read into a FileHeader (see sdat_header); what is left here is
-the one decision E66 needs and E31 does not -- which meter a production breakdown
-belongs to. That decision is *finished* here, so MeteredData.meter_id is the id
-the rows are stored under and no later stage re-derives it.
+The XML is already read into a FileHeader (see sdat_header). What is left is
+the one decision E66 needs and E31 does not: whether this file's readings are
+stored at all. When they are, they go under the file's own meter id, tagged
+with the customer that owns it.
 
 Every rule below is a lookup in the declared meters (see scripts/meters.py), so
 one file is decidable on its own: a late or retried file needs no batch around it.
@@ -14,37 +14,33 @@ import logging
 from typing import Optional
 
 from scripts.meters import Meters
-from scripts.models import (MeteredData, ParseResult, SkippedDocument,
-                            is_production_breakdown, is_production_total)
+from scripts.models import MeteredData, ParseResult, SkippedDocument
 from scripts.sdat_header import FileHeader
 
 logger = logging.getLogger(__name__)
 
 
-def duplicates_the_consumption_total(header: FileHeader, meters: Meters) -> bool:
-    """True for a paired production meter's ebIX production total.
+def reports_against_its_role(header: FileHeader, meters: Meters) -> bool:
+    """True for a file whose direction is not its declared meter's role.
 
-    The consumption meter of the same member reports that total too, identically,
-    so storing both would double the community's production. A production-only
-    meter has no twin and keeps its own total.
+    The provider sends two kinds: the copy of the production total a consumption
+    point sends when its customer also produces, and the consumption files of
+    production point 0134575W (see PROVIDER_QUESTIONS.md). An undeclared meter has
+    no role, so nothing it sends is against it.
     """
-    return (is_production_total(header.metric_type)
-            and meters.is_paired_production_meter(header.file_meter_id))
+    role = meters.role_of(header.file_meter_id)
+    return role is not None and header.metering_point_type != role
 
 
-def consumption_on_a_production_meter(header: FileHeader,
-                                      meters: Meters) -> bool:
-    """True for a consumption file bearing a declared production metering point.
+def stored_elsewhere(header: FileHeader, meters: Meters) -> bool:
+    """True when another meter of the same customer carries this file's direction.
 
-    A production metering point measures what a site feeds in; it has no
-    consumption to report. The provider nonetheless sends consumption files for
-    0134575W, and those readings are not a member's consumption -- see
-    PROVIDER_QUESTIONS.md. Stated for every production metering point rather than
-    only the production-only ones: a paired one sending consumption would be the
-    same fault, and today none does, so this changes nothing for them.
+    Then a file reporting against its role is a duplicate or a provider fault,
+    and dropping it loses nothing.
     """
-    return (header.metering_point_type == 'consumption'
-            and meters.is_production_metering_point(header.file_meter_id))
+    customer = meters.customer_of(header.file_meter_id)
+    return (customer is not None
+            and meters.customer_has(customer, header.metering_point_type))
 
 
 def parse_e66(header: FileHeader,
@@ -54,15 +50,18 @@ def parse_e66(header: FileHeader,
 
     Args:
         header: the parsed file, observations included
-        meters: the declared meters; without them a production breakdown cannot
-            be attributed and its file fails
+        meters: the declared meters; without them every meter is undeclared and
+            is stored with no customer
 
     Returns:
         MeteredData with document_type='E66';
-        SkippedDocument if the document is valid but deliberately not ingested
-        (a paired production meter's duplicate total, ~9 files per delivery, or a
-        consumption file on a production metering point);
-        None if the file has no meter id or its breakdown cannot be attributed.
+        SkippedDocument if a total file reports against its meter's role and
+        the customer's other meter carries that direction (a production-total
+        copy on a consumption point, or a consumption total on a production
+        point);
+        None if the file has no meter id, is a CEL or grid breakdown against
+        its meter's role (the role is wrong), or is a total against its role
+        with nothing else carrying it.
     """
     meters = meters if meters is not None else Meters.empty()
 
@@ -71,41 +70,50 @@ def parse_e66(header: FileHeader,
         logger.error(f"{header.file_name}: no consumption or production meter id")
         return None
 
-    # Both drops below are intentional, so they are reported as skips: the caller
-    # logs them as expected and still archives the file.
-    if consumption_on_a_production_meter(header, meters):
-        return SkippedDocument(
-            reason=(f"{meter_id} is a production metering point, so this "
-                    f"consumption file is not a member's consumption"),
-            meter_id=meter_id,
-        )
-
-    if duplicates_the_consumption_total(header, meters):
-        return SkippedDocument(
-            reason=(f"production meter {meter_id} repeats the production total "
-                    f"of consumption meter "
-                    f"{meters.consumption_by_production[meter_id]}"),
-            meter_id=meter_id,
-        )
-
-    if is_production_breakdown(header.metric_type):
-        owner = meters.consumption_meter_for(meter_id)
-        if owner is None:
-            logger.error(f"{describe_undeclared(meter_id, meters)}. "
-                         f"Skipping {header.file_name}.")
+    customer_id = meters.customer_of(meter_id)
+    if reports_against_its_role(header, meters):
+        role = meters.role_of(meter_id)
+        if header.segment != 'total':
+            # A meter measures only its own direction, so a CEL or grid
+            # breakdown names its role. Both expected skips are total files;
+            # a breakdown against the role means the declared role is wrong,
+            # and skipping it would drop the meter's data silently.
+            logger.error(f"{role} meter {meter_id} of customer {customer_id} "
+                         f"reports a {header.metering_point_type} "
+                         f"{header.segment} breakdown, which only a "
+                         f"{header.metering_point_type} meter measures. Check "
+                         f"its role in customers.yaml. Skipping "
+                         f"{header.file_name}.")
             return None
-        if owner != meter_id:
-            logger.info(f"Production meter {meter_id} -> attributing production "
-                        f"breakdown to consumption meter {owner}")
-        meter_id = owner
+        if stored_elsewhere(header, meters):
+            # Intentional, so reported as a skip: the caller logs it as
+            # expected and still archives the file.
+            return SkippedDocument(
+                reason=(f"{role} meter {meter_id} reports {header.direction}, "
+                        f"which customer {customer_id}'s "
+                        f"{header.metering_point_type} meter carries"),
+                meter_id=meter_id,
+            )
+        # A consumption-only customer whose meter starts reporting production
+        # has most likely installed solar before the list was updated: dropping
+        # it would lose real production.
+        logger.error(f"{role} meter {meter_id} of customer {customer_id} reports "
+                     f"{header.metering_point_type}, and the customer owns no "
+                     f"{header.metering_point_type} meter. Is customers.yaml "
+                     f"up to date? Skipping {header.file_name}.")
+        return None
+
+    if customer_id is None and not header.rcp:
+        logger.warning(f"{header.file_name}: meter {meter_id} is not declared in "
+                       f"customers.yaml; stored with no customer")
 
     if header.metric_type is None:
         logger.warning(f"{header.file_name}: unclassified product code "
                        f"{header.product_code!r}")
 
-    # The header row records where the rows actually went, so the file's own
-    # meter and the stored meter are both queryable.
-    header.attributed_meter_id = meter_id
+    # The header row records the owner too, so a file is traceable to its
+    # customer without reading its rows.
+    header.customer_id = customer_id
 
     return MeteredData(
         document_type='E66',
@@ -116,19 +124,6 @@ def parse_e66(header: FileHeader,
         community_id=header.community_id,
         metric_type=header.metric_type,
         meter_id=meter_id,
+        customer_id=customer_id,
         rcp=header.rcp,
     )
-
-
-def describe_undeclared(meter_id: str, meters: Meters) -> str:
-    """Why a production breakdown could not be attributed.
-
-    A declared consumption-only member sending one is a wrong declaration; an
-    unknown id is a meter we were never told about. Both need the provider, but
-    not the same question, so they do not share a message.
-    """
-    if meters.is_consumption_only(meter_id):
-        return (f"{meter_id} is declared consumption-only but reports a "
-                f"production breakdown")
-    return (f"Meter {meter_id} reports a production breakdown and is not "
-            f"declared in meters.yaml")

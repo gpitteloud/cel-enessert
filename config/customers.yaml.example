@@ -1,0 +1,42 @@
+# The community's customers and the metering points each one owns - EXAMPLE.
+#
+# The real file is config/customers.yaml, gitignored because it holds real
+# meter ids. Its content comes from the provider. It is what ties every row
+# to its customer (see scripts/meters.py), and the job refuses to start
+# without it, so deploy it alongside api_config.yaml.
+#
+# A VSE national meter id is 33 characters and is never sliced: a value shorter
+# than 20 characters is rejected at load.
+#
+# Under each customer, its metering points by role:
+#
+#   consumption  reports consumption total + cel/grid. If the customer also
+#                produces, one of them also sends a copy of the production
+#                total; the copy is dropped.
+#   production   reports production total + cel/grid
+#
+# Each id is stored under its own id. A CEL or grid file whose direction is
+# not its meter's role fails: the role is wrong. A total file against the role
+# is dropped when the customer owns a meter of that direction, and fails
+# otherwise. The role is declared because a total file cannot show which meter
+# is its real source (PARSING_GUIDE.md, "Why the role is declared").
+#
+# An id may appear exactly once in the whole file. This is checked at load,
+# and a repeated id stops the job instead of filing a meter under two
+# customers. Quote customer ids so YAML keeps them as strings.
+
+customers:
+  "1000001":
+    consumption:
+      - "CH1011101234500000000000000036273"
+  "1000002":
+    consumption:
+      - "CH1011101234500000000000000020576"
+      - "CH1011101234500000000000000050170"
+    production:
+      - "CH1011101234500000000000008552290"
+  "1000003":
+    consumption:
+      - "CH1011101234500000000000000046782"
+    production:
+      - "CH1011101234500000000000000134575"

@@ -42,23 +42,38 @@ def meter_id(suffix):
     return METER_ID_PREFIX + suffix
 
 
-# The community as the provider declares it, with the real ids' shape: nine
-# members who produce, twelve who only consume, and the one production metering
-# point that has no consumption (0134575W) yet gets consumption files anyway.
-SAMPLE_METERS = Meters(
-    consumption_by_production={
-        meter_id(production): meter_id(consumption)
-        for production, consumption in {
-            '0855229G': '0020576V', '08574078': '0217130Y', '08552310': '0046782G',
-            '0855227M': '00846565', '0855223Y': '01192538', '08552213': '0125445D',
-            '0855219K': '01650626', '0857405E': '0208254A', '0855225S': '0803097E',
-        }.items()
-    },
-    production_only=frozenset({meter_id('0134575W')}),
-    consumption_only=frozenset(meter_id(s) for s in (
-        '0036273C', '0050170B', '0060545I', '0062412W', '0078872J', '0164750O',
-        '0198918Z', '0199054X', '02291991', '0229599I', '0832199P', '0858140M')),
-)
+# The community as the provider declares it, with the real ids' shape. It has
+# every case the declaration has to handle: a customer with two consumption
+# points next to its production point (9000106), one with four consumption
+# points and no production (9000105), and production point 0134575W, which no
+# consumption point reports a copy for yet gets consumption files anyway
+# (9000114).
+SAMPLE_CUSTOMERS = {
+    '9000106': {'consumption': ('02291991', '01650626'), 'production': ('0855219K',)},
+    '9000103': {'consumption': ('0199054X',)},
+    '9000101': {'consumption': ('0078872J',)},
+    '9000117': {'consumption': ('0060545I',)},
+    '9000115': {'consumption': ('0046782G',), 'production': ('08552310',)},
+    '9000110': {'consumption': ('0217130Y',), 'production': ('08574078',)},
+    '9000109': {'consumption': ('00846565',), 'production': ('0855227M',)},
+    '9000104': {'consumption': ('0803097E',), 'production': ('0855225S',)},
+    '9000112': {'consumption': ('0036273C',)},
+    '9000105': {'consumption': ('0198918Z', '0062412W', '0858140M', '0164750O')},
+    '9000116': {'consumption': ('01192538',), 'production': ('0855223Y',)},
+    '9000108': {'consumption': ('0125445D',), 'production': ('08552213',)},
+    '9000114': {'consumption': ('0832199P',), 'production': ('0134575W',)},
+    '9000107': {'consumption': ('0050170B', '0020576V'), 'production': ('0855229G',)},
+    '9000111': {'consumption': ('02064573',), 'production': ('0862613T',)},
+    '9000113': {'consumption': ('0229599I',)},
+    '9000102': {'consumption': ('0208254A',), 'production': ('0857405E',)},
+}
+
+SAMPLE_METERS = Meters(owners={
+    meter_id(suffix): (customer, role)
+    for customer, roles in SAMPLE_CUSTOMERS.items()
+    for role, suffixes in roles.items()
+    for suffix in suffixes
+})
 
 
 RSM_OPEN_E66 = (

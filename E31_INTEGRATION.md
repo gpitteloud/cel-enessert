@@ -137,7 +137,7 @@ ORDER BY time;
 - Compare aggregate vs sum of individual meters
 
 **Validation Dashboard** — both are live in
-`grafana-dashboards/grafana-dashboard-e31-v2.json`, panels 13-15:
+`grafana-dashboards/cel-community-energy-e31.json`, panels 13-15:
 ```sql
 -- Community aggregate
 SELECT ts AS time, cast(sum(value) AS DOUBLE) AS "E31 Total"

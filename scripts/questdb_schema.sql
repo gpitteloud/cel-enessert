@@ -11,7 +11,8 @@
 -- E66: per-meter readings.
 CREATE TABLE IF NOT EXISTS cel_energy (
   ts           TIMESTAMP,
-  meter_id     SYMBOL,
+  meter_id     SYMBOL,          -- the file's own metering point
+  customer_id  SYMBOL,          -- owner, from customers.yaml; NULL if undeclared (RCP)
   direction    SYMBOL,          -- consumption | production
   segment      SYMBOL,          -- cel | grid | total  (total = cel + grid)
   product_code SYMBOL,
@@ -24,6 +25,8 @@ CREATE TABLE IF NOT EXISTS cel_energy (
   source_file  SYMBOL,
   rcp          BOOLEAN
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL
+-- customer_id is payload too: a meter changing owner must overwrite its slots,
+-- not add a second row per slot under the new customer.
 DEDUP UPSERT KEYS(ts, meter_id, direction, segment, product_code, community_id);
 
 -- E31: community aggregates. Separate table (not a metric-name column) so a
@@ -63,8 +66,8 @@ CREATE TABLE IF NOT EXISTS cel_file_header (
   receiver_role       SYMBOL,      -- CEM (CEL) | DEC (RCP)
   period_start        TIMESTAMP,   -- ReportPeriod == Interval in every real file
   period_end          TIMESTAMP,
-  file_meter_id       SYMBOL,      -- the file's OWN metering point (production or consumption)
-  attributed_meter_id SYMBOL,      -- the meter the observation rows were stored under
+  meter_id            SYMBOL,      -- the file's own metering point == cel_energy.meter_id
+  customer_id         SYMBOL,      -- owner, from customers.yaml; NULL for E31 and undeclared meters
   metering_point_type SYMBOL,      -- consumption | production | NULL for E31
   flow_characteristic SYMBOL,      -- E17 | E18, E31 only
   product_code        SYMBOL,

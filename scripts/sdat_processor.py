@@ -23,8 +23,8 @@ class FileOutcome(Enum):
     """Result of handling one file, and what the batch loop should do with it.
 
     SKIPPED is NOT an error: the file was understood and deliberately not
-    ingested -- a paired production meter's duplicate production total (~9 per
-    delivery), or a consumption file on a production metering point. It must
+    ingested -- a consumption point's copy of the production total, or a
+    consumption file on a production metering point (see parse_e66). It must
     still be archived, otherwise it stays in the incoming folder forever and gets
     re-examined -- and re-reported -- every delivery.
     """
@@ -78,7 +78,7 @@ class SDATProcessor:
         if not meters_file:
             raise ValueError(
                 "processing.meters_file is not configured: without the declared "
-                "meters no production breakdown can be attributed")
+                "meters no row can be tied to its customer")
         writer = QuestDBWriter(
             api_config.get('questdb', {}).get('dsn') or QUESTDB_DEFAULT_DSN)
         logger.info("QuestDB writer ready")
@@ -117,7 +117,7 @@ class SDATProcessor:
         logger.info(f"Processing {len(batch)} files delivered on {delivery_date}")
         logger.info(f"-" * 80)
 
-        # One read for the whole delivery: attribution, provenance and the
+        # One read for the whole delivery: ingestion, provenance and the
         # report all work off these headers, so no file is parsed twice.
         headers = load_headers(batch)
 
@@ -177,7 +177,7 @@ class SDATProcessor:
         """Process a single XML file (E66 or E31)
 
         `header` comes from the batch, which has read every header once already;
-        without it the file is read here. Attribution is a lookup in the declared
+        without it the file is read here. Its customer is a lookup in the declared
         meters either way, so a file processed on its own decides the same as it
         would inside its delivery.
 
@@ -218,7 +218,7 @@ class SDATProcessor:
 
     def _ingest(self, header):
         """Parse one file's header into rows and write them: (outcome, rows)."""
-        # Dispatch by document content (E66 vs E31), attribution included
+        # Dispatch by document content (E66 vs E31), customer lookup included
         parsed_data = metered_data_from_header(header, meters=self.meters)
 
         if isinstance(parsed_data, SkippedDocument):

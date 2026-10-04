@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
-"""The community's meters, as the provider declares them.
+"""The community's customers and the metering points they own.
 
-Attribution used to be *inferred* from each delivery: a production metering point
-reports the same production total as its consumption metering point, value for
-value, and that equality paired the two. Inference needs the whole delivery, and
-a delivery routinely arrives in waves -- so a late file processed on its own
-could not be paired at all. Every branch that handled it existed only because the
-linkage is nowhere in the XML: a production file carries its own VSENationalID
-and a Community, and nothing else.
+Each metering point is stored under its own id, with the id of the customer that
+owns it, so a customer's data is every row carrying that customer id. The
+provider's list says which customer owns which metering point and the role of
+each one:
 
-The provider declares the list instead, which makes attribution a lookup:
+    consumption  reports what the site draws: consumption total + cel/grid
+    production   reports what it feeds in: production total + cel/grid
 
-    consumption-only        a member with no production metering point
-    consumption-production  a member with both, one id each
-    production-only         a production metering point with no consumption
+A metering point reports only its own direction. The provider sends two kinds
+of file that break this rule, and both duplicate or contradict data stored
+elsewhere:
 
-A member who produces has TWO metering point ids: the consumption one, which
-reports what the site draws, and the production one, which reports what it feeds
-in plus the cel/grid split of it. Both are stored under the consumption id, so
-one member is one meter in the database.
+- a consumption point whose customer also produces sends a copy of the
+  production total, which the production point carries too;
+- 0134575W, a production point, gets consumption files, which are a provider
+  fault (see PROVIDER_QUESTIONS.md).
 
-`production-only` exists because the provider emits consumption files for a
-production metering point that has no consumption at all (0134575W). Those files
-are a provider fault and are discarded -- see PROVIDER_QUESTIONS.md.
+Both are total files. So a total whose direction is not its metering point's
+role is dropped whenever the customer owns a meter of that direction, and fails
+otherwise, because then nothing else carries that data. A CEL or grid breakdown
+against the role always fails: a meter measures only its own direction, so it
+means the declared role is wrong.
 
-A declaration error must stop the job before it stores anything, so `load_meters`
-raises instead of falling back: a mis-declared pair would file one member's
-production under another, and no later query could tell.
+The role is declared rather than derived because a total file cannot show which
+meter is its real source, and the breakdown that would tell is often in another
+delivery wave (PARSING_GUIDE.md, "Why the role is declared").
+
+The list must be correct before anything is stored, so `load_meters` raises
+instead of falling back: a meter filed under the wrong customer cannot be
+detected by any later query.
 """
 
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, FrozenSet, Optional
+from typing import Dict, FrozenSet, Optional, Tuple
 
 import yaml
 
@@ -43,71 +47,55 @@ logger = logging.getLogger(__name__)
 # it is not a meter id we can match a file against.
 MIN_METER_ID_LENGTH = 20
 
-CONSUMPTION_ONLY = 'consumption-only'
-CONSUMPTION_PRODUCTION = 'consumption-production'
-PRODUCTION_ONLY = 'production-only'
-ROOTS = (CONSUMPTION_ONLY, CONSUMPTION_PRODUCTION, PRODUCTION_ONLY)
+CUSTOMERS = 'customers'
+CONSUMPTION = 'consumption'
+PRODUCTION = 'production'
+ROLES = (CONSUMPTION, PRODUCTION)
 
 
 @dataclass(frozen=True)
 class Meters:
-    """The declared meters, as the three lookups attribution needs."""
+    """The declared meters: who owns each one, and in which role."""
 
-    # production metering point id -> the consumption metering point of the same
-    # member, which is the id its readings are stored under.
-    consumption_by_production: Dict[str, str]
-    production_only: FrozenSet[str]
-    consumption_only: FrozenSet[str]
+    # meter id -> (customer id, role)
+    owners: Dict[str, Tuple[str, str]]
 
     @classmethod
     def empty(cls) -> 'Meters':
-        """Declares nothing: every production breakdown is then unattributable.
+        """Declares nothing: every meter is then undeclared.
 
         For a caller with no declaration to hand -- a diagnostic run, a test of
         consumption files -- and deliberately not a fallback the job may take:
         `from_config` loads the real file or raises.
         """
-        return cls({}, frozenset(), frozenset())
+        return cls({})
 
-    def consumption_meter_for(self, meter_id: str) -> Optional[str]:
-        """The meter a production breakdown is stored under, or None if undeclared.
+    def customer_of(self, meter_id: str) -> Optional[str]:
+        """The customer owning a meter, or None if it is not declared."""
+        owner = self.owners.get(meter_id)
+        return owner[0] if owner else None
 
-        A paired production metering point resolves to its consumption twin; a
-        production-only one owns its breakdown and resolves to itself. Anything
-        else is a meter we were not told about, and nothing is guessed.
-        """
-        paired = self.consumption_by_production.get(meter_id)
-        if paired:
-            return paired
-        if meter_id in self.production_only:
-            return meter_id
-        return None
+    def role_of(self, meter_id: str) -> Optional[str]:
+        """'consumption' | 'production', or None if the meter is not declared."""
+        owner = self.owners.get(meter_id)
+        return owner[1] if owner else None
 
-    def is_paired_production_meter(self, meter_id: str) -> bool:
-        """True for a production metering point that has a consumption twin.
+    def customer_has(self, customer_id: str, role: str) -> bool:
+        """True if the customer owns at least one meter in that role."""
+        return (customer_id, role) in set(self.owners.values())
 
-        Which is exactly the case where its ebIX production total is a duplicate:
-        the twin reports the same total.
-        """
-        return meter_id in self.consumption_by_production
+    def meters_of(self, customer_id: str, role: str) -> FrozenSet[str]:
+        """The customer's meters in one role."""
+        return frozenset(meter for meter, owner in self.owners.items()
+                         if owner == (customer_id, role))
 
-    def is_production_metering_point(self, meter_id: str) -> bool:
-        """True for any declared production metering point.
-
-        A consumption file bearing one of these ids cannot be real -- see
-        `production_only` above.
-        """
-        return (meter_id in self.consumption_by_production
-                or meter_id in self.production_only)
-
-    def is_consumption_only(self, meter_id: str) -> bool:
-        """True for a member declared as having no production metering point."""
-        return meter_id in self.consumption_only
+    @property
+    def customers(self) -> FrozenSet[str]:
+        return frozenset(customer for customer, _ in self.owners.values())
 
     def __len__(self) -> int:
-        """How many metering point ids are declared, over all three roots."""
-        return (2 * len(self.consumption_by_production)
-                + len(self.production_only) + len(self.consumption_only))
+        """How many metering point ids are declared."""
+        return len(self.owners)
 
 
 def _declared_id(value, where: str) -> str:
@@ -119,104 +107,76 @@ def _declared_id(value, where: str) -> str:
     return value.strip()
 
 
-def _id_list(data: dict, root: str) -> list:
-    """The ids under a list-shaped root."""
-    entries = data.get(root) or []
-    if not isinstance(entries, list):
-        raise ValueError(f"{root}: expected a list of meter ids, got "
-                         f"{type(entries).__name__}")
-    return [_declared_id(entry, root) for entry in entries]
-
-
-def _pairs(data: dict) -> Dict[str, str]:
-    """{production id: consumption id} from the consumption-production root."""
-    entries = data.get(CONSUMPTION_PRODUCTION) or []
-    if not isinstance(entries, list):
-        raise ValueError(f"{CONSUMPTION_PRODUCTION}: expected a list of "
-                         f"consumption/production pairs, got "
-                         f"{type(entries).__name__}")
-
-    pairs: Dict[str, str] = {}
-    consumption_seen: Dict[str, str] = {}
-    for entry in entries:
-        if not isinstance(entry, dict) or set(entry) != {'consumption',
-                                                         'production'}:
-            raise ValueError(
-                f"{CONSUMPTION_PRODUCTION}: every entry needs exactly a "
-                f"'consumption' and a 'production' id, got {entry!r}")
-        consumption = _declared_id(entry['consumption'],
-                                   f"{CONSUMPTION_PRODUCTION}.consumption")
-        production = _declared_id(entry['production'],
-                                  f"{CONSUMPTION_PRODUCTION}.production")
-        if production == consumption:
-            raise ValueError(
-                f"{CONSUMPTION_PRODUCTION}: {production} is declared as its own "
-                f"consumption meter; a member with one id belongs in "
-                f"{PRODUCTION_ONLY}")
-        # A repeated id on either side would silently drop or merge a member.
-        if production in pairs:
-            raise ValueError(f"{CONSUMPTION_PRODUCTION}: production meter "
-                             f"{production} is declared twice")
-        if consumption in consumption_seen:
-            raise ValueError(
-                f"{CONSUMPTION_PRODUCTION}: consumption meter {consumption} is "
-                f"paired with both {consumption_seen[consumption]} and "
-                f"{production}")
-        pairs[production] = consumption
-        consumption_seen[consumption] = production
-    return pairs
+def _customer_id(value) -> str:
+    """A customer id, which YAML reads as an int when it is not quoted."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError(f"{CUSTOMERS}: {value!r} is not a customer id")
+    customer_id = str(value).strip()
+    if not customer_id:
+        raise ValueError(f"{CUSTOMERS}: empty customer id")
+    return customer_id
 
 
 def load_meters(path) -> Meters:
-    """Read the declared meters, raising on anything it cannot trust.
+    """Read the declared customers and meters, raising on anything untrustworthy.
 
-    Every failure raises: a missing file, an unknown root, a short id, a repeated
-    one. The job stops at startup rather than ingesting a delivery whose
-    breakdowns land on the wrong member -- which is not detectable afterwards.
+    Every failure raises: a missing file, an unknown section or role, a short
+    id, an id declared twice (even under one customer). The job stops at
+    startup instead of storing a delivery whose meters land on the wrong
+    customer, which cannot be detected afterwards.
     """
     path = Path(path)
     text = path.read_text(encoding='utf-8')      # FileNotFoundError is the point
     data = yaml.safe_load(text) or {}
     if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected a mapping of "
-                         f"{', '.join(ROOTS)}, got {type(data).__name__}")
+        raise ValueError(f"{path}: expected a mapping with a '{CUSTOMERS}' "
+                         f"section, got {type(data).__name__}")
 
-    unknown = sorted(set(data) - set(ROOTS))
+    unknown = sorted(str(key) for key in set(data) - {CUSTOMERS})
     if unknown:
-        # A typo in a root name would otherwise read as "nothing declared".
+        # A typo in the root name would otherwise read as "nothing declared".
         raise ValueError(f"{path}: unknown section(s) {', '.join(unknown)}; "
-                         f"expected {', '.join(ROOTS)}")
+                         f"expected '{CUSTOMERS}'")
 
-    pairs = _pairs(data)
-    production_only = _id_list(data, PRODUCTION_ONLY)
-    consumption_only = _id_list(data, CONSUMPTION_ONLY)
+    customers = data.get(CUSTOMERS) or {}
+    if not isinstance(customers, dict):
+        raise ValueError(f"{path}: '{CUSTOMERS}' must map customer ids to their "
+                         f"meters, got {type(customers).__name__}")
 
-    for root, ids in ((PRODUCTION_ONLY, production_only),
-                      (CONSUMPTION_ONLY, consumption_only)):
-        duplicates = sorted({i for i in ids if ids.count(i) > 1})
-        if duplicates:
-            raise ValueError(f"{root}: {', '.join(duplicates)} declared twice")
+    owners: Dict[str, Tuple[str, str]] = {}
+    for key, roles in customers.items():
+        customer_id = _customer_id(key)
+        where = f"{CUSTOMERS}.{customer_id}"
+        if not isinstance(roles, dict) or not roles:
+            raise ValueError(f"{where}: expected '{CONSUMPTION}' and/or "
+                             f"'{PRODUCTION}' lists, got {roles!r}")
+        unknown_roles = sorted(str(role) for role in set(roles) - set(ROLES))
+        if unknown_roles:
+            raise ValueError(f"{where}: unknown role(s) "
+                             f"{', '.join(unknown_roles)}; expected "
+                             f"{', '.join(ROLES)}")
+        for role, ids in roles.items():
+            if not isinstance(ids, list) or not ids:
+                raise ValueError(f"{where}.{role}: expected a non-empty list of "
+                                 f"meter ids, got {ids!r}")
+            for value in ids:
+                meter_id = _declared_id(value, f"{where}.{role}")
+                if meter_id in owners:
+                    # One id, one owner and one role: otherwise which one wins
+                    # would depend on the order of the file.
+                    other_customer, other_role = owners[meter_id]
+                    raise ValueError(
+                        f"{meter_id} declared twice: {other_customer}.{other_role} "
+                        f"and {customer_id}.{role}")
+                owners[meter_id] = (customer_id, role)
 
-    meters = Meters(consumption_by_production=pairs,
-                    production_only=frozenset(production_only),
-                    consumption_only=frozenset(consumption_only))
+    meters = Meters(owners=owners)
     if not len(meters):
         raise ValueError(f"{path}: declares no meter at all")
 
-    # One id, one role. The same id in two roots makes the lookups disagree, and
-    # which one wins would then depend on the order the predicates are called in.
-    roles = {CONSUMPTION_PRODUCTION: set(pairs) | set(pairs.values()),
-             PRODUCTION_ONLY: set(production_only),
-             CONSUMPTION_ONLY: set(consumption_only)}
-    for left, right in ((CONSUMPTION_PRODUCTION, PRODUCTION_ONLY),
-                        (CONSUMPTION_PRODUCTION, CONSUMPTION_ONLY),
-                        (PRODUCTION_ONLY, CONSUMPTION_ONLY)):
-        shared = sorted(roles[left] & roles[right])
-        if shared:
-            raise ValueError(f"{', '.join(shared)} declared in both {left} and "
-                             f"{right}")
-
-    logger.info(f"Declared meters from {path}: {len(pairs)} "
-                f"consumption/production pair(s), {len(consumption_only)} "
-                f"consumption-only, {len(production_only)} production-only")
+    roles_count = {role: sum(1 for _, r in owners.values() if r == role)
+                   for role in ROLES}
+    logger.info(f"Declared meters from {path}: {len(meters.customers)} "
+                f"customer(s), {roles_count[CONSUMPTION]} consumption and "
+                f"{roles_count[PRODUCTION]} production meter(s)")
     return meters

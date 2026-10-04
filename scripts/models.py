@@ -115,10 +115,11 @@ class SkippedDocument:
     """A document that was understood but deliberately NOT ingested.
 
     Returned instead of ``None`` so callers can tell an *expected* drop apart
-    from a *failure*. Two cases: a paired production metering point's ebIX
-    production total, which duplicates its consumption meter's total (~9 files
-    per daily delivery), and a consumption file sent for a production metering
-    point, which the provider emits and which is not a member's consumption.
+    from a *failure*. Both cases are a file reporting against its meter's role
+    while another meter of the customer carries that direction: a consumption
+    point's copy of the production total, which duplicates the production
+    point's own, and a consumption file sent for a production point, which the
+    provider emits and which is not a customer's consumption.
     Without this distinction those drops were logged as "Could not parse (unknown
     type or invalid)" and left in the incoming folder, looking like a daily error
     and never clearing.
@@ -165,9 +166,10 @@ class MeteredData:
     code_type: Optional[str] = None
 
     # --- E66 only ---
-    # The meter the rows are stored under: already the consumption meter for a
-    # production metering point's breakdown, so no caller re-derives it.
+    # The file's own metering point, which the rows are stored under.
     meter_id: Optional[str] = None
+    # Who owns it, from customers.yaml; None for an undeclared (RCP) meter.
+    customer_id: Optional[str] = None
     rcp: bool = False  # is the meter a member of a RCP
 
     # --- E31 only ---

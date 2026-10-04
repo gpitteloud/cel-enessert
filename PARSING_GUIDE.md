@@ -103,7 +103,8 @@ carries: `ConsumptionMeteringPoint/VSENationalID` or
 **What its files carry**:
 - ✅ **Total consumption** (all energy consumed, regardless of source)
 - ✅ **Consumption breakdown** (CEL Local vs Grid split)
-- ✅ **Total production** (all energy produced by solar panels)
+- ✅ **Total production**, if its customer produces — a **copy** of what the
+  customer's production metering point reports, so it is dropped on ingest
 
 **What they DON'T carry**:
 - ❌ **Production breakdown** (CEL Local vs Grid split — on the production
@@ -113,74 +114,77 @@ carries: `ConsumptionMeteringPoint/VSENationalID` or
 - Last 8 characters (suffix): e.g., `0217130Y`, `0046782G`
 - Full format: `CH101110123450000000000000217130Y`
 
-This is the id everything is **stored under**, so one member is one meter in the
-database.
-
 #### Production metering point
 
 **What its files carry**:
 - Production CEL Local (VSE code `2404050010123`)
 - Production Grid (VSE code `2404050010124`)
-- Production Total (ebIX code `8716867000030`) — the **same values** as its
-  consumption twin reports, so this copy is dropped on ingest
+- Production Total (ebIX code `8716867000030`) — kept: this is the copy stored
 
-**Identifier pattern**: no logic depends on it — the id is opaque, and which id
-pairs with which is read from the declared list, never inferred from the string.
-Observed only: today's production ids happen to carry `085` in the last 8
-characters, e.g. `CH10111012345000000000000008574078`.
+**Identifier pattern**: no logic depends on it — the id is opaque, and which
+customer owns it in which role is read from the declared list, never inferred
+from the string. Observed only: today's production ids happen to carry `085` in
+the last 8 characters, e.g. `CH10111012345000000000000008574078`.
 
 **Important**: production breakdown values are **estimated/calculated** (see
 Condition 21), not directly measured.
 
-#### Example pairing
+#### Example: a producing customer
 
-**Member with consumption meter suffix `0217130Y`:**
+**Customer owning consumption meter `0217130Y` and production meter `08574078`:**
 
 ```
 Consumption metering point: CH101110123450000000000000217130Y
 ├─ Consumption Total: 123.45 kWh
 ├─ Consumption CEL Local: 78.90 kWh (estimated)
 ├─ Consumption Grid: 44.55 kWh (estimated)
-└─ Production Total: 234.56 kWh          ← kept, this is the canonical copy
+└─ Production Total: 234.56 kWh          ← a copy, dropped as a duplicate
 
 Production metering point: CH10111012345000000000000008574078
-├─ Production CEL Local: 123.45 kWh (estimated, stored under 0217130Y)
-├─ Production Grid: 111.11 kWh (estimated, stored under 0217130Y)
-└─ Production Total: 234.56 kWh          ← identical, dropped as a duplicate
+├─ Production CEL Local: 123.45 kWh (estimated)
+├─ Production Grid: 111.11 kWh (estimated)
+└─ Production Total: 234.56 kWh          ← kept
 ```
 
-That equality is real and useful, but it is **not** how the pairing is
+Every meter is stored under **its own id**, with its customer's id alongside;
+the customer id is what groups them. Keeping the production point's copy of the
+total makes each meter self-contained: its `total` is `cel + grid` on the same
+id.
+
+A customer may own several metering points of either role (several consumption
+points, for instance). When it does, the consumption-side production total is the
+customer's production as a whole — see
+[What the declaration is checked against](#what-the-declaration-is-checked-against).
+
+That equality is real and useful, but it is **not** how ownership is
 established — the provider declares it. See
 [The Declared Meters](#the-declared-meters).
 
-#### Production-only metering points
+#### A production point that is not coupled: 0134575W
 
-Meter suffix `0134575W` (appeared ~July 2026) reports its production breakdown
-**on the same meter ID** as its production total, because it has no consumption
-metering point to pair with. The provider declares it `production-only`.
+Meter suffix `0134575W` (appeared ~July 2026) is a production metering point
+whose production total has **no copy** on a consumption point: its customer's
+consumption point reports no production total. So its own total is the only
+one, and it is kept like any other production point's.
 
 `0134575W` is **not linked to RCP** (Regroupement pour la Consommation Propre /
-self-consumption grouping). As of July 2026 it is the only one of its kind.
+self-consumption grouping).
 
 ```
 Meter: CH101110123450000000000000134575W
-├─ Production Total:     851.234 kWh (ebIX 8716867000030)   ← canonical, kept
+├─ Production Total:     851.234 kWh (ebIX 8716867000030)   ← kept
 ├─ Production CEL Local: 124.148 kWh (VSE 2404050010123, estimated)
 └─ Production Grid:      727.086 kWh (VSE 2404050010124, estimated)
                          (124.148 + 727.086 = 851.234 ✓)
 ```
 
-**Key differences from the paired pattern**:
-- One id, not two — total and breakdown share it, and the breakdown is stored
-  under the meter **itself**
-- Its production total is the only copy, so it is **kept**, not dropped
-
 **⚠️ The provider also sends it a consumption total file, and that file is
-spurious** — a production-only metering point has no consumption. It is not
+spurious** — a production metering point has no consumption. It is not
 zero-filled either: over 2026-04-30..2026-08-22 it carried real-looking values on
 5270 of 9216 slots, and because it bears the real `community_id` it was **not**
 filtered out of community-scoped queries. Ingestion discards it as an intentional
-skip (archived, not failed). Tracked as Q11a in `PROVIDER_QUESTIONS.md`.
+skip (archived, not failed) — by the same rule as the copies above: a metering
+point reports only its own direction. Tracked as Q11a in `PROVIDER_QUESTIONS.md`.
 
 ---
 
@@ -306,13 +310,14 @@ YYYYMMDD_HHMMSS_<sender>_E66_<receiver>_<uuid>.xml
 </ValidatedMeteredData_16>
 ```
 
-**E66 File Distribution**:
+**E66 File Distribution** (one sample delivery; the counts follow membership,
+see `config/customers.yaml`):
 ```
-Consumption points, member produces: 9 × 4 files = 36 files
-Consumption-only points:            12 × 3 files = 36 files
-Production points (breakdown):       9 × 3 files = 27 files
-Production-only (0134575W):          1 × 4 files =  4 files
-                                              Total: 103 files
+Consumption points, customer produces: 9 × 4 files = 36 files
+Consumption points, customer does not: 12 × 3 files = 36 files
+Production points:                     9 × 3 files = 27 files
+0134575W (uncoupled production point): 1 × 4 files =  4 files
+                                                Total: 103 files
 ```
 
 ### E31 Files (Community Aggregates)
@@ -381,13 +386,14 @@ Production (E18):
 ### Why two ids?
 
 A **consumption metering point**'s files carry:
-- ✅ **Total flows**: total consumption in, total production out
+- ✅ **Total flows**: total consumption in, and a copy of the customer's total
+  production out
 - ✅ **Consumption breakdown**: where the consumed energy came from
 - ❌ **NOT the production breakdown**: where the produced energy went
 
 A **production metering point**'s files carry:
 - ✅ **VSE production breakdown**: CEL Local vs Grid split for production
-- ✅ A **duplicate** of the consumption twin's production total
+- ✅ The **production total** — the copy that is stored
 - ❌ **NOT real measurements** of the breakdown: those are estimated/calculated
 
 **RCP meters** (Regroupement pour la Consommation Propre) — *hypothetical*:
@@ -396,96 +402,123 @@ A **production metering point**'s files carry:
 - ✅ **Gets breakdown data**: Participates in CEL trading
 - Example: Apartment building with shared solar, only net grid exchange metered
 - ⚠️ **No RCP meter is confirmed in the data.** `0134575W` was once assumed to be
-  RCP but is **not** — it is a production-only metering point (see
-  [Production-only metering points](#production-only-metering-points)).
+  RCP but is **not** — it is a production metering point with no coupled
+  consumption point (see
+  [A production point that is not coupled](#a-production-point-that-is-not-coupled-0134575w)).
 
-### The pairing is declared, not inferred
+### Ownership is declared, not inferred
 
 **The linkage is nowhere in the XML.** A production file carries its own
 `ProductionMeteringPoint/VSENationalID` and a `Community` block, and nothing that
-names the consumption metering point of the same site.
+names the customer or the other metering points of the same site.
 
-**So the provider declares it**, in `config/meters.yaml`. Attribution is then a
-per-file lookup: which meter a file's rows belong to depends only on that file and
-the declaration, never on what else is in the batch.
-
-> **Why this replaced auto-discovery.** The pairing used to be *derived* from each
-> delivery: a production metering point's ebIX total repeats its twin's slot for
-> slot, and that exact `Decimal` equality identified the pair. It worked — 39
-> sample delivery dates, 43 report-period groups, all resolved, no pair ever
-> repointing — but it needed **the whole delivery in hand**. Deliveries routinely
-> arrive in waves hours apart, and a late or retried file processed on its own
-> paired against nothing, so its breakdown could not be attributed at all. The
-> declaration removes that whole class of problem, along with the report-period
-> grouping, the ambiguity reporting and the mappings cache it required.
->
-> It also removed a latent double count. Whether a production total was a duplicate
-> was decided from the derived mapping, so a wave carrying the totals with **no**
-> breakdown file (the monthly half of `20260605`) paired nothing and stored nine
-> production totals under their own ids. With the declaration the question is
-> answered per file: is this id the production side of a declared pair?
+**So the provider declares it**: a list of customers and the metering points each
+one owns, kept as `config/customers.yaml`. Every file is stored under its own
+meter id, with the customer id looked up from that list — which depends only on
+the file and the declaration, never on what else is in the batch. Deliveries
+routinely arrive in waves hours apart, and a late or retried file is decided on
+its own.
 
 ### The declaration
 
-**Location**: `/app/config/meters.yaml` (deploy artifact, gitignored because it
-holds real meter ids; `config/meters.yaml.example` is the tracked template)
-
-Three sections, each a pure lookup:
+**Location**: `/app/config/customers.yaml` (deploy artifact, gitignored because
+it holds real meter ids; `config/customers.yaml.example` is the tracked template).
+Its content comes from the provider.
 
 ```yaml
-consumption-only:
-  - CH101110123450000000000000036273C     # a member with no production
-
-consumption-production:
-  - consumption: CH101110123450000000000000046782G
-    production:  CH10111012345000000000000008552310
-
-production-only:
-  - CH101110123450000000000000134575W     # no consumption metering point
+customers:
+  "9000115":
+    consumption:
+      - "CH101110123450000000000000046782G"
+    production:
+      - "CH10111012345000000000000008552310"
+  "9000112":                                 # does not produce
+    consumption:
+      - "CH101110123450000000000000036273C"
 ```
 
 **It is validated at startup, and every error raises** (`scripts/meters.py`):
-a missing file, an unknown section name, an id shorter than 20 characters, a pair
-missing a key, a meter paired with itself, a repeated production id, one
-consumption meter in two pairs, the same id in two sections. The job **refuses to
-start** rather than ingest a delivery whose breakdowns land on the wrong member —
+a missing file, an unknown section, an
+unknown role, an empty role list, an id shorter than 20 characters, the same id
+declared twice anywhere, a file that declares no meter. The job **refuses to
+start** rather than ingest a delivery whose meters land on the wrong customer —
 which no later query could detect.
 
-An id shorter than 20 characters is rejected specifically because the mappings
-cache this file replaced was keyed on the 8-character suffix. Full 33-char ids
-only; ids are never sliced.
+Full 33-char ids only; ids are never sliced, because an 8-character suffix is
+not an id a file can be matched against.
 
-### Attribution: four rules, no batch context
+### One rule: a metering point reports only its own direction
 
-| File | The file's meter is | Outcome |
-|------|---------------------|---------|
-| production breakdown (`cel`/`grid`) | the production side of a pair | stored under the **consumption** meter |
-| production breakdown | `production-only` | stored under **itself** |
-| production breakdown | undeclared | `FAILED`, ERROR logged, kept for retry |
-| ebIX `production_total` | the production side of a pair | `SKIPPED` — duplicates the twin's total |
-| ebIX `production_total` | the consumption side of a pair, or `production-only` | ingested (canonical) |
-| **any consumption file** | a declared production metering point | `SKIPPED` — provider fault |
+A file's direction is its XML element (`ConsumptionMeteringPoint` /
+`ProductionMeteringPoint`); the meter's **role** is its declaration. When they
+disagree:
 
-The last rule is general rather than specific to `0134575W`: a consumption file
-bearing *any* production metering point id cannot be real. Paired production
-metering points get no consumption files today, so it changes nothing for them
-while covering `0134575W` and any repeat of the same fault.
+| File | The customer owns a meter of the file's direction | Outcome |
+|------|---------------------------------------------------|---------|
+| CEL or grid breakdown | either | `FAILED`, ERROR: the declared role is wrong |
+| total | yes — that data is stored there | `SKIPPED`, INFO, archived |
+| total | no — nothing else carries it | `FAILED`, ERROR, kept in incoming for retry |
 
-`MeteredData.meter_id` is already the meter the rows belong to — the parser
-finishes the attribution, so nothing downstream resolves anything. The file's own
-id is kept in `cel_file_header.file_meter_id`, and what it was attributed to in
-`cel_file_header.attributed_meter_id`.
+**A breakdown always names its meter's role.** A metering point measures only
+its own direction, so a CEL or grid file against the role means `customers.yaml`
+declares the wrong role. Skipping it would archive that meter's data with no
+error whenever the customer owns another meter of that direction, so it fails.
+
+Two kinds of total file hit the skip line:
+
+- a producing customer's consumption point sends a **copy** of the production
+  total, which the production point carries too;
+- `0134575W`, a production point, gets **consumption total** files — a provider
+  fault (Q11a in `PROVIDER_QUESTIONS.md`).
+
+The last line is the case worth stopping for: a consumption-only customer
+whose consumption point starts reporting production has most likely installed
+solar, and the list has not caught up. Dropping it quietly would lose real
+production.
+
+### Why the role is declared
+
+The role cannot be read off a file. A breakdown file shows its meter's
+direction, but a **total** file does not tell which meter is the real source:
+
+- a production total is the production point's own total, or the copy the
+  customer's consumption point sends;
+- a consumption total is the meter's own, or a spurious file on a production
+  point (`0134575W`).
+
+Deciding which copy to store needs the meter's role. Deriving it from data
+means looking at that meter's breakdown files, and they are not in hand when a
+total is processed:
+
+- **From the same delivery:** deliveries arrive in waves hours apart, so a total
+  can arrive before or after its meter's breakdown, and a retried file is
+  processed on its own.
+- **From earlier deliveries:** the result would depend on what was ingested
+  before. A new meter's first total would have to be held until a breakdown
+  arrived, and the replay order would decide what is stored.
+
+Declared, the role makes every file a per-file decision: the same file and the
+same `customers.yaml` give the same outcome, whatever else is in incoming. The
+breakdown files then **check** the declaration (the first line of the table), so
+a wrong role fails on the first delivery instead of filing data under the wrong
+direction.
+
+Everything else is stored under the file's own meter id with its `customer_id`.
+A meter not in the list — the RCP meters — is stored with `customer_id` NULL
+(and a WARNING if the file is not RCP). `cel_file_header` records each file's
+`meter_id` and `customer_id`.
 
 ### Intentional skips are not errors
 
-Two of the rules above drop a file on purpose: **one duplicate production total per
-declared pair**, plus the spurious consumption files for `0134575W`. Ingesting the
-duplicates would double the community production total.
+The rule above drops files on purpose: **one production-total copy per
+consumption point of a producing customer**, plus the spurious consumption total
+files for `0134575W`. Ingesting the copies would double the community production total.
 
-So the expected skip count is `declared pairs + 1` — read it off `config/meters.yaml`
-rather than memorising it. It rises whenever a member installs solar, and a run whose
-skip count suddenly *falls* is the signal worth chasing: it means a pair stopped being
-declared, or its two files no longer arrive together.
+So the expected skip count follows `config/customers.yaml` — read it off the
+file rather than memorising it. It rises whenever a customer installs solar, and
+a run whose skip count suddenly *falls* is the signal worth chasing: it means a
+consumption point stopped sending the copy, or a customer's production point is
+no longer declared.
 
 This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 (`scripts/models.py`) rather than `None`:
@@ -494,7 +527,7 @@ This is an *expected* outcome, so `parse_e66` returns a **`SkippedDocument`**
 |---------------|---------|-------------------|
 | `MeteredData` | parsed | write to QuestDB, archive (`FileOutcome.INGESTED`) |
 | `SkippedDocument` | valid, deliberately not ingested | log at **INFO**, archive (`FileOutcome.SKIPPED`) |
-| `None` | genuine failure (malformed, undeclared meter, missing fields) | log at WARNING/ERROR, **not archived** (`FileOutcome.FAILED`); the next run moves it to `incoming/failed/` and re-downloads it |
+| `None` | genuine failure (malformed, a direction nothing else carries, missing fields) | log at WARNING/ERROR, **not archived** (`FileOutcome.FAILED`); the next run moves it to `incoming/failed/` and re-downloads it |
 
 Skipped files are archived like ingested ones because the decision is permanent
 — leaving them in `/data/incoming` would make them reappear (and be re-reported)
@@ -504,54 +537,46 @@ on every delivery. The batch summary counts them separately:
 Ingested: 115, Skipped by design: 11, Errors: 0
 ```
 
-Only `Errors` is expected to be 0 on every run; the other two follow the member count
-and the declaration. A delivery carrying two report periods has one skip set per wave,
-so twice `pairs + 1` is equally expected there.
-
-> **History**: before July 2026 every producing member used the two-metering-point
-> pattern. `0134575W` arrived with no consumption metering point, and before the
-> parser handled that its 2 daily production-breakdown files were skipped as an
-> unknown meter.
+Only `Errors` is expected to be 0 on every run; the other two follow the
+membership and the declaration. A delivery carrying two report periods has one
+skip set per wave, so twice the usual count is equally expected there.
 
 ### Reading the current declaration
 
-**`config/meters.yaml` is the list — this guide does not copy it.** Membership changes
-(a member joins, a member installs solar and gains a production metering point), so any
-figure reproduced here would be wrong by the time it mattered. To see what is declared
-right now:
+**`config/customers.yaml` is the list — this guide does not copy it.**
+Membership changes (a customer joins, a customer installs solar and gains a
+production metering point), so any figure reproduced here would be wrong by the
+time it mattered. `load_meters` logs the customer, consumption-meter and
+production-meter counts at startup, so a run's log records the declaration it
+actually used. To see it without running the job:
 
 ```bash
 python3 -c "from scripts.meters import load_meters; \
-            m = load_meters('config/meters.yaml'); print(len(m.consumption_by_production), \
-            'pair(s),', len(m.consumption_only), 'consumption-only,', \
-            len(m.production_only), 'production-only')"
+            m = load_meters('config/customers.yaml'); \
+            print(len(m.customers), 'customer(s),', len(m), 'meter(s)')"
 ```
-
-`load_meters` logs the same three counts at startup, so a run's log records the
-declaration it actually used.
-
-Every pair the provider has declared so far matched what discovery had inferred from
-equal production totals, and no pair has ever repointed — only been added. The one
-entry worth knowing by name is `0134575W`, the production-only meter; see
-[Production-only metering points](#production-only-metering-points).
 
 ---
 
 ## The Declared Meters
 
-### The equality check did not disappear — it moved
+### What the declaration is checked against
 
-Trusting a declaration means a wrong line in it would misattribute silently, so
-the value equality that used to *derive* the pairing now *confirms* it. It lives in
-the delivery report (`scripts/delivery_report.check_declared_pairs`), **not** in
-the ingest path:
+Trusting a declaration means a wrong line in it would mis-file silently. A
+production metering point's ebIX total repeats the production-total copy of its
+customer's consumption point slot for slot, and that exact `Decimal` equality
+confirms the declaration. It lives in
+the delivery report (`scripts/delivery_report.check_customer_production`),
+**not** in the ingest path:
 
-- Per report period, for each declared pair whose **two** production totals are
-  both present in the group, the observation vectors are compared for exact
-  `Decimal` equality. A disagreement is logged at **ERROR**, naming both files and
-  how many slots differ.
-- A pair with only one of its files present yields nothing. Deliveries arrive in
-  waves, so half a pair is normal, and reporting it would bury the real finding.
+- Per report period and per customer, the production-total copies reported by
+  its consumption point(s) are summed and compared, slot by slot and as exact
+  `Decimal`s, with the summed totals of its production point(s). A disagreement
+  is logged at **ERROR**, naming the customer and how many slots differ.
+- A customer is checked only when its consumption side reports a copy **and**
+  every one of its production points is present in the group. Deliveries arrive
+  in waves, so half a customer is normal, and reporting it would bury the real
+  finding. `0134575W` has no copy, so it is never checked.
 - The report is a diagnostic wrapped in try/except, so it can **never** fail the
   ingestion it describes. Ingestion stays strictly per-file.
 
@@ -561,11 +586,12 @@ Once, at startup, by `SDATProcessor.from_config`. There is nothing to refresh pe
 batch and nothing cached: the same `Meters` object serves every file of every
 delivery in the run.
 
-A new member therefore needs the declaration updated **before** their files
-arrive. Until then their production breakdown fails (ERROR, kept in
-`/data/incoming`) and is ingested on the retry after the update — nothing is lost
-and nothing is stored under a guess. Their consumption files are unaffected: a
-consumption file is attributed to its own meter whether or not it is declared.
+A new customer therefore needs the declaration updated **before** their files
+arrive. Until then their files are stored with no customer (WARNING logged), and
+a replay after the update fills it in. A customer gaining a production point is
+stricter: until it is declared, the production total from their consumption
+point fails (ERROR, kept in `/data/incoming`) and is ingested on the retry after
+the update — nothing is lost.
 
 ---
 
@@ -589,7 +615,7 @@ consumption file is attributed to its own meter whether or not it is declared.
                  ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  Parser Container (cel-parser)                              │
-│  ├─ Declared meters (config/meters.yaml, read at startup)   │
+│  ├─ Declared meters (config/customers.yaml, at startup)     │
 │  ├─ E66 parser (parse_sdat_e66_individual.py)                          │
 │  ├─ E31 parser (parse_sdat_e31_aggregated.py)                    │
 │  └─ Batch processor (sdat_processor.py)                     │
@@ -605,7 +631,7 @@ consumption file is attributed to its own meter whether or not it is declared.
                  ↓
 ┌─────────────────────────────────────────────────────────────┐
 │  Grafana (Visualization)                                    │
-│  ├─ Individual member dashboards                            │
+│  ├─ Per-meter and per-customer dashboards                   │
 │  └─ Community aggregate dashboards                          │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -617,9 +643,9 @@ consumption file is attributed to its own meter whether or not it is declared.
 - ✅ One summary and one delivery report per delivery, not per file
 - ✅ Amortises the archive scan and the header pass over the whole delivery
 
-Note what is **no longer** a reason: attribution does not need the batch to be
-complete. It is a per-file lookup in the declared meters, so a file arriving in a
-later wave — or retried after a failure — is attributed on its own.
+Not a reason: a file's meter and customer do not need the batch to be complete. They are a per-file lookup in the declared meters, so a
+file arriving in a later wave — or retried after a failure — is decided on its
+own.
 
 **Process**:
 
@@ -639,7 +665,7 @@ later wave — or retried after a failure — is attributed on its own.
 
 4. Batch processing:
    ├─ Read every file's header once (sdat_header.load_headers)
-   ├─ Attribute each file via the declared meters
+   ├─ Look up each file's customer and role in the declared meters
    ├─ Write rows to QuestDB
    └─ Archive processed files (a failed write keeps the file for retry)
 
@@ -663,8 +689,9 @@ See [QUESTDB.md](QUESTDB.md#chronological-replay-is-a-correctness-requirement).
 
 1. **Parse XML** → Extract meter ID, metering point type, product code, observations
 2. **Look up the meter** → is this id declared, and as what?
-3. **Attribute** → a production breakdown goes to the paired consumption meter (or
-   to itself, if production-only); a duplicate or spurious file is skipped
+3. **Check its direction** → a file reporting against its meter's role is
+   skipped (a copy, or the provider fault) or failed; otherwise the customer id
+   is attached
 4. **Classify** → `product_code` + metering point → `direction` + `segment`
 5. **Write** → `INSERT` into `cel_energy`
 6. **Archive** → Move file to `/data/archive`
@@ -684,9 +711,9 @@ the provider sent. Full schema in [QUESTDB.md](QUESTDB.md#schema).
 
 **E66 Individual Meter Data** → `cel_energy`:
 
-| ts | meter_id | direction | segment | product_code | community_id | value | code_type | condition |
-|----|----------|-----------|---------|--------------|--------------|-------|-----------|-----------|
-| 2026-05-22T00:00:00Z | CH101110123450000000000000217130Y | consumption | total | 8716867000030 | 101110-002726 | 1.234 | ebIXCode | |
+| ts | meter_id | customer_id | direction | segment | product_code | community_id | value | code_type | condition |
+|----|----------|-------------|-----------|---------|--------------|--------------|-------|-----------|-----------|
+| 2026-05-22T00:00:00Z | CH101110123450000000000000217130Y | 9000110 | consumption | total | 8716867000030 | 101110-002726 | 1.234 | ebIXCode | |
 
 **E31 Community Aggregate Data** → `cel_community_energy`:
 
@@ -811,17 +838,15 @@ Meter 0217130Y:
 **Metering points**:
 
 5. ~~**Official mapping**~~ — **ANSWERED**: the provider supplies the list of
-   metering points, now `config/meters.yaml`, and the declared pairs match what we
-   had inferred by matching production totals. Remaining ask: notify us **before**
-   the delivery in which the list changes — the most recent pair to appear was found
-   by re-reading a delivery, not by being told.
+   metering points per customer (`config/customers.yaml`). Remaining ask: notify us **before** the delivery in
+   which the list changes.
 
 6. **New members**: When a new member joins, will they automatically get both a
    consumption and a production metering point id? How soon after joining do files
    appear?
 
-7. **Meter 0134575W**: **ANSWERED** — it is declared `production-only`, a
-   production metering point with no consumption. Remaining: what does it
+7. **Meter 0134575W**: **ANSWERED** — it is a production metering point whose
+   total has no copy on a consumption point. Remaining: what does it
    represent, and why does it also receive a consumption total file, which cannot
    be real? See `PROVIDER_QUESTIONS.md` Q11a.
 
@@ -889,15 +914,20 @@ Meter 0217130Y:
 
 **E31**: Document type for community aggregated data (AggregatedMeteredData format)
 
-**Consumption metering point**: the id a member's consumption is metered under; it
-also reports the production total. Everything is stored under this id.
+**Customer**: the provider's customer number, owning one or more metering
+points. Stored as `customer_id` on every row of its meters.
 
-**Production metering point**: a producing site's second id, carrying the VSE
-production breakdown and a duplicate of the production total. Its rows are stored
-under the paired consumption id.
+**Consumption metering point**: the id a customer's consumption is metered
+under. For a producing customer it also reports a copy of the production total,
+which is dropped.
 
-**Declared meters**: `config/meters.yaml`, the provider's list of which id is which
-and which pairs with which. Attribution reads it; nothing infers it.
+**Production metering point**: a producing site's id, carrying the VSE
+production breakdown and the production total. Its rows are stored under its
+own id, like every meter's.
+
+**Declared meters**: `config/customers.yaml`, the provider's list of which
+customer owns which metering point, in which role. Ingestion reads it; nothing
+infers it.
 
 **VSE National Code**: Swiss national standard code for energy products (e.g., 2404050010123 = CEL Local)
 
@@ -918,13 +948,14 @@ revisions land
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | 2026-06-26 | Initial version - comprehensive parsing guide |
-| 1.1 | 2026-09-08 | Provider-declared `config/meters.yaml` replaces auto-discovery; physical/virtual renamed to consumption/production metering point; `0134575W` is production-only and its consumption files are discarded |
+| 1.1 | 2026-09-08 | Consumption/production metering point vocabulary; `0134575W` is production-only and its consumption files are discarded |
+| 1.2 | 2026-10-04 | Provider-declared `config/customers.yaml` (customer → meters); every meter is stored under its own id with `customer_id`; the production point's copy of the production total is kept |
 
 ---
 
 ## Appendix: Example Data Flow
 
-### Complete Example: Member 0217130Y
+### Complete Example: Customer 9000110 (meters 0217130Y and 08574078)
 
 **Data received** (4 files):
 
@@ -952,48 +983,51 @@ File 4: Production Total (consumption metering point)
   Code: ebIX 8716867000030
   Value: 234.56 kWh
   Condition: (none - measured)
+  → SKIPPED: a consumption point reporting production; the customer's
+    production point carries the same total (File 7)
 ```
 
 **Production metering point files** (3 files):
 
 ```
 File 5: Production CEL Local (production metering point)
-  Meter: CH10111012345000000000000008574078  ← the member's second id
+  Meter: CH10111012345000000000000008574078  ← the customer's second id
   Code: VSE 2404050010123
   Value: 123.45 kWh
   Condition: 21 (estimated)
-  → declared as paired with 0217130Y, so stored under 0217130Y
+  → stored under 08574078, customer 9000110
 
 File 6: Production Grid (production metering point)
   Meter: CH10111012345000000000000008574078
   Code: VSE 2404050010124
   Value: 111.11 kWh
   Condition: 21 (estimated)
-  → stored under 0217130Y
+  → stored under 08574078
 
 File 7: Production Total (production metering point)
   Meter: CH10111012345000000000000008574078
   Code: ebIX 8716867000030
   Value: 234.56 kWh  ← identical to File 4
   Condition: (none - measured)
-  → SKIPPED: the declared pair means File 4 is the canonical copy
+  → stored under 08574078: the copy that is kept
 ```
 
-**Final data in QuestDB** (all stored under consumption meter `0217130Y`):
+**Final data in QuestDB** (each meter under its own id, both with
+`customer_id = 9000110`):
 
 ```
-Consumption:
+0217130Y (consumption):
 ├─ Total: 123.45 kWh (measured)
 ├─ CEL Local: 78.90 kWh (estimated)
 └─ Grid: 44.55 kWh (estimated)
 
-Production:
+08574078 (production):
 ├─ Total: 234.56 kWh (measured)
-├─ CEL Local: 123.45 kWh (estimated, from the production metering point)
-└─ Grid: 111.11 kWh (estimated, from the production metering point)
+├─ CEL Local: 123.45 kWh (estimated)
+└─ Grid: 111.11 kWh (estimated)
 ```
 
-**Member dashboard shows**:
+**Customer dashboard shows**:
 - Consumed 123.45 kWh (64% from CEL, 36% from Grid)
 - Produced 234.56 kWh (53% to CEL, 47% to Grid)
 - Net production: +111.11 kWh

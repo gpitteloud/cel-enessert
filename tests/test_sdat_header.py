@@ -83,9 +83,10 @@ def test_resolution_drives_the_observation_clock():
     assert '22:30:00' in h.observations[1].timestamp
 
 
-def test_attributed_meter_defaults_to_the_files_own_meter():
+def test_the_customer_is_left_for_parse_e66_to_set():
+    """The header parser has no declaration to look it up in."""
     h = header(make_e66_xml(meter_id=meter_id('0020576V')))
-    assert h.attributed_meter_id == h.file_meter_id
+    assert h.customer_id is None
 
 
 # --------------------------------------------------------------------------

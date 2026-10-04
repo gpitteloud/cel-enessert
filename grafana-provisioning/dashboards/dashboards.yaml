@@ -3,10 +3,12 @@ apiVersion: 1
 providers:
   - name: 'CEL Dashboards'
     orgId: 1
-    folder: 'CEL'
+    # The reference dashboards, from git. Locked: users "Save as" a copy into
+    # the unprovisioned "CEL Workspace" folder and experiment there.
+    folder: 'CEL Reference'
     type: file
     disableDeletion: false
     updateIntervalSeconds: 10
-    allowUiUpdates: true
+    allowUiUpdates: false
     options:
       path: /var/lib/grafana/dashboards

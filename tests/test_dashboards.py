@@ -5,7 +5,7 @@ query contract. This file is about defects a dashboard can carry without anyone
 noticing, because Grafana does not complain:
 
 A `byName` field override whose name matches no series is silently ignored. Every
-timeseries panel in grafana-dashboard-e31-v2.json once had this -- panel 7
+timeseries panel in cel-community-energy-e31.json once had this -- panel 7
 coloured 'CEL Local'/'Grid'/'Total' while its series were 'From CEL'/'From Grid',
 so the panel had been rendering on palette-classic defaults, not its intended
 colours, since it was written. Nothing logs a warning; the only symptom is the

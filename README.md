@@ -13,7 +13,7 @@ Monitors Swiss local energy communities (CEL) using provider XML files (Validate
 - ✅ CEL Local vs Grid energy exchange per meter
 - ✅ Community-level aggregate statistics
 - ✅ 15-minute resolution data (96 intervals/day)
-- ✅ Consumption and production metering point attribution
+- ✅ Every meter under its own id, grouped by the customer that owns it
 
 **For complete technical details**, see **[PARSING_GUIDE.md](PARSING_GUIDE.md)** - explains file types, meter types, product codes, data quality flags, and more.
 
@@ -112,7 +112,7 @@ Grafana (displays dashboards)
 │   ├── parse_sdat_e31_aggregated.py   # E31 parser (community aggregates)
 │   ├── models.py                      # MeteredData, MetricType, classification
 │   ├── sdat_header.py                 # One parse per file: header + observations
-│   ├── meters.py                      # The declared metering points, validated
+│   ├── meters.py                      # The declared customers and meters, validated
 │   ├── questdb_schema.sql             # Authoritative DDL
 │   ├── questdb_init.py                # Applies + verifies the schema
 │   ├── questdb_writer.py              # Writes rows over PG-wire
@@ -121,7 +121,7 @@ Grafana (displays dashboards)
 │   └── delivery_report.py             # What a delivery contained, per observation
 ├── config/
 │   ├── api_config.yaml                # DSN and project settings
-│   └── meters.yaml                    # The provider's metering points (required)
+│   └── customers.yaml                 # Which customer owns which meter (required)
 ├── logs/
 │   └── job.log                        # Processing logs
 ├── archive/                            # Processed XML files
@@ -161,15 +161,18 @@ deliveries in ascending date order.
 
 ## Available Dashboards
 
-1. **CEL Energy Overview** (`cel_energy_overview.json`) — the home dashboard
-   - Per-meter consumption and production over time, with a meter selector
-   - CEL-local vs grid split
-   - Community totals and self-consumption percentages
+1. **CEL Meter Energy E66** (`cel-meter-energy-e66.json`) — the home dashboard
+   - One metering point, consumption or production, with a meter selector
+   - CEL-local vs grid split, total and CEL share
 
-2. **CEL Community Aggregates E31 v2** (`grafana-dashboard-e31-v2.json`)
+2. **CEL Community Energy E31** (`cel-community-energy-e31.json`)
    - Community consumption/production from the E31 aggregate
    - Self-sufficiency and grid dependency
    - Validation panels comparing E31 against the sum of every E66 meter
+
+3. **CEL Customer Energy E66** (`cel-customer-energy-e66.json`)
+   - A customer selector; every meter the customer owns, by direction
+   - CEL-local vs grid stacked, for the customer and per meter
 
 See **[grafana-dashboards/README.md](grafana-dashboards/README.md)** for the
 queries and the plugin quirks they work around.
@@ -334,7 +337,7 @@ find /volume1/docker/cel/archive -name "*.xml" -mtime +180 -delete
    - Metering point types (consumption vs production)
    - Product codes (ebIX, VSE)
    - Data quality (Condition 21)
-   - The declared meters, and how a file is attributed
+   - The declared customers and meters, and which files are skipped
 3. **[QUESTDB.md](QUESTDB.md)** 🗄️ - **Storage reference** (AUTHORITATIVE for the schema)
    - Why the dedup keys are what they are
    - Why replay order is a correctness requirement

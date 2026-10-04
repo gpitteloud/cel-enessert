@@ -9,8 +9,9 @@ secrets/
 toolbox/
 docker-compose.cloudflared.yml
 
-# Declared by the provider (contains real meter IDs); see config/meters.yaml.example
-config/meters.yaml
+# Declared by the provider (contains real meter IDs); see config/customers.yaml.example
+config/customers.yaml
+config/PointsDeMesure.csv*
 
 # Python
 __pycache__/

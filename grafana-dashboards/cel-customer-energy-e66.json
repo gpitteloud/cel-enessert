@@ -1,0 +1,1253 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "datasource",
+          "uid": "grafana"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "One customer's energy from cel_energy (E66), across every metering point they own (config/customers.yaml). Every read is scoped to customer_id, which also leaves out the RCP meters (they have no customer). Each meter stores only its own direction, so a meter's panel shows consumption or production, never both. Same plugin conventions as the overview: every output column cast to DOUBLE, series named via byFrameRefID overrides. For a customer with no production meter the production row shows one empty panel.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "refresh": "",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [
+    "cel",
+    "energy",
+    "questdb",
+    "customer"
+  ],
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "CEL Customer Energy E66",
+  "uid": "cel-customer-energy-e66",
+  "version": 1,
+  "weekStart": "",
+  "panels": [
+    {
+      "type": "row",
+      "id": 100,
+      "title": "Customer ${customer_id}",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "description": "All of the customer's consumption meters. kW from 15-min kWh slots: sum the customer's meters per 15-min slot FIRST (inner SAMPLE BY 15m), average the slots in the display bucket, and only then scale by 4. sum(value) * 4 over a wider bucket would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From CEL"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From Grid"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND customer_id = '$customer_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND customer_id = '$customer_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Consumption - customer ${customer_id}",
+      "type": "timeseries",
+      "interval": "15m"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To CEL"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To Grid"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 11
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'production'\n    AND customer_id = '$customer_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'production'\n    AND customer_id = '$customer_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Production - customer ${customer_id}",
+      "type": "timeseries",
+      "description": "All of the customer's production meters. Empty for a customer that does not produce. kW from 15-min kWh slots: sum the customer's meters per 15-min slot FIRST (inner SAMPLE BY 15m), average the slots in the display bucket, and only then scale by 4. sum(value) * 4 over a wider bucket would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW).",
+      "interval": "15m"
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total Consumption"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 21
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'consumption'\n  AND customer_id = '$customer_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Total Consumption",
+      "type": "stat",
+      "description": "kWh over the time range, all of the customer's meters. Returns the per-bucket series and lets reduceOptions sum it, so the sparkline has a series to draw. cast(... AS DOUBLE) on the output column: the plugin has no DECIMAL converter, so an un-cast value arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters."
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Total Production"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 21
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(sum(value) AS DOUBLE) AS \"Total Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND segment = 'total'\n  AND direction = 'production'\n  AND customer_id = '$customer_id'\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Total Production",
+      "type": "stat",
+      "description": "kWh over the time range, all of the customer's meters. Returns the per-bucket series and lets reduceOptions sum it, so the sparkline has a series to draw. cast(... AS DOUBLE) on the output column: the plugin has no DECIMAL converter, so an un-cast value arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters."
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 20,
+                "color": "yellow"
+              },
+              {
+                "value": 50,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CEL % of Consumption"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 21
+      },
+      "id": 5,
+      "options": {
+        "barShape": "flat",
+        "barWidthFactor": 0.5,
+        "effects": {
+          "barGlow": false,
+          "centerGlow": false,
+          "gradient": false
+        },
+        "endpointMarker": "point",
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "segmentCount": 1,
+        "segmentSpacing": 0.3,
+        "shape": "gauge",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto",
+        "sparkline": false,
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 1,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Consumption\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND customer_id = '$customer_id'\n  AND direction = 'consumption'\n  AND segment in ('cel', 'grid')",
+          "refId": "A",
+          "selectedFormat": 1
+        }
+      ],
+      "title": "CEL % of Consumption",
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the time range, all of the customer's meters. Format TABLE and exactly one row: a bucketed query would be reduced to its newest bucket."
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 20,
+                "color": "yellow"
+              },
+              {
+                "value": 50,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "CEL % of Production"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 21
+      },
+      "id": 6,
+      "options": {
+        "barShape": "flat",
+        "barWidthFactor": 0.5,
+        "effects": {
+          "barGlow": false,
+          "centerGlow": false,
+          "gradient": false
+        },
+        "endpointMarker": "point",
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "segmentCount": 1,
+        "segmentSpacing": 0.3,
+        "shape": "gauge",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "sizing": "auto",
+        "sparkline": false,
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 1,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT 100 * cast(sum(case when segment = 'cel' then value end) AS DOUBLE)\n           / cast(sum(value) AS DOUBLE) AS \"CEL % of Production\"\nFROM cel_energy\nWHERE $__timeFilter(ts)\n  AND customer_id = '$customer_id'\n  AND direction = 'production'\n  AND segment in ('cel', 'grid')",
+          "refId": "A",
+          "selectedFormat": 1
+        }
+      ],
+      "title": "CEL % of Production",
+      "type": "gauge",
+      "description": "Ratio of summed kWh over the time range, all of the customer's meters. Format TABLE and exactly one row: a bucketed query would be reduced to its newest bucket."
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "transparent"
+              },
+              {
+                "value": 0,
+                "color": "red"
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 50,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line+area"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Net Energy (positive = producing more)"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"Net Energy (positive = producing more)\"\nFROM (\n  SELECT ts, sum(case when direction = 'production' then value else value * -1 end) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment in ('cel', 'grid')\n    AND customer_id = '$customer_id'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Energy Balance - customer ${customer_id}",
+      "type": "timeseries",
+      "description": "Net = production - consumption per 15-min slot, as kW, across the customer's meters. One signed sum rather than four averages: a slot with only consumption rows would make the production term NULL and blank the series. cast(... AS DOUBLE) on the output column: the plugin has no DECIMAL converter, so an un-cast value arrives as a string and the panel reports \"Data is missing a number field\". The inner sum stays DECIMAL, where the exactness matters.",
+      "interval": "15m"
+    },
+    {
+      "type": "row",
+      "id": 101,
+      "title": "Consumption meters",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "description": "One consumption meter of the customer, repeated over $cons_meter. kW from 15-min kWh slots: sum the customer's meters per 15-min slot FIRST (inner SAMPLE BY 15m), average the slots in the display bucket, and only then scale by 4. sum(value) * 4 over a wider bucket would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From CEL"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "From Grid"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'consumption'\n    AND customer_id = '$customer_id'\n    AND meter_id = '$cons_meter'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"From Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'consumption'\n    AND customer_id = '$customer_id'\n    AND meter_id = '$cons_meter'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Consumption meter ${cons_meter:text}",
+      "type": "timeseries",
+      "interval": "15m",
+      "repeat": "cons_meter",
+      "repeatDirection": "v"
+    },
+    {
+      "type": "row",
+      "id": 102,
+      "title": "Production meters",
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      }
+    },
+    {
+      "datasource": {
+        "type": "questdb-questdb-datasource",
+        "uid": "QuestDB"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 70,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To CEL"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byFrameRefID",
+              "options": "B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "To Grid"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To CEL\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'cel'\n    AND direction = 'production'\n    AND customer_id = '$customer_id'\n    AND meter_id = '$prod_meter'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "A",
+          "selectedFormat": 0
+        },
+        {
+          "datasource": {
+            "type": "questdb-questdb-datasource",
+            "uid": "QuestDB"
+          },
+          "format": 0,
+          "meta": {},
+          "queryType": "sql",
+          "rawSql": "SELECT ts AS time, cast(avg(slot_kwh) * 4 AS DOUBLE) AS \"To Grid\"\nFROM (\n  SELECT ts, sum(value) AS slot_kwh\n  FROM cel_energy\n  WHERE $__timeFilter(ts)\n    AND segment = 'grid'\n    AND direction = 'production'\n    AND customer_id = '$customer_id'\n    AND meter_id = '$prod_meter'\n  SAMPLE BY 15m\n)\nSAMPLE BY $__sampleByInterval FILL(NULL)\nORDER BY time",
+          "refId": "B",
+          "selectedFormat": 0
+        }
+      ],
+      "title": "Production meter ${prod_meter:text}",
+      "type": "timeseries",
+      "description": "One production meter of the customer, repeated over $prod_meter. kW from 15-min kWh slots: sum the customer's meters per 15-min slot FIRST (inner SAMPLE BY 15m), average the slots in the display bucket, and only then scale by 4. sum(value) * 4 over a wider bucket would be wrong (a 1h bucket of 4x1 kWh gives 16, not 4 kW).",
+      "interval": "15m",
+      "repeat": "prod_meter",
+      "repeatDirection": "v"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
+        },
+        "definition": "SELECT DISTINCT customer_id FROM cel_energy WHERE customer_id IS NOT NULL ORDER BY customer_id",
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "label": "Customer",
+        "name": "customer_id",
+        "options": [],
+        "query": "SELECT DISTINCT customer_id FROM cel_energy WHERE customer_id IS NOT NULL ORDER BY customer_id",
+        "refresh": 1,
+        "regex": "",
+        "regexApplyTo": "text",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
+        },
+        "definition": "SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'consumption' ORDER BY meter_id",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "label": "Consumption meters",
+        "name": "cons_meter",
+        "options": [],
+        "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'consumption' ORDER BY meter_id",
+        "refresh": 1,
+        "regex": ".*([0-9A-Z]{8})$",
+        "regexApplyTo": "text",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "questdb-questdb-datasource",
+          "uid": "QuestDB"
+        },
+        "definition": "SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'production' ORDER BY meter_id",
+        "hide": 2,
+        "includeAll": true,
+        "multi": true,
+        "label": "Production meters",
+        "name": "prod_meter",
+        "options": [],
+        "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'production' ORDER BY meter_id",
+        "refresh": 1,
+        "regex": ".*([0-9A-Z]{8})$",
+        "regexApplyTo": "text",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  }
+}

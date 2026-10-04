@@ -28,8 +28,9 @@ import pytest
 DASHBOARDS = Path(__file__).resolve().parent.parent / 'grafana-dashboards'
 
 DASHBOARD_FILES = [
-    'cel_energy_overview.json',
-    'grafana-dashboard-e31-v2.json',
+    'cel-meter-energy-e66.json',
+    'cel-community-energy-e31.json',
+    'cel-customer-energy-e66.json',
 ]
 
 QUESTDB_TYPE = 'questdb-questdb-datasource'
@@ -348,10 +349,14 @@ def test_every_cel_energy_read_is_scoped_to_the_community(dashboard_name):
     overview it is the meter dropdown: those 8 meters are the RCP meters, so
     picking one charts a self-consumption grouping as if it were a member of the
     community.
+
+    A customer_id filter scopes as well: the RCP meters have no customer.
     """
     unscoped = [where for where, block in cel_energy_reads(dashboard_name)
                 if not re.search(
-                    rf"community_id\s*=\s*'{re.escape(E31_COMMUNITY)}'", block)]
+                    rf"community_id\s*=\s*'{re.escape(E31_COMMUNITY)}'"
+                    r"|customer_id\s*=\s*'\$customer_id'"
+                    r"|customer_id\s+IS\s+NOT\s+NULL", block)]
     assert not unscoped, (
         'unscoped cel_energy reads (they include meters that are not in the '
         'E31 aggregate):\n' + '\n'.join(unscoped))
@@ -564,15 +569,20 @@ def test_gauge_series_are_named_after_their_panel(questdb_dashboard):
 # panel that silently falls back to palette-classic looks like a choice rather
 # than a bug.
 EXPECTED_COLOURS = {
-    'cel_energy_overview.json': {
-        1: {'A': 'green', 'B': 'orange'},
-        2: {'A': 'blue', 'B': 'yellow'},
+    'cel-meter-energy-e66.json': {
+        1: {'A': 'green', 'B': 'orange', 'C': 'blue', 'D': 'yellow'},
     },
-    'grafana-dashboard-e31-v2.json': {
+    'cel-community-energy-e31.json': {
         7: {'B': 'green', 'C': 'orange'},
         10: {'B': 'green', 'C': 'purple'},
         13: {'A': 'blue', 'B': 'red'},
         14: {'A': 'yellow', 'B': 'orange'},
+    },
+    'cel-customer-energy-e66.json': {
+        1: {'A': 'green', 'B': 'orange'},
+        2: {'A': 'blue', 'B': 'yellow'},
+        8: {'A': 'green', 'B': 'orange'},
+        9: {'A': 'blue', 'B': 'yellow'},
     },
 }
 

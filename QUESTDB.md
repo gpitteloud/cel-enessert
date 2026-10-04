@@ -51,7 +51,8 @@ file — not against this listing, which is a copy for reading.
 ```sql
 CREATE TABLE cel_energy (                 -- E66, per-meter
   ts           TIMESTAMP,
-  meter_id     SYMBOL,
+  meter_id     SYMBOL,          -- the file's own metering point
+  customer_id  SYMBOL,          -- payload: owner from customers.yaml; NULL for RCP
   direction    SYMBOL,          -- consumption | production
   segment      SYMBOL,          -- cel | grid | total
   product_code SYMBOL,
@@ -93,8 +94,8 @@ CREATE TABLE cel_file_header (            -- what a file IS: one row per file
   receiver_role       SYMBOL,
   period_start        TIMESTAMP,   -- ReportPeriod == Interval
   period_end          TIMESTAMP,
-  file_meter_id       SYMBOL,      -- the file's OWN metering point
-  attributed_meter_id SYMBOL,      -- the meter its rows were stored under
+  meter_id            SYMBOL,      -- the file's own metering point
+  customer_id         SYMBOL,      -- its owner; NULL if undeclared
   metering_point_type SYMBOL,
   flow_characteristic SYMBOL,      -- E31 only
   product_code        SYMBOL,
@@ -132,6 +133,12 @@ OSS-only — Enterprise rejects a non-zero `SET TTL` and wants a storage policy.
 across deliveries (estimated → measured). Keyed, one slot becomes **two rows**
 and every `sum()` double-counts it. As payload it is properly storable, so
 questions like "do these 0.00 kWh readings carry Condition 21?" are plain SQL.
+
+**`customer_id` is payload too, and it is on `cel_energy`, not only on the
+header.** Keyed, a meter moving to another customer would give each re-delivered
+slot a second row; as payload the slot just takes the new owner. It is on every
+row because every customer-dashboard query filters on it, and getting it from
+`cel_file_header` would be a join through `source_file` in each of them.
 
 **`code_type` is not on `cel_energy` at all.** It is functionally dependent on
 `product_code` (`2404050010123`/`...124` → `VSENationalCode`, `8716867000030` →
@@ -331,31 +338,26 @@ confirmed in the raw XML:
   slots zero in July, 184/184 in August) and is a component of this.
 - `0858140M` reads zero on 82 of 84 days.
 
-Note that `08552310` has no rows in `cel_energy` at all, by design:
-`config/meters.yaml` declares it as the production metering point paired with
-consumption meter `0046782G`, and ingestion stores its rows under that id. They
-are one member, so no query needs to know a site has two metering points.
+The `0046782G` figure is its copy of the production total. That copy is not
+stored: every meter keeps only its own rows, so its customer's production is on
+production point `08552310`. A query wanting a customer's data filters on
+`customer_id`, not on one meter id.
 
-Two corrections landed with that declaration, both of which move these numbers:
+Two ingest rules move these numbers:
 
 - The consumption files the provider sends for `0134575W` are spurious — it is a
-  production-only metering point — and are now skipped. Over the sample window
-  that drops Sum(E66) `consumption/total` by 392 kWh (−2.2%). It carried the real
-  `community_id`, so unlike the eight community-less meters it was **not** filtered
-  out of total-scoped queries. **This widens the E31-vs-Sum(E66) consumption gap
-  rather than closing it** — Sum(E66) already ran under E31 from 2026-07, and these
-  rows were partly masking that. The validation panel will look worse; it is right.
-- A production metering point's ebIX total duplicates its consumption twin's and
-  is dropped. Discovery decided that from the batch, so a wave carrying the totals
-  **without** any breakdown file (the monthly half of `20260605`) paired nothing
-  and stored nine production totals under their own ids. That double count is
-  gone: Sum(E66) `production/total` drops by 7923 kWh (−15.5%) over the samples,
-  which **closes** a gap rather than widening one.
+  production metering point — and are skipped. Over the sample window they
+  would add 392 kWh to Sum(E66) `consumption/total`. They carry the real
+  `community_id`, so unlike the eight community-less meters a total-scoped query
+  would **not** filter them out. Skipping them leaves Sum(E66) under E31 from
+  2026-07; the validation panel shows that gap, and it is right.
+- Of the two copies of a producing customer's production total, only the
+  production point's is stored. Storing both would add 7923 kWh to Sum(E66)
+  `production/total` over the samples.
 
-Both are `segment='total'` only. Every `segment='cel'` and `segment='grid'` sum is
-unchanged to the decimal, so the CEL balance checks in
-`validate_daily_balance_questdb.py` and the local leg in `delivery_report.py` read
-exactly as before.
+Both are `segment='total'` only. No `segment='cel'` or `segment='grid'` sum is
+affected, nor the CEL balance checks in `validate_daily_balance_questdb.py` and
+the local leg in `delivery_report.py`.
 
 The E31 panels show the aggregate difference. When it is non-zero,
 `toolbox/diagnose_validation_gap.py` breaks it down per day and per meter, which
@@ -364,7 +366,7 @@ off" from "E31 itself is zero".
 
 Open provider questions from this analysis, tracked in `PROVIDER_QUESTIONS.md`:
 why is E31 consumption zero for 2026-06-02..24? Why does per-meter production fall
-~10% short from 2026-07 on? (The community-less meters are no longer among them —
+~10% short from 2026-07 on? (The community-less meters are not among them:
 they are the RCP meters, answered from the data.)
 
 ## Security

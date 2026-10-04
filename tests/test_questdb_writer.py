@@ -125,6 +125,13 @@ def test_columns_match_schema_file():
         assert list(expected) == declared, f'{table} column mismatch'
 
 
+def test_verify_checks_only_columns_the_writer_writes():
+    from scripts.questdb_init import EXPECTED_COLUMNS
+    writes = {'cel_energy': E66_COLUMNS, 'cel_file_header': HEADER_COLUMNS}
+    for table, columns in EXPECTED_COLUMNS.items():
+        assert columns <= set(writes[table]), table
+
+
 def test_condition_is_not_a_dedup_key():
     """The regression that would double-count revised slots.
 
@@ -189,7 +196,6 @@ def test_missing_observations_yields_no_rows():
 # --------------------------------------------------------------------------
 
 PRODUCTION = 'CH10111012345000000000000008552310'
-CONSUMPTION = 'CH101110123450000000000000046782G'
 
 
 def header(**kwargs):
@@ -197,7 +203,7 @@ def header(**kwargs):
     fields = dict(
         file_name=E66_FILE, ts=datetime(2026, 5, 22, 9, 45), delivery='20260522',
         document_type='E66', metric_type=MetricType.PRODUCTION_LOCAL,
-        file_meter_id=PRODUCTION, attributed_meter_id=CONSUMPTION,
+        file_meter_id=PRODUCTION, customer_id='9000115',
         product_code='2404050010123', code_type='VSENationalCode',
         community_id='101110-002726',
         observations=[Observation(sequence=1, timestamp=TS, value=Decimal('1'),
@@ -206,15 +212,10 @@ def header(**kwargs):
     return FileHeader(**fields)
 
 
-def test_header_row_records_the_meter_the_file_belongs_to_and_the_one_it_was_stored_under(
-        fake_questdb):
-    """The capability the table adds: a production metering point's breakdown is
-    stored under the consumption meter, so the file's own metering point used to be
-    lost entirely."""
+def test_header_row_records_the_meter_and_its_customer(fake_questdb):
     fake_questdb.writer.log_file_header(header())
     row = list(fake_questdb.rows['cel_file_header'].values())[0]
-    assert (row['file_meter_id'],
-            row['attributed_meter_id']) == (PRODUCTION, CONSUMPTION)
+    assert (row['meter_id'], row['customer_id']) == (PRODUCTION, '9000115')
     assert (row['direction'], row['segment']) == ('production', 'cel')
     assert row['observation_count'] == 1
     assert 'outcome' not in row, 'what happened belongs in cel_ingest_log'
@@ -248,7 +249,7 @@ def test_header_write_failure_is_swallowed(fake_questdb):
 
 def test_float_value_is_rejected():
     """A float would reintroduce the binary rounding DECIMAL(12,3) prevents."""
-    rows = [(TS, 'm', 'consumption', 'total', 'p', 'c', 0.003, 'ebIXCode', None)]
+    rows = [(TS, 'm', 'cust', 'consumption', 'total', 'p', 'c', 0.003, 'ebIXCode', None)]
     with pytest.raises(TypeError, match='Decimal'):
         validate_rows(rows, E66_COLUMNS)
 
@@ -270,8 +271,8 @@ def test_exact_sum_of_many_thirds(fake_questdb):
 
 
 def test_row_with_no_value_is_dropped_not_raised():
-    rows = [(TS, 'm', 'consumption', 'total', 'p', 'c', None, 'ebIXCode', None),
-            (TS2, 'm', 'consumption', 'total', 'p', 'c', Decimal('1'), 'e', None)]
+    rows = [(TS, 'm', 'cust', 'consumption', 'total', 'p', 'c', None, 'ebIXCode', None),
+            (TS2, 'm', 'cust', 'consumption', 'total', 'p', 'c', Decimal('1'), 'e', None)]
     assert len(validate_rows(rows, E66_COLUMNS)) == 1
 
 

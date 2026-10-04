@@ -21,9 +21,8 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
   a series label (it would split one slot into two series and double-count it).
 - **Flow characteristics**: E17 (consumption) and E18 (production) in E31 files
 - **Community ID**: 101110-002726, Type CT01
-- **The declared meter list**: the provider supplies which consumption id pairs
-  with which production id, confirming what we had inferred by matching production
-  totals. See section 3.
+- **The declared meter list**: the provider supplies the metering points each
+  customer owns. See section 3.
 - **E31 stability**: Always 6 E31 files regardless of member count
 - **E31 production = sum of E66 production totals**: exact match once the
   production metering points' duplicate totals are excluded (e.g. 2026-06-15: both
@@ -45,7 +44,7 @@ Through extensive analysis of May-June 2026 data files, we've **confirmed** many
 - Files delivered daily with incrementing date ranges
 - Example: File delivered 2026-05-27 covers 2026-05-21 to 2026-05-26
 - This creates 4-day overlap between consecutive deliveries
-- **File count varies by membership**: the E66 count tracks the members and their metering points and rises as the community grows; only the 6 E31 files are constant. See `config/meters.yaml` for the current membership rather than a figure quoted here.
+- **File count varies by membership**: the E66 count tracks the members and their metering points and rises as the community grows; only the 6 E31 files are constant. See `config/customers.yaml` for the current membership rather than a figure quoted here.
 
 **Questions:**
 1. **Why 5 days per file?** Is this to provide data stability/corrections, or for technical reasons?
@@ -127,21 +126,21 @@ meter is the site's **production metering point**; the "physical" meter is its
 - A consumption metering point reports: consumption total + breakdown, and the
   production total
 - A production metering point reports: the same production total, plus the
-  production breakdown (CEL Local vs Grid) that only it carries
+  production breakdown (CEL Local vs Grid) that only it carries — so it is the
+  production point's copy that we store
 - Production metering point ids mostly start with `085`, but not all — `0862613T`
   starts `086`, so nothing may key on the prefix
 - The pairing is **nowhere in the XML** — a production file carries only its own
   `ProductionMeteringPoint/VSENationalID` and a `Community` block
 
-**ANSWERED — the provider now supplies the list**, so we no longer infer it. It
-lives in `config/meters.yaml` (see PARSING_GUIDE.md) with three sections:
-`consumption-only`, `consumption-production`, `production-only`. Before that, the
-pairing was derived per delivery from the fact that both ids report the same
-production total value for value — which needed the whole delivery in hand and so
-could not attribute a file arriving in a later wave.
+**ANSWERED — the provider supplies the list**: each customer with the metering
+points it owns, kept as `config/customers.yaml` (see PARSING_GUIDE.md). Every meter is stored under its own id with its customer id.
+A customer may own several consumption points next to one production point, and
+`0134575W`'s customer also owns consumption point `0832199P`.
 
-**Declared pairs, confirming what we had inferred** — a snapshot as of delivery
-`20260903`, not a fixed set; `config/meters.yaml` is the current list:
+**Production points and a consumption point of the same customer** — a snapshot
+as of delivery `20260903`, not a fixed set;
+`config/customers.yaml` is the current list:
 ```
 consumption → production
 0217130Y → 08574078
@@ -151,16 +150,17 @@ consumption → production
 01192538 → 0855223Y
 0125445D → 08552213
 01650626 → 0855219K
-2064573  → 0862613T      <- appeared after the May-June window; found by re-reading
-0208254A → 0857405E         a delivery, not by being told (see Q9)
+2064573  → 0862613T
+0208254A → 0857405E
 0803097E → 0855225S
 ```
 
 **Questions:**
-9. **ANSWERED** by the declared list above, which matches the pairs we had
-   inferred. Remaining: please tell us **before** a delivery when the list changes
-   (a new member, a member installing solar), since the job reads it as the source
-   of truth and will refuse to attribute an id it has not been told about.
+9. **ANSWERED** by the customer list above. Remaining: please tell us **before** a delivery when the list changes
+   (a new customer, a customer installing solar), since the job reads it as the
+   source of truth: a meter it has not been told about is stored with no
+   customer, and production reported by a customer not known to produce is held
+   back for retry.
 
 10. **Production metering point purpose:** Is the second metering point created
     specifically to carry the production VSE breakdown, because the consumption
@@ -172,10 +172,10 @@ consumption → production
     - Also receives a consumption total file
 
     **ANSWERED (twice)**: It is **NOT linked to RCP** (Regroupement pour la
-    Consommation Propre) — the earlier RCP hypothesis is discarded. It is declared
-    **`production-only`**: a production metering point with no consumption
-    metering point at all, so its own production total is the canonical one and
-    its breakdown is attributed to itself.
+    Consommation Propre). It is a
+    **production metering point** whose total has no copy: its customer's
+    consumption point (`0832199P`) reports no production total, so its own total
+    is the only one and is kept.
 
     **Which makes the consumption file a fault — see Q11a below.**
 
@@ -184,7 +184,7 @@ consumption → production
     - Will other meters of this kind appear (it is currently the only one)?
 
 11a. **Spurious consumption files for `0134575W` — please stop sending them.**
-    Since the meter is production-only, the daily consumption total file it
+    Since the meter is a production point, the daily consumption total file it
     receives (ebIX `8716867000030`, direction consumption) reports consumption for
     a metering point that has none.
 
@@ -204,9 +204,9 @@ consumption → production
       point id?
     - Will new files simply appear in the next delivery?
     - Do you provide advance notification with meter IDs? **This one now matters
-      more than it did**: attribution reads the declared list, so an id that is not
-      in it has its production breakdown held back for retry rather than stored
-      under a guess.
+      more than it did**: the customer of every row is read from the declared
+      list, so an id that is not in it is stored with no customer until the
+      list catches up.
 
 ---
 
@@ -248,8 +248,8 @@ consumption → production
     - **PARTIALLY ANSWERED (our side):** For **production**, E31 total matches the
       sum of E66 production totals **exactly** (e.g. 2026-06-15: E31 = 2558.6 kWh
       vs sum(E66) = 2558.6 kWh, 0.00% diff), once we stop double-counting: a
-      production metering point reports the same production total as its
-      consumption twin, so we keep one copy.
+      producing customer's consumption point reports a copy of the production
+      total its production point reports, so we keep one copy.
     - **Remaining question:** confirm that E31 production total is defined as the
       sum of the members' production totals (not something independently
       estimated), so the exact match is guaranteed rather than coincidental.
@@ -277,7 +277,7 @@ consumption → production
 16c. **E31 production exceeds sum(E66) by ~9-10% from 2026-07-01 (meter
     `0046782G`):** Meter `0046782G` reports production `0.000` for **every**
     15-min interval from data date **2026-06-23** onward (and also 2026-06-08 ..
-    2026-06-17), on **both** its own ebIX total (`8716867000030`) and its paired
+    2026-06-17), on **both** its own ebIX total (`8716867000030`) and its customer's
     production metering point `08552310`'s VSE CEL/Grid breakdown
     (`2404050010123` / `2404050010124`). The other 9 producers report normally.
     - Through **2026-06-30** this was self-consistent: E31 production total
@@ -412,7 +412,7 @@ If you need to prioritize, these are most critical:
 3. **Q2** - Import strategy: process all files or only latest?
 4. **Q5** - Will file count (109 files) change when members join/leave?
 5. **Q6** - Will Condition 21 data become validated in the future?
-6. **Q11a** - The consumption files for production-only `0134575W` are spurious:
+6. **Q11a** - The consumption files for production point `0134575W` are spurious:
    known defect, or mislabelled data belonging to another metering point?
 7. **Q13** - Official VSE code definitions (2404050010123, 2404050010124)
 8. **Q15** - E31 intended use case
@@ -440,17 +440,17 @@ For your reference, our parser:
 
 **Batch Processing:**
 - Waits for complete daily delivery (~109 files in 5-minute window)
-- Attribution is a per-file lookup in the declared meter list, so a file arriving
-  in a later wave is handled on its own; the batch is only for the summary
+- A file's customer is a per-file lookup in the declared list, so a file
+  arriving in a later wave is handled on its own; the batch is only for the
+  summary
 
 **E66 Files (one set per metering point per day):**
-- Consumption metering points: consumption (total + breakdown) and the production
-  total
-- Production metering points: the production breakdown is stored under the paired
-  consumption id, so one member is one meter; the duplicate production total is
-  dropped
-- Covers every declared pair; an id not in the declared list is held back for retry
-  rather than stored under a guess
+- Every metering point is stored under its own id, with the id of the customer
+  that owns it
+- Consumption metering points: consumption (total + breakdown); their copy of
+  the production total is dropped
+- Production metering points: production total + breakdown
+- An id not in the declared list is stored with no customer
 
 **E31 Files (6/day):**
 - Community aggregates stored separately with flow characteristics
@@ -464,10 +464,10 @@ For your reference, our parser:
 **Confirmed File Breakdown (example: community with 21 members):**
 ```
 E66 (ValidatedMeteredData_1.6): 103 files (varies by membership)
-  Consumption points, member produces: 9 × 4 files = 36
-  Consumption-only points:            12 × 3 files = 36
-  Production points (breakdown):       9 × 3 files = 27
-  Production-only (0134575W):          1 × 4 files =  4
+  Consumption points, customer produces: 9 × 4 files = 36
+  Consumption points, customer does not: 12 × 3 files = 36
+  Production points:                     9 × 3 files = 27
+  0134575W (uncoupled production point): 1 × 4 files =  4
                                                Total: 103
 
 E31 (AggregatedMeteredData_1.3): 6 files (always constant)

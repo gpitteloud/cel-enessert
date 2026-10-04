@@ -4,7 +4,6 @@ import pytest
 from scripts.models import MeteredData, MetricType, SkippedDocument
 from scripts.parse_sdat import parse_sdat
 from conftest import make_e66_xml, meter_id, real_files, SAMPLE_METERS
-from scripts.meters import Meters
 
 
 # --------------------------------------------------------------------------
@@ -43,8 +42,9 @@ def test_production_total_ebix(write_xml):
                                code_type="ebIXCode"))
     r = parse_sdat(f)
     assert r.metric_type == MetricType.PRODUCTION_TOTAL
-    # An undeclared meter's own total is stored under that meter, not attributed.
+    # Without a declaration every meter is stored under itself, with no customer.
     assert r.meter_id == meter_id("0020576V")
+    assert r.customer_id is None
 
 
 # --------------------------------------------------------------------------
@@ -73,56 +73,39 @@ def test_missing_resolution_returns_none(write_xml):
 
 
 # --------------------------------------------------------------------------
-# Production breakdown attribution, from the declared meters
+# Every meter under its own id, with its customer
 # --------------------------------------------------------------------------
 
-def test_production_meter_attributed_to_its_consumption_twin(write_xml):
-    # A production metering point's breakdown is stored under the consumption
-    # meter of the same member, so meter_id is already that one on return.
+def test_a_production_breakdown_stays_on_its_production_point(write_xml):
     f = write_xml(make_e66_xml(point="production", meter_id=meter_id("0855229G"),
                                product_code="2404050010123"))
     r = parse_sdat(f, SAMPLE_METERS)
-    assert r.meter_id == meter_id("0020576V")
+    assert r.meter_id == meter_id("0855229G")
+    assert r.customer_id == "9000107"
     assert r.metric_type == MetricType.PRODUCTION_LOCAL
 
 
-def test_a_lone_file_is_attributed_without_its_delivery(write_xml):
-    """The case discovery could not handle: pairing needed the consumption
-    meter's total in the same batch, so a file arriving late -- or retried on its
-    own -- was unattributable. A lookup does not care."""
-    f = write_xml(make_e66_xml(point="production", meter_id=meter_id("08552310"),
-                               product_code="2404050010123"))
-    assert parse_sdat(f, SAMPLE_METERS).meter_id == meter_id("0046782G")
-
-
-def test_production_only_meter_attributed_to_itself(write_xml):
-    # Declared production-only: it has no consumption twin, so it owns its
-    # breakdown and nothing is re-attributed.
-    mid = meter_id("0134575W")
-    f = write_xml(make_e66_xml(point="production", meter_id=mid,
-                               product_code="2404050010123"))
-    assert parse_sdat(f, SAMPLE_METERS).meter_id == mid
-
-
-def test_paired_production_meters_total_dropped(write_xml):
-    # A paired production meter's ebIX production TOTAL duplicates its
-    # consumption meter's total, so it must be dropped to avoid double counting
-    # the community production sum. The drop is signalled as a SkippedDocument
-    # (not None) so callers can log it as expected rather than as a failure.
-    production = meter_id("0855229G")
-    f = write_xml(make_e66_xml(point="production", meter_id=production,
-                               product_code="8716867000030",
-                               code_type="ebIXCode"))
+def test_a_consumption_file_carries_its_customer(write_xml):
+    f = write_xml(make_e66_xml(point="consumption", meter_id=meter_id("0020576V")))
     r = parse_sdat(f, SAMPLE_METERS)
-    assert isinstance(r, SkippedDocument)
-    assert r.meter_id == production
-    assert meter_id("0020576V") in r.reason
+    assert (r.meter_id, r.customer_id) == (meter_id("0020576V"), "9000107")
 
 
-def test_production_only_meters_total_kept(write_xml):
-    # It has no twin reporting the same total, so dropping it would lose that
-    # member's production entirely.
-    mid = meter_id("0134575W")
+def test_the_header_records_the_customer(write_xml):
+    """parse_e66 sets it on the header too, so cel_file_header carries it."""
+    import xml.etree.ElementTree as ET
+    from scripts.parse_sdat import metered_data_from_header
+    from scripts.sdat_header import parse_header
+    header = parse_header(ET.fromstring(make_e66_xml(
+        point="consumption", meter_id=meter_id("0020576V"))), "doc.xml")
+    metered_data_from_header(header, SAMPLE_METERS)
+    assert header.customer_id == "9000107"
+
+
+def test_a_production_points_total_is_kept(write_xml):
+    """The production point's copy of the total is the one stored, so the meter
+    is self-contained: its total is its cel + grid."""
+    mid = meter_id("0855229G")
     f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="8716867000030",
                                code_type="ebIXCode"))
@@ -131,21 +114,45 @@ def test_production_only_meters_total_kept(write_xml):
     assert r.meter_id == mid
 
 
-def test_consumption_meters_own_production_total_kept(write_xml):
-    # The consumption side of a pair reports the canonical production total.
-    f = write_xml(make_e66_xml(point="production", meter_id=meter_id("0020576V"),
+def test_an_uncoupled_production_points_total_is_kept(write_xml):
+    mid = meter_id("0134575W")
+    f = write_xml(make_e66_xml(point="production", meter_id=mid,
                                product_code="8716867000030",
                                code_type="ebIXCode"))
     r = parse_sdat(f, SAMPLE_METERS)
     assert r.metric_type == MetricType.PRODUCTION_TOTAL
-    assert r.meter_id == meter_id("0020576V")
+    assert (r.meter_id, r.customer_id) == (mid, "9000114")
+
+
+def test_a_consumption_points_copy_of_the_production_total_is_dropped(write_xml):
+    """It duplicates the production point's total, so storing it would double
+    the community's production. A SkippedDocument (not None) lets the caller
+    log it as expected, not as a failure."""
+    consumption = meter_id("0020576V")
+    f = write_xml(make_e66_xml(point="production", meter_id=consumption,
+                               product_code="8716867000030",
+                               code_type="ebIXCode"))
+    r = parse_sdat(f, SAMPLE_METERS)
+    assert isinstance(r, SkippedDocument)
+    assert r.meter_id == consumption
+    assert "9000107" in r.reason
+
+
+def test_the_copy_is_dropped_on_any_consumption_point_of_the_customer(write_xml):
+    """9000106 owns two consumption points; either may send the copy."""
+    for suffix in ("02291991", "01650626"):
+        f = write_xml(make_e66_xml(point="production", meter_id=meter_id(suffix),
+                                   product_code="8716867000030",
+                                   code_type="ebIXCode"))
+        assert isinstance(parse_sdat(f, SAMPLE_METERS), SkippedDocument)
 
 
 def test_a_consumption_file_on_a_production_meter_is_skipped(write_xml):
     """The provider sends consumption files for 0134575W, which is a production
     metering point and has no consumption. Ingesting them added ~635 kWh of
     consumption that no member drew, so they are dropped -- deliberately, hence
-    a SkippedDocument and not a failure."""
+    a SkippedDocument and not a failure. Its customer's consumption point
+    carries the customer's consumption."""
     mid = meter_id("0134575W")
     f = write_xml(make_e66_xml(point="consumption", meter_id=mid,
                                product_code="8716867000030",
@@ -155,42 +162,60 @@ def test_a_consumption_file_on_a_production_meter_is_skipped(write_xml):
     assert r.meter_id == mid
 
 
-def test_a_consumption_file_on_a_declared_member_is_ingested(write_xml):
-    """The consumption side of a pair legitimately reports consumption, so the
-    rule above must key on the metering point's role and nothing wider."""
-    mid = meter_id("0020576V")
-    f = write_xml(make_e66_xml(point="consumption", meter_id=mid))
-    assert parse_sdat(f, SAMPLE_METERS).meter_id == mid
-
-
-def test_undeclared_meters_breakdown_returns_none(write_xml):
-    # A production breakdown from a meter nobody declared IS a failure (a new
-    # member needs the provider), so it must stay None -- never a
-    # SkippedDocument, which would silence it and archive the file.
-    f = write_xml(make_e66_xml(point="production", meter_id=meter_id("0999999X"),
-                               product_code="2404050010123"))
-    assert parse_sdat(f, SAMPLE_METERS) is None
-
-
-def test_a_consumption_only_members_breakdown_returns_none(caplog):
-    """A declaration error, not an unknown meter: it gets its own message so the
-    question to the provider is the right one."""
+def test_a_breakdown_against_the_meters_role_fails(caplog):
+    """A meter measures only its own direction, so a CEL or grid file names its
+    role. One that disagrees means customers.yaml declares the wrong role; a
+    skip would archive the meter's data silently, so it fails instead -- even
+    when the customer owns a meter of that direction."""
     import logging
     from scripts.parse_sdat import parse_sdat_bytes
-    mid = meter_id("0036273C")
-    xml = make_e66_xml(point="production", meter_id=mid,
-                       product_code="2404050010123").encode()
+    cases = [("consumption", meter_id("0134575W")),   # declared production
+             ("production", meter_id("0020576V"))]    # declared consumption
+    for point, mid in cases:
+        xml = make_e66_xml(point=point, meter_id=mid,
+                           product_code="2404050010123",
+                           code_type="VSENationalCode").encode()
+        caplog.clear()
+        with caplog.at_level(logging.ERROR):
+            assert parse_sdat_bytes(xml, "doc.xml", SAMPLE_METERS) is None
+        assert "role in customers.yaml" in caplog.text
+
+
+def test_production_from_a_consumption_only_customer_fails(caplog):
+    """Nothing else carries it -- most likely the customer installed solar before
+    the list was updated -- so dropping it would lose real production. It must
+    be None, never a SkippedDocument, which would archive it silently."""
+    import logging
+    from scripts.parse_sdat import parse_sdat_bytes
+    xml = make_e66_xml(point="production", meter_id=meter_id("0036273C"),
+                       product_code="8716867000030",
+                       code_type="ebIXCode").encode()
     with caplog.at_level(logging.ERROR):
         assert parse_sdat_bytes(xml, "doc.xml", SAMPLE_METERS) is None
-    assert "consumption-only" in caplog.text
+    assert "9000112" in caplog.text
+    assert "customers.yaml" in caplog.text
 
 
-def test_without_a_declaration_no_breakdown_is_attributed(write_xml):
-    """An empty declaration attributes nothing rather than falling back to the
-    file's own meter, which would store one member's production under another."""
-    f = write_xml(make_e66_xml(point="production", meter_id=meter_id("0855229G"),
+def test_an_undeclared_meter_is_stored_with_no_customer(write_xml, caplog):
+    import logging
+    f = write_xml(make_e66_xml(point="production", meter_id=meter_id("0999999X"),
                                product_code="2404050010123"))
-    assert parse_sdat(f, Meters.empty()) is None
+    with caplog.at_level(logging.WARNING):
+        r = parse_sdat(f, SAMPLE_METERS)
+    assert (r.meter_id, r.customer_id) == (meter_id("0999999X"), None)
+    assert "not declared" in caplog.text
+
+
+def test_an_undeclared_rcp_meter_is_stored_without_a_warning(write_xml, caplog):
+    """The RCP meters are not the community's customers; that is expected."""
+    import logging
+    f = write_xml(make_e66_xml(meter_id=meter_id("0999999X"), community_id=None,
+                               business_reason="E88", reason_code_type="ebIXCode",
+                               product_code="8716867000030", code_type="ebIXCode"))
+    with caplog.at_level(logging.WARNING):
+        r = parse_sdat(f, SAMPLE_METERS)
+    assert r.rcp and r.customer_id is None
+    assert "not declared" not in caplog.text
 
 
 # --------------------------------------------------------------------------
@@ -228,20 +253,20 @@ _E66_SAMPLES = real_files("*_E66_*.xml")
 @pytest.mark.skipif(not _E66_SAMPLES, reason="no real E66 sample files present")
 def test_real_e66_files_all_parse():
     """Every real E66 file either parses to a MeteredData or is deliberately
-    skipped -- never a hard failure (None). The legitimate skips are a paired
-    production meter's ebIX production TOTAL (identical to its consumption
-    meter's) and a consumption file sent for a production metering point."""
+    skipped -- never a hard failure (None). The legitimate skips are a file
+    reporting against its meter's role while another meter of the customer
+    carries that direction: a consumption point's copy of the production total,
+    and a consumption file sent for a production metering point."""
     parsed = 0
     dropped = 0
     for f in _E66_SAMPLES:
         r = parse_sdat(f, SAMPLE_METERS)
         assert r is not None, f"{f.name}: unexpected parse failure"
         if isinstance(r, SkippedDocument):
-            # Only a declared production metering point may be skipped: a paired
-            # one's duplicate total, or a production-only one's spurious
-            # consumption file.
-            assert SAMPLE_METERS.is_production_metering_point(r.meter_id), \
-                f"unexpected skip of {f.name} (not a production metering point)"
+            # Only a declared meter may be skipped, and only for another
+            # meter of its customer.
+            assert SAMPLE_METERS.customer_of(r.meter_id), \
+                f"unexpected skip of {f.name} (undeclared meter)"
             dropped += 1
             continue
         assert r.document_type == "E66"
