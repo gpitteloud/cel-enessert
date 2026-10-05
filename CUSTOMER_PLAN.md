@@ -168,9 +168,10 @@ overrides.
   `SELECT DISTINCT customer_id FROM cel_energy WHERE customer_id IS NOT NULL ORDER BY customer_id`.
 - `cons_meter`: hidden, multi/All,
   `SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'consumption'`.
-  The 8-character suffix is shown as the label (the overview's convention,
-  via `regexApplyTo: text`), and the full id is kept as the value, so queries
-  use `meter_id = '$cons_meter'` instead of `LIKE`.
+  The regex `/^(?<value>.*(?<text>[0-9A-Z]{8}))$/` shows the 8-character
+  suffix as the label and keeps the full id as the value, so queries use
+  `meter_id = '$cons_meter'` instead of `LIKE`. Named groups are required: an
+  unnamed capture group becomes the value too.
 - `prod_meter`: the same, for `direction = 'production'`.
 
 **Layout**

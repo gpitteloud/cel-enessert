@@ -24,6 +24,14 @@ processing:
   # Raising it widens the archive scan by the same number of zips.
   download_window_days: 7
 
+# Billing export (scripts/billing_export.py)
+billing:
+  # The period billed: this many full calendar months before the run date.
+  months: 3
+  # The accounting's items, id;name in Windows-1252.
+  products_file: "/app/config/produits.csv"
+  output_path: "/data/invoices"
+
 # Logging
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR

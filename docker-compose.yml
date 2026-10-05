@@ -119,6 +119,7 @@ services:
       - /volume1/docker/cel/config:/app/config
       - /volume1/docker/cel/logs:/app/logs
       - /volume1/docker/cel/archive:/data/archive
+      - /volume1/docker/cel/invoices:/data/invoices
     environment:
       # PG-wire endpoint. Default OSS credentials are admin/quest and cannot be
       # changed in OSS without server.conf; the port is unpublished (see the
