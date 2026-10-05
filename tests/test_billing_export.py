@@ -137,14 +137,14 @@ def test_rows_layout(products):
 
     first, last, customer, articles, labels, quantities = rows[0]
     assert (first, last) == ('01.07.2026', '30.09.2026')
-    assert articles == '|3002|1|4001|5001||3002|1|4001|5001||3001|1|4002|5002'
+    assert articles == '|3002|1|4002|5002||3002|1|4002|5002||3001|1|4001|5001'
     assert labels == (
         f'Point de mesure {CONS_A}|Électricité CEL soutirée|Frais de gestion|'
-        f'Gain sur réseau|Excédent injecté|'
+        f'Économie sur réseau|Consommation réseau|'
         f'Point de mesure {CONS_B}|Électricité CEL soutirée|Frais de gestion|'
-        f'Gain sur réseau|Excédent injecté|'
+        f'Économie sur réseau|Consommation réseau|'
         f'Point de mesure {PROD}|Electricité CEL injectée|Frais de gestion|'
-        f'Économie sur réseau|Consommation réseau')
+        f'Gain sur réseau|Excédent injecté')
     assert quantities == ('|0,105|0,105|0,105|0,104||0,054|0,054|0,054|0,205'
                           '||0,414|0,414|0,414|1,61')
     assert rows[1][5] == '|1,016|1,016|1,016|1,092'
