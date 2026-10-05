@@ -1218,8 +1218,7 @@
         "options": [],
         "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'consumption' ORDER BY meter_id",
         "refresh": 1,
-        "regex": ".*([0-9A-Z]{8})$",
-        "regexApplyTo": "text",
+        "regex": "/^(?<value>.*(?<text>[0-9A-Z]{8}))$/",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
@@ -1242,8 +1241,7 @@
         "options": [],
         "query": "SELECT DISTINCT meter_id FROM cel_energy WHERE customer_id = '$customer_id' AND direction = 'production' ORDER BY meter_id",
         "refresh": 1,
-        "regex": ".*([0-9A-Z]{8})$",
-        "regexApplyTo": "text",
+        "regex": "/^(?<value>.*(?<text>[0-9A-Z]{8}))$/",
         "skipUrlSync": false,
         "sort": 1,
         "type": "query"
