@@ -80,3 +80,4 @@ credentials.json
 # Logs
 *.log
 /secrets/
+/.env.devl
