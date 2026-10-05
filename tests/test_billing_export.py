@@ -16,8 +16,8 @@ from scripts.meters import Meters
 
 PRODUCTS_CSV = (
     "1;Frais de gestion\r\n3001;Electricité CEL injectée\r\n"
-    "3002;Électricité CEL soutirée\r\n4001;Gain sur réseau\r\n"
-    "4002;Économie sur réseau\r\n5001;Excédent injecté\r\n5002;Consommation réseau\r\n")
+    "3002;Électricité CEL soutirée\r\n4001;Économie sur réseau\r\n"
+    "4002;Gain sur réseau\r\n5001;Consommation réseau\r\n5002;Excédent injecté\r\n")
 
 PROD = meter_id('0855219K')
 CONS_A = meter_id('02291991')
@@ -137,7 +137,7 @@ def test_rows_layout(products):
 
     first, last, customer, articles, labels, quantities = rows[0]
     assert (first, last) == ('01.07.2026', '30.09.2026')
-    assert articles == '|3002|1|4002|5002||3002|1|4002|5002||3001|1|4001|5001'
+    assert articles == '|3002|1|4001|5001||3002|1|4001|5001||3001|1|4002|5002'
     assert labels == (
         f'Point de mesure {CONS_A}|Électricité CEL soutirée|Frais de gestion|'
         f'Économie sur réseau|Consommation réseau|'

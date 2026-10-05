@@ -1,7 +1,7 @@
 1;Frais de gestion
 3001;Electricité CEL injectée
 3002;Électricité CEL soutirée
-4001;Gain sur réseau
-4002;Économie sur réseau
-5001;Excédent injecté
-5002;Consommation réseau
+4001;Économie sur réseau
+4002;Gain sur réseau
+5001;Consommation réseau
+5002;Excédent injecté

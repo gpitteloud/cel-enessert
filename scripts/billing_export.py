@@ -51,8 +51,8 @@ METER_LABEL = 'Point de mesure {}'
 # The 4 items billed per meter, by role. The first three carry the CEL energy,
 # the last the grid energy.
 ITEMS = {
-    CONSUMPTION: ('3002', '1', '4002', '5002'),
-    PRODUCTION: ('3001', '1', '4001', '5001'),
+    CONSUMPTION: ('3002', '1', '4001', '5001'),
+    PRODUCTION: ('3001', '1', '4002', '5002'),
 }
 SEGMENTS = ('cel', 'cel', 'cel', 'grid')
 
