@@ -1,7 +1,7 @@
 1;Frais de gestion
-3001;Electricité CEL injectée
+3001;Électricité CEL injectée
 3002;Électricité CEL soutirée
-4001;Économie sur réseau
-4002;Gain sur réseau
-5001;Consommation réseau
-5002;Excédent injecté
+4002;Gain estimé (indicatif – par rapport à un prix de reprise moyen estimé)
+4001;Économie estimée (indicatif – par rapport au produit Energie Suisse HC de Romande Energie)
+5002;Excédent injecté (sera crédité par Romande Energie)
+5001;Consommation réseau (sera facturé par Romande Energie)

@@ -2,12 +2,14 @@
 """Export the billing import file: each customer's energy over a period.
 
 One line per customer, in customers.yaml order. Each of its meters, consumption
-meters first, then production, becomes 5 blocks in the Article, Libellé and
+meters first, then production, becomes 6 blocks in the Article, Libellé and
 Quantité columns, the blocks joined with '|':
 
-    Article    (empty)                    | 4 item ids of the meter's role
-    Libellé    Point de mesure <meter id> | the 4 item names, from produits.csv
-    Quantité   (empty)                    | cel | cel | cel | grid
+    Article    (empty)                    | 4 item ids of the meter's role | (empty)
+    Libellé    Point de mesure <meter id> | the 4 item names, from produits.csv | ' '
+    Quantité   (empty)                    | cel | cel | cel | grid | (empty)
+
+The last block is a blank line closing the meter, the last meter included.
 
 Quantities are MWh with 3 decimals, summed from cel_energy over the meter's own
 direction. The period is the N full calendar months before the run date, with
@@ -47,6 +49,7 @@ HEADER = ('From', 'To', 'NumClientRomande', 'Article', 'Libellé', 'Quantité')
 DATE_FORMAT = '%d.%m.%Y'
 BLOCK_SEPARATOR = '|'
 METER_LABEL = 'Point de mesure {}'
+SPACER_LABEL = ' '     # blank line after each meter; an empty label would be dropped
 
 # The 4 items billed per meter, by role. The first three carry the CEL energy,
 # the last the grid energy.
@@ -170,9 +173,9 @@ def build_rows(meters: Meters, products: Dict[str, str], sums, period: Period) -
                                    f"on what is stored")
                 energy[segment] = format_mwh(kwh)
             items = ITEMS[role]
-            articles += ['', *items]
-            labels += [METER_LABEL.format(meter_id), *(products[i] for i in items)]
-            quantities += ['', *(energy[s] for s in SEGMENTS)]
+            articles += ['', *items, '']
+            labels += [METER_LABEL.format(meter_id), *(products[i] for i in items), SPACER_LABEL]
+            quantities += ['', *(energy[s] for s in SEGMENTS), '']
         rows.append((period.first_day.strftime(DATE_FORMAT),
                      period.last_day.strftime(DATE_FORMAT),
                      customer_id,

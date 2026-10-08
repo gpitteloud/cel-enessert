@@ -1,6 +1,6 @@
 """Tests for billing_export - the accounting's import file.
 
-What is pinned: the period (full Zurich months, DST-exact), the 5-block layout
+What is pinned: the period (full Zurich months, DST-exact), the 6-block layout
 per meter with consumption meters first, the quantities in MWh, and the file's
 encoding, since the accounting import reads bytes, not intent.
 """
@@ -15,9 +15,13 @@ from scripts.billing_export import (
 from scripts.meters import Meters
 
 PRODUCTS_CSV = (
-    "1;Frais de gestion\r\n3001;Electricité CEL injectée\r\n"
-    "3002;Électricité CEL soutirée\r\n4001;Économie sur réseau\r\n"
-    "4002;Gain sur réseau\r\n5001;Consommation réseau\r\n5002;Excédent injecté\r\n")
+    "1;Frais de gestion\r\n3001;Électricité CEL injectée\r\n"
+    "3002;Électricité CEL soutirée\r\n"
+    "4002;Gain estimé (indicatif – par rapport à un prix de reprise moyen estimé)\r\n"
+    "4001;Économie estimée (indicatif – par rapport au produit Energie Suisse HC "
+    "de Romande Energie)\r\n"
+    "5002;Excédent injecté (sera crédité par Romande Energie)\r\n"
+    "5001;Consommation réseau (sera facturé par Romande Energie)\r\n")
 
 PROD = meter_id('0855219K')
 CONS_A = meter_id('02291991')
@@ -125,7 +129,7 @@ def test_format_mwh(kwh, text):
 
 def test_load_products_requires_every_billed_item(tmp_path):
     path = tmp_path / 'produits.csv'
-    path.write_bytes(PRODUCTS_CSV.replace('5002;Consommation réseau\r\n', '')
+    path.write_bytes(PRODUCTS_CSV.replace('5002;Excédent injecté (sera crédité par Romande Energie)\r\n', '')
                      .encode('cp1252'))
     with pytest.raises(ValueError, match='5002'):
         load_products(path)
@@ -137,24 +141,28 @@ def test_rows_layout(products):
 
     first, last, customer, articles, labels, quantities = rows[0]
     assert (first, last) == ('01.07.2026', '30.09.2026')
-    assert articles == '|3002|1|4001|5001||3002|1|4001|5001||3001|1|4002|5002'
-    assert labels == (
-        f'Point de mesure {CONS_A}|Électricité CEL soutirée|Frais de gestion|'
-        f'Économie sur réseau|Consommation réseau|'
-        f'Point de mesure {CONS_B}|Électricité CEL soutirée|Frais de gestion|'
-        f'Économie sur réseau|Consommation réseau|'
-        f'Point de mesure {PROD}|Electricité CEL injectée|Frais de gestion|'
-        f'Gain sur réseau|Excédent injecté')
-    assert quantities == ('|0,105|0,105|0,105|0,104||0,054|0,054|0,054|0,205'
-                          '||0,414|0,414|0,414|1,61')
-    assert rows[1][5] == '|1,016|1,016|1,016|1,092'
+    assert articles == '|3002|1|4001|5001|||3002|1|4001|5001|||3001|1|4002|5002|'
+    names = labels.split('|')
+    prefixes = [
+        f'Point de mesure {CONS_A}', 'Électricité CEL soutirée', 'Frais de gestion',
+        'Économie estimée', 'Consommation réseau', ' ',
+        f'Point de mesure {CONS_B}', 'Électricité CEL soutirée', 'Frais de gestion',
+        'Économie estimée', 'Consommation réseau', ' ',
+        f'Point de mesure {PROD}', 'Électricité CEL injectée', 'Frais de gestion',
+        'Gain estimé', 'Excédent injecté', ' ']
+    assert len(names) == len(prefixes)
+    for name, prefix in zip(names, prefixes):
+        assert name.startswith(prefix), (name, prefix)
+    assert quantities == ('|0,105|0,105|0,105|0,104|||0,054|0,054|0,054|0,205'
+                          '|||0,414|0,414|0,414|1,61|')
+    assert rows[1][5] == '|1,016|1,016|1,016|1,092|'
 
 
 def test_missing_data_bills_zero_and_warns(products, caplog):
     sums = {(SOLO, 'consumption', 'cel'): (Decimal('500'), 10)}
     meters = Meters(owners={SOLO: ('1337266', 'consumption')})
     rows = build_rows(meters, products, sums, PERIOD)
-    assert rows[0][5] == '|0,5|0,5|0,5|0'
+    assert rows[0][5] == '|0,5|0,5|0,5|0|'
     warnings = [r.getMessage() for r in caplog.records if r.levelname == 'WARNING']
     assert any('cel has 10/' in w for w in warnings)
     assert any('grid has 0/' in w for w in warnings)
